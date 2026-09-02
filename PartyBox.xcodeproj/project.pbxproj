@@ -21,12 +21,30 @@
 			remoteGlobalIDString = 24B1C9A930486A7700592BFF;
 			remoteInfo = PartyBox;
 		};
+		24B1C9E530486AB900592BFF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 24B1C9A230486A7700592BFF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 24B1C9D730486AB100592BFF;
+			remoteInfo = "PartyBox Controller";
+		};
+		24B1C9EF30486ABA00592BFF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 24B1C9A230486A7700592BFF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 24B1C9D730486AB100592BFF;
+			remoteInfo = "PartyBox Controller";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		24B1C9AA30486A7700592BFF /* PartyBox.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PartyBox.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		24B1C9B730486A7900592BFF /* PartyBoxTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PartyBoxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		24B1C9C130486A7900592BFF /* PartyBoxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PartyBoxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		24B1C9D830486AB100592BFF /* PartyBox Controller.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "PartyBox Controller.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		24B1C9E430486AB900592BFF /* PartyBox ControllerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "PartyBox ControllerTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		24B1C9EE30486ABA00592BFF /* PartyBox ControllerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "PartyBox ControllerUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		24B1C9FF30486AE800592BFF /* PartyNet */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = PartyNet; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,6 +61,21 @@
 		24B1C9C430486A7900592BFF /* PartyBoxUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PartyBoxUITests;
+			sourceTree = "<group>";
+		};
+		24B1C9D930486AB200592BFF /* PartyBox Controller */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "PartyBox Controller";
+			sourceTree = "<group>";
+		};
+		24B1C9E730486AB900592BFF /* PartyBox ControllerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "PartyBox ControllerTests";
+			sourceTree = "<group>";
+		};
+		24B1C9F130486ABA00592BFF /* PartyBox ControllerUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "PartyBox ControllerUITests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,15 +102,40 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		24B1C9D530486AB100592BFF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9E130486AB900592BFF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9EB30486ABA00592BFF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		24B1C9A130486A7700592BFF = {
 			isa = PBXGroup;
 			children = (
+				24B1C9FF30486AE800592BFF /* PartyNet */,
 				24B1C9AC30486A7700592BFF /* PartyBox */,
 				24B1C9BA30486A7900592BFF /* PartyBoxTests */,
 				24B1C9C430486A7900592BFF /* PartyBoxUITests */,
+				24B1C9D930486AB200592BFF /* PartyBox Controller */,
+				24B1C9E730486AB900592BFF /* PartyBox ControllerTests */,
+				24B1C9F130486ABA00592BFF /* PartyBox ControllerUITests */,
 				24B1C9AB30486A7700592BFF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,6 +146,9 @@
 				24B1C9AA30486A7700592BFF /* PartyBox.app */,
 				24B1C9B730486A7900592BFF /* PartyBoxTests.xctest */,
 				24B1C9C130486A7900592BFF /* PartyBoxUITests.xctest */,
+				24B1C9D830486AB100592BFF /* PartyBox Controller.app */,
+				24B1C9E430486AB900592BFF /* PartyBox ControllerTests.xctest */,
+				24B1C9EE30486ABA00592BFF /* PartyBox ControllerUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -163,6 +224,74 @@
 			productReference = 24B1C9C130486A7900592BFF /* PartyBoxUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		24B1C9D730486AB100592BFF /* PartyBox Controller */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 24B1C9F630486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox Controller" */;
+			buildPhases = (
+				24B1C9D430486AB100592BFF /* Sources */,
+				24B1C9D530486AB100592BFF /* Frameworks */,
+				24B1C9D630486AB100592BFF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				24B1C9D930486AB200592BFF /* PartyBox Controller */,
+			);
+			name = "PartyBox Controller";
+			packageProductDependencies = (
+			);
+			productName = "PartyBox Controller";
+			productReference = 24B1C9D830486AB100592BFF /* PartyBox Controller.app */;
+			productType = "com.apple.product-type.application";
+		};
+		24B1C9E330486AB900592BFF /* PartyBox ControllerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 24B1C9F930486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox ControllerTests" */;
+			buildPhases = (
+				24B1C9E030486AB900592BFF /* Sources */,
+				24B1C9E130486AB900592BFF /* Frameworks */,
+				24B1C9E230486AB900592BFF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				24B1C9E630486AB900592BFF /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				24B1C9E730486AB900592BFF /* PartyBox ControllerTests */,
+			);
+			name = "PartyBox ControllerTests";
+			packageProductDependencies = (
+			);
+			productName = "PartyBox ControllerTests";
+			productReference = 24B1C9E430486AB900592BFF /* PartyBox ControllerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		24B1C9ED30486ABA00592BFF /* PartyBox ControllerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 24B1C9FC30486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox ControllerUITests" */;
+			buildPhases = (
+				24B1C9EA30486ABA00592BFF /* Sources */,
+				24B1C9EB30486ABA00592BFF /* Frameworks */,
+				24B1C9EC30486ABA00592BFF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				24B1C9F030486ABA00592BFF /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				24B1C9F130486ABA00592BFF /* PartyBox ControllerUITests */,
+			);
+			name = "PartyBox ControllerUITests";
+			packageProductDependencies = (
+			);
+			productName = "PartyBox ControllerUITests";
+			productReference = 24B1C9EE30486ABA00592BFF /* PartyBox ControllerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -184,6 +313,17 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = 24B1C9A930486A7700592BFF;
 					};
+					24B1C9D730486AB100592BFF = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					24B1C9E330486AB900592BFF = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 24B1C9D730486AB100592BFF;
+					};
+					24B1C9ED30486ABA00592BFF = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 24B1C9D730486AB100592BFF;
+					};
 				};
 			};
 			buildConfigurationList = 24B1C9A530486A7700592BFF /* Build configuration list for PBXProject "PartyBox" */;
@@ -203,6 +343,9 @@
 				24B1C9A930486A7700592BFF /* PartyBox */,
 				24B1C9B630486A7900592BFF /* PartyBoxTests */,
 				24B1C9C030486A7900592BFF /* PartyBoxUITests */,
+				24B1C9D730486AB100592BFF /* PartyBox Controller */,
+				24B1C9E330486AB900592BFF /* PartyBox ControllerTests */,
+				24B1C9ED30486ABA00592BFF /* PartyBox ControllerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -223,6 +366,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		24B1C9BF30486A7900592BFF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9D630486AB100592BFF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9E230486AB900592BFF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9EC30486ABA00592BFF /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -253,6 +417,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		24B1C9D430486AB100592BFF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9E030486AB900592BFF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24B1C9EA30486ABA00592BFF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -265,6 +450,16 @@
 			isa = PBXTargetDependency;
 			target = 24B1C9A930486A7700592BFF /* PartyBox */;
 			targetProxy = 24B1C9C230486A7900592BFF /* PBXContainerItemProxy */;
+		};
+		24B1C9E630486AB900592BFF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 24B1C9D730486AB100592BFF /* PartyBox Controller */;
+			targetProxy = 24B1C9E530486AB900592BFF /* PBXContainerItemProxy */;
+		};
+		24B1C9F030486ABA00592BFF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 24B1C9D730486AB100592BFF /* PartyBox Controller */;
+			targetProxy = 24B1C9EF30486ABA00592BFF /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -524,6 +719,158 @@
 			};
 			name = Release;
 		};
+		24B1C9F730486ABA00592BFF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-Controller";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		24B1C9F830486ABA00592BFF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-Controller";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		24B1C9FA30486ABA00592BFF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-ControllerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PartyBox Controller.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PartyBox Controller";
+			};
+			name = Debug;
+		};
+		24B1C9FB30486ABA00592BFF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-ControllerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PartyBox Controller.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PartyBox Controller";
+			};
+			name = Release;
+		};
+		24B1C9FD30486ABA00592BFF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-ControllerUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "PartyBox Controller";
+			};
+			name = Debug;
+		};
+		24B1C9FE30486ABA00592BFF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "me.haroldmartin.PartyBox-ControllerUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "PartyBox Controller";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -559,6 +906,33 @@
 			buildConfigurations = (
 				24B1C9D230486A7900592BFF /* Debug */,
 				24B1C9D330486A7900592BFF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		24B1C9F630486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox Controller" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				24B1C9F730486ABA00592BFF /* Debug */,
+				24B1C9F830486ABA00592BFF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		24B1C9F930486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox ControllerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				24B1C9FA30486ABA00592BFF /* Debug */,
+				24B1C9FB30486ABA00592BFF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		24B1C9FC30486ABA00592BFF /* Build configuration list for PBXNativeTarget "PartyBox ControllerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				24B1C9FD30486ABA00592BFF /* Debug */,
+				24B1C9FE30486ABA00592BFF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
