@@ -1,0 +1,10 @@
+PartyBox load acceptance run — 2026-09-02
+
+Command:
+swift run partyload --address 127.0.0.1:52408 --count 8 --hz 60 --seconds 30
+
+Result:
+Connected 8 controllers to 127.0.0.1:52408
+Completed 1800 input updates per controller at 60 Hz for 30s
+Ping RTT: p50 0.93 ms  p95 1.36 ms  max 2.82 ms  (13438 samples)
+PASS: no unexpected disconnects; p95 RTT is below 50 ms.

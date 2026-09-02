@@ -1,17 +1,23 @@
-//
-//  PartyBox_ControllerTests.swift
-//  PartyBox ControllerTests
-//
-//  Created by Harold Martin on 9/2/26.
-//
-
+import Foundation
+import PartyNet
 import Testing
 @testable import PartyBox_Controller
 
+@Suite("Controller identity")
+@MainActor
 struct PartyBox_ControllerTests {
+    @Test func identityAndSanitizedNamePersistAcrossLaunches() async throws {
+        let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+        let first = ControllerCoordinator(defaults: defaults)
+        let controllerID = first.client.controllerID
+        first.displayName = "  Ada    Lovelace  "
+        await first.rename()
+
+        let relaunched = ControllerCoordinator(defaults: defaults)
+        #expect(relaunched.client.controllerID == controllerID)
+        #expect(relaunched.displayName == "Ada Lovelace")
     }
-
 }
