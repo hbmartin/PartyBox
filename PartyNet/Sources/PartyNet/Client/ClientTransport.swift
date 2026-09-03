@@ -5,6 +5,7 @@ import OSLog
 enum ClientTransportEvent: Sendable {
     case hosts([DiscoveredHost])
     case message(connectionID: UUID, HostMessage)
+    case inputSent(connectionID: UUID)
     case disconnected(connectionID: UUID, reason: String)
     case failure(String)
 }
@@ -51,12 +52,15 @@ actor ClientTransport {
     private let eventContinuation: AsyncStream<ClientTransportEvent>.Continuation
     private let logger = Logger(subsystem: "PartyNet", category: "ClientTransport")
     private let clock = ContinuousClock()
+    private let inputSendInterval: Duration
     private var browser: NetworkBrowser<Bonjour>?
     private var browserTask: Task<Void, Never>?
+    private var browserGeneration: UUID?
     private var receiveTasks: [UUID: Task<Void, Never>] = [:]
     private var sessions: [UUID: Session] = [:]
 
-    init() {
+    init(inputSendInterval: Duration = .milliseconds(16)) {
+        self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
         var continuation: AsyncStream<ClientTransportEvent>.Continuation!
         events = AsyncStream { continuation = $0 }
         eventContinuation = continuation
@@ -68,6 +72,8 @@ actor ClientTransport {
         parameters.includePeerToPeer = false
         let browser = NetworkBrowser(for: .bonjour(PartyNetConstants.serviceType, includeTxtRecord: true), using: parameters)
         self.browser = browser
+        let generation = UUID()
+        browserGeneration = generation
         let transport = self
         browserTask = Task { [browser, transport] in
             do {
@@ -79,11 +85,13 @@ actor ClientTransport {
             } catch {
                 transport.eventContinuation.yield(.failure("Discovery failed: \(error.localizedDescription)"))
             }
+            await transport.browserDidFinish(generation: generation)
         }
     }
 
     func connect(to host: DiscoveredHost, hello: Hello) async throws -> (UUID, Welcome) {
         guard host.isCompatible else { throw PartyClientError.incompatibleHost }
+        await disconnectAllSessions()
         let connection: ClientControlConnection
         switch host.target {
         case let .bonjour(endpoint):
@@ -111,6 +119,9 @@ actor ClientTransport {
             case let .welcome(value): welcome = value
             case let .rejected(reason): throw PartyClientError.rejected(reason)
             default: throw PartyClientError.unexpectedHandshake
+            }
+            guard welcome.protocolVersion == PartyNetConstants.protocolVersion else {
+                throw PartyClientError.incompatibleHost
             }
 
             guard let remote = connection.currentPath?.remoteEndpoint ?? connection.remoteEndpoint,
@@ -166,6 +177,7 @@ actor ClientTransport {
     func stop() {
         browserTask?.cancel()
         browserTask = nil
+        browserGeneration = nil
         browser = nil
         receiveTasks.values.forEach { $0.cancel() }
         receiveTasks.removeAll()
@@ -183,6 +195,20 @@ actor ClientTransport {
         eventContinuation.yield(.hosts(hosts))
     }
 
+    private func browserDidFinish(generation: UUID) {
+        guard browserGeneration == generation else { return }
+        browserTask = nil
+        browserGeneration = nil
+        browser = nil
+    }
+
+    private func disconnectAllSessions() async {
+        for (connectionID, session) in sessions {
+            try? await session.tcp.send(.leave)
+            removeSession(connectionID)
+        }
+    }
+
     private func receiveMessages(connectionID: UUID, connection: ClientControlConnection) async {
         do {
             for try await message in connection.messages {
@@ -198,7 +224,7 @@ actor ClientTransport {
 
     private func runInputLoop(connectionID: UUID) async {
         while !Task.isCancelled {
-            do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+            do { try await Task.sleep(for: inputSendInterval) } catch { return }
             guard let session = sessions[connectionID] else { return }
             let now = clock.now
             let refreshDue = session.lastSentAt.map { now - $0 >= PartyNetConstants.inputRefreshInterval } ?? true
@@ -235,6 +261,7 @@ actor ClientTransport {
                     latest.lastSentAt = now
                     latest.sequence = sentSequence &+ 1
                     sessions[connectionID] = latest
+                    eventContinuation.yield(.inputSent(connectionID: connectionID))
                 }
             } catch {
                 if udpWaitExpired {
@@ -245,6 +272,7 @@ actor ClientTransport {
                             latest.lastSentAt = now
                             latest.sequence = sentSequence &+ 1
                             sessions[connectionID] = latest
+                            eventContinuation.yield(.inputSent(connectionID: connectionID))
                         }
                     } catch {
                         endSession(connectionID, reason: error.localizedDescription)

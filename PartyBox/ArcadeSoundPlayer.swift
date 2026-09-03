@@ -1,22 +1,35 @@
 import AVFoundation
+import OSLog
 
 @MainActor
 final class ArcadeSoundPlayer {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private let logger = Logger(subsystem: "PartyBox", category: "ArcadeSoundPlayer")
+    private var notificationTokens: [NSObjectProtocol] = []
 
     init() {
         engine.attach(player)
         let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
         engine.connect(player, to: engine.mainMixerNode, format: format)
 #if os(tvOS)
-        try? AVAudioSession.sharedInstance().setCategory(.ambient)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.ambient)
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            logger.error("Audio session setup failed: \(error.localizedDescription)")
+        }
 #endif
-        try? engine.start()
+        observeAudioChanges()
+        _ = ensureEngineRunning()
+    }
+
+    deinit {
+        for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 
     func play(_ event: PongEvent) {
+        guard ensureEngineRunning() else { return }
         switch event {
         case .paddleHit: tone(frequency: 620, duration: 0.055, overtone: 1.8)
         case .lostLife: tone(frequency: 180, duration: 0.18, overtone: 0.5)
@@ -42,5 +55,38 @@ final class ArcadeSoundPlayer {
         }
         player.scheduleBuffer(buffer)
         if !player.isPlaying { player.play() }
+    }
+
+    @discardableResult
+    private func ensureEngineRunning() -> Bool {
+        if engine.isRunning { return true }
+        do {
+#if os(tvOS)
+            try AVAudioSession.sharedInstance().setActive(true)
+#endif
+            try engine.start()
+            return true
+        } catch {
+            logger.error("Audio engine startup failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func observeAudioChanges() {
+        let center = NotificationCenter.default
+        notificationTokens.append(center.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in _ = self?.ensureEngineRunning() }
+        })
+#if os(tvOS)
+        for name in [AVAudioSession.interruptionNotification, AVAudioSession.routeChangeNotification] {
+            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in _ = self?.ensureEngineRunning() }
+            })
+        }
+#endif
     }
 }

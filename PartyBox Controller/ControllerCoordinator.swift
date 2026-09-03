@@ -43,22 +43,23 @@ final class ControllerCoordinator {
             }
         }
         await client.startBrowsing()
-        discoveryHelpTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(4)) } catch { return }
-            guard let self, self.client.hosts.isEmpty else { return }
-            self.discoveryHelpVisible = true
-        }
+        armDiscoveryHelp(resetVisibility: true)
     }
 
     func stop() async {
         discoveryHelpTask?.cancel()
+        discoveryHelpTask = nil
         eventTask?.cancel()
+        eventTask = nil
         await client.stop()
+        discoveryHelpVisible = false
         isStarted = false
         setIdleTimer(connected: false)
     }
 
     func connect(to host: DiscoveredHost) async {
+        discoveryHelpTask?.cancel()
+        discoveryHelpTask = nil
         discoveryHelpVisible = false
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
@@ -73,6 +74,7 @@ final class ControllerCoordinator {
     func returnToPicker() async {
         await client.disconnect()
         await client.startBrowsing()
+        armDiscoveryHelp(resetVisibility: true)
         setIdleTimer(connected: false)
     }
 
@@ -103,6 +105,30 @@ final class ControllerCoordinator {
             case .won:
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
+        case let .hostsChanged(hosts):
+            if hosts.isEmpty {
+                if case .browsing = client.state { armDiscoveryHelp() }
+            } else {
+                discoveryHelpTask?.cancel()
+                discoveryHelpTask = nil
+                discoveryHelpVisible = false
+            }
+        }
+    }
+
+    private func armDiscoveryHelp(resetVisibility: Bool = false) {
+        if resetVisibility {
+            discoveryHelpTask?.cancel()
+            discoveryHelpTask = nil
+            discoveryHelpVisible = false
+        }
+        guard discoveryHelpTask == nil, !discoveryHelpVisible else { return }
+        discoveryHelpTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            guard let self else { return }
+            self.discoveryHelpTask = nil
+            guard self.client.hosts.isEmpty else { return }
+            if case .browsing = self.client.state { self.discoveryHelpVisible = true }
         }
     }
 }

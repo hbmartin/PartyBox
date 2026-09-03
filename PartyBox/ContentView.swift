@@ -86,7 +86,7 @@ private struct LobbyView: View {
                 .background(.black.opacity(0.34), in: Capsule())
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: 4), spacing: 18) {
-                ForEach(0..<8, id: \.self) { index in
+                ForEach(0..<PartyNetConstants.maximumControllers, id: \.self) { index in
                     let player = coordinator.host.players.first { $0.id.rawValue == UInt8(index) }
                     PlayerCard(number: index + 1, player: player, isActive: player.map {
                         coordinator.seatQueue.active.contains($0.id)
@@ -238,12 +238,7 @@ enum PartyTheme {
 
 extension Color {
     static func partyHex(_ value: String) -> Color {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return .white }
-        return Color(
-            red: Double((number >> 16) & 0xFF) / 255,
-            green: Double((number >> 8) & 0xFF) / 255,
-            blue: Double(number & 0xFF) / 255
-        )
+        guard let rgb = PartyColorParser.rgb(value) else { return .white }
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }

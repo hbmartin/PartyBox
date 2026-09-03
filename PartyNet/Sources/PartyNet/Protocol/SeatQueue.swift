@@ -9,6 +9,8 @@ public struct SeatAssignment: Codable, Equatable, Sendable {
 }
 
 public struct SeatQueue: Equatable, Sendable {
+    public static let activeSeatCount = PaddleEdge.allCases.count
+
     public private(set) var active: [PlayerID]
     public private(set) var waiting: [PlayerID]
 
@@ -16,8 +18,8 @@ public struct SeatQueue: Equatable, Sendable {
         let unique = joinOrder.reduce(into: [PlayerID]()) { result, id in
             if !result.contains(id) { result.append(id) }
         }
-        active = Array(unique.prefix(4))
-        waiting = Array(unique.dropFirst(4))
+        active = Array(unique.prefix(Self.activeSeatCount))
+        waiting = Array(unique.dropFirst(Self.activeSeatCount))
     }
 
     public var assignments: [SeatAssignment] {
@@ -26,7 +28,7 @@ public struct SeatQueue: Equatable, Sendable {
 
     public mutating func joined(_ playerID: PlayerID, allowActive: Bool = true) {
         guard !active.contains(playerID), !waiting.contains(playerID) else { return }
-        if allowActive, active.count < 4 {
+        if allowActive, active.count < Self.activeSeatCount {
             active.append(playerID)
         } else {
             waiting.append(playerID)
@@ -58,7 +60,7 @@ public struct SeatQueue: Equatable, Sendable {
     }
 
     private mutating func fillVacancies() {
-        while active.count < 4, !waiting.isEmpty {
+        while active.count < Self.activeSeatCount, !waiting.isEmpty {
             active.append(waiting.removeFirst())
         }
     }

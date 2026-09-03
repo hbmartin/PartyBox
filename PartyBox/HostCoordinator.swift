@@ -33,7 +33,9 @@ final class HostCoordinator {
 
     var connectedCount: Int { host.players.filter(\.isConnected).count }
     var canStart: Bool {
-        seatQueue.active.contains { id in host.players.contains { $0.id == id && $0.isConnected } }
+        !seatQueue.active.isEmpty && seatQueue.active.allSatisfy { id in
+            host.players.contains { $0.id == id && $0.isConnected }
+        }
     }
 
     func start() async {
@@ -52,7 +54,13 @@ final class HostCoordinator {
             _ = try await host.start(hostName: "\(name)'s PartyBox")
             statusMessage = "Ready for controllers"
         } catch {
-            statusMessage = "Could not start: \(error.localizedDescription)"
+            hostEventsTask?.cancel()
+            hostEventsTask = nil
+            await host.stop()
+            isStarted = false
+            if !Task.isCancelled {
+                statusMessage = "Could not start: \(error.localizedDescription)"
+            }
         }
     }
 

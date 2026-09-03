@@ -14,7 +14,13 @@ struct PartyBoxApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(coordinator: coordinator)
-                .task { await coordinator.start() }
+                .task {
+                    await coordinator.start()
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+                    }
+                    await coordinator.stop()
+                }
         }
 #if os(macOS)
         .defaultSize(width: 1280, height: 720)

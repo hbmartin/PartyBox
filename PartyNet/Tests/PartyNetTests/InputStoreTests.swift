@@ -20,6 +20,16 @@ struct InputStoreTests {
         #expect(store.snapshot()[player]?.axisX == 0.7)
     }
 
+    @Test func sequenceWrapTreatsZeroAsNewer() {
+        let store = InputStore()
+        let player = PlayerID(0)
+        #expect(store.update(frame(token: 1, sequence: .max - 1, x: 0.2), for: player))
+        #expect(store.update(frame(token: 1, sequence: .max, x: 0.4), for: player))
+        #expect(store.update(frame(token: 1, sequence: 0, x: 0.6), for: player))
+        #expect(!store.update(frame(token: 1, sequence: .max, x: 0.8), for: player))
+        #expect(store.snapshot()[player]?.axisX == 0.6)
+    }
+
     @Test func snapshotIsIndependentAndRemovalWorks() {
         let store = InputStore()
         let player = PlayerID(0)

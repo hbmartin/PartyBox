@@ -36,6 +36,9 @@ public final class PartyHost {
     private let reconnectGrace: Duration
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
+    private var rosterBroadcastTask: Task<Void, Never>?
+    private var rosterBroadcastGeneration = UUID()
+    private var pendingRosterBroadcasts: [[PlayerInfo]] = []
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
 
@@ -70,6 +73,11 @@ public final class PartyHost {
             self.port = port
             return port
         } catch {
+            transportTask?.cancel()
+            transportTask = nil
+            await transport.stop()
+            self.transport = nil
+            port = nil
             errorMessage = error.localizedDescription
             eventContinuation.yield(.failure(error.localizedDescription))
             throw error
@@ -95,6 +103,10 @@ public final class PartyHost {
     public func stop() async {
         transportTask?.cancel()
         transportTask = nil
+        rosterBroadcastTask?.cancel()
+        rosterBroadcastTask = nil
+        rosterBroadcastGeneration = UUID()
+        pendingRosterBroadcasts.removeAll()
         for session in sessions.values {
             session.graceTask?.cancel()
         }
@@ -114,7 +126,7 @@ public final class PartyHost {
         case let .message(connectionID, message):
             await handleMessage(connectionID: connectionID, message: message)
         case let .disconnected(connectionID):
-            handleDisconnect(connectionID: connectionID)
+            await handleDisconnect(connectionID: connectionID)
         case let .failure(message):
             errorMessage = message
             eventContinuation.yield(.failure(message))
@@ -185,7 +197,7 @@ public final class PartyHost {
         await transport?.respond(to: connectionID, with: .accept(welcome))
         refreshPlayers()
         eventContinuation.yield(event)
-        await broadcast(.roster(players))
+        enqueueRosterBroadcast()
     }
 
     private func transportUDPPort() async -> UInt16? {
@@ -203,7 +215,7 @@ public final class PartyHost {
             session.displayName = DisplayName.sanitized(name, fallback: "Player \(session.playerID.rawValue + 1)")
             sessions[controllerID] = session
             refreshPlayers()
-            await broadcast(.roster(players))
+            enqueueRosterBroadcast()
         case let .menu(action):
             eventContinuation.yield(.menu(playerID: session.playerID, action: action))
         case let .input(frame):
@@ -212,16 +224,16 @@ public final class PartyHost {
         case let .ping(value):
             await send(.pong(value), to: session.playerID)
         case .leave:
-            expire(controllerID: controllerID)
+            await expire(controllerID: controllerID)
         }
     }
 
-    private func handleDisconnect(connectionID: UUID) {
+    private func handleDisconnect(connectionID: UUID) async {
         guard let controllerID = connectionOwners.removeValue(forKey: connectionID),
               var session = sessions[controllerID], session.connectionID == connectionID else { return }
         session.connectionID = nil
         if let token = session.sessionToken {
-            Task { await transport?.invalidate(token: token) }
+            await transport?.invalidate(token: token)
         }
         session.sessionToken = nil
         session.graceTask?.cancel()
@@ -230,25 +242,45 @@ public final class PartyHost {
             do {
                 try await Task.sleep(for: grace)
                 guard !Task.isCancelled else { return }
-                self?.expire(controllerID: controllerID)
+                await self?.expire(controllerID: controllerID)
             } catch {}
         }
         sessions[controllerID] = session
         refreshPlayers()
         let player = info(for: session, connected: false)
         eventContinuation.yield(.playerDisconnected(player))
-        Task { await broadcast(.roster(players)) }
+        enqueueRosterBroadcast()
     }
 
-    private func expire(controllerID: ControllerID) {
+    private func expire(controllerID: ControllerID) async {
         guard let session = sessions.removeValue(forKey: controllerID) else { return }
-        if let connectionID = session.connectionID { connectionOwners.removeValue(forKey: connectionID) }
-        if let token = session.sessionToken { Task { await transport?.invalidate(token: token) } }
+        if let connectionID = session.connectionID {
+            connectionOwners.removeValue(forKey: connectionID)
+            await transport?.disconnect(connectionID: connectionID)
+        }
+        if let token = session.sessionToken { await transport?.invalidate(token: token) }
         session.graceTask?.cancel()
         inputs.remove(session.playerID)
         refreshPlayers()
         eventContinuation.yield(.playerExpired(session.playerID))
-        Task { await broadcast(.roster(players)) }
+        enqueueRosterBroadcast()
+    }
+
+    private func enqueueRosterBroadcast() {
+        pendingRosterBroadcasts.append(players)
+        guard rosterBroadcastTask == nil else { return }
+        let generation = rosterBroadcastGeneration
+        rosterBroadcastTask = Task { [weak self] in
+            await self?.drainRosterBroadcasts(generation: generation)
+        }
+    }
+
+    private func drainRosterBroadcasts(generation: UUID) async {
+        while !Task.isCancelled, rosterBroadcastGeneration == generation, !pendingRosterBroadcasts.isEmpty {
+            let roster = pendingRosterBroadcasts.removeFirst()
+            await broadcast(.roster(roster))
+        }
+        if rosterBroadcastGeneration == generation { rosterBroadcastTask = nil }
     }
 
     private func lowestAvailablePlayerID() -> PlayerID? {

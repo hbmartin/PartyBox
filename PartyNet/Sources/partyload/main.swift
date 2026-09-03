@@ -3,7 +3,7 @@ import Foundation
 import PartyNet
 
 private struct LoadConfiguration {
-    var count = 8
+    var count = PartyNetConstants.maximumControllers
     var frequency = 60
     var seconds = 30
     var address: String?
@@ -26,7 +26,11 @@ private struct LoadConfiguration {
             }
             index += 2
         }
-        guard (1...8).contains(count), (1...240).contains(frequency), seconds > 0 else {
+        let (_, runLengthOverflows) = seconds.multipliedReportingOverflow(by: frequency)
+        guard (1...PartyNetConstants.maximumControllers).contains(count),
+              (1...240).contains(frequency),
+              seconds > 0,
+              !runLengthOverflows else {
             throw LoadError.invalidNumbers
         }
         guard address != nil || hostName != nil else { throw LoadError.missingHost }
@@ -49,7 +53,8 @@ private enum LoadError: Error, LocalizedError {
         case .help: Self.usage
         case let .missingValue(option): "Missing value for \(option).\n\n\(Self.usage)"
         case let .unknownOption(option): "Unknown option \(option).\n\n\(Self.usage)"
-        case .invalidNumbers: "Count must be 1–8, Hz 1–240, and seconds greater than zero."
+        case .invalidNumbers:
+            "Count must be 1–\(PartyNetConstants.maximumControllers), Hz 1–240, and the run length must be representable."
         case .missingHost: "Provide either --address HOST:PORT or --host BONJOUR-NAME.\n\n\(Self.usage)"
         case let .discoveryTimeout(name): "Could not discover a compatible host named “\(name)” within 10 seconds."
         case .invalidAddress: "Address must be formatted as HOST:PORT."
@@ -59,8 +64,8 @@ private enum LoadError: Error, LocalizedError {
     }
 
     static let usage = """
-    partyload --address HOST:PORT [--count 8] [--hz 60] [--seconds 30]
-    partyload --host BONJOUR-NAME [--count 8] [--hz 60] [--seconds 30]
+    partyload --address HOST:PORT [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30]
+    partyload --host BONJOUR-NAME [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30]
     """
 }
 
@@ -83,8 +88,13 @@ private struct PartyLoad {
 
     @MainActor
     private static func run(_ configuration: LoadConfiguration) async throws {
+        let interval = Duration.nanoseconds(Int64(1_000_000_000 / configuration.frequency))
         let clients = (1...configuration.count).map {
-            PartyClient(controllerID: ControllerID(), displayName: "Load \($0)")
+            PartyClient(
+                controllerID: ControllerID(),
+                displayName: "Load \($0)",
+                inputSendInterval: interval
+            )
         }
 
         if let address = configuration.address {
@@ -117,9 +127,11 @@ private struct PartyLoad {
             print("Connected \(clients.count) controllers to \(discovered.name)")
         }
 
-        let totalTicks = configuration.seconds * configuration.frequency
-        let interval = Duration.nanoseconds(Int64(1_000_000_000 / configuration.frequency))
+        let (totalTicks, overflow) = configuration.seconds.multipliedReportingOverflow(by: configuration.frequency)
+        guard !overflow else { throw LoadError.invalidNumbers }
         var rttSamples: [Double] = []
+        var lastRTTSampleCounts = clients.map(\.rttSampleCount)
+        let startingInputCounts = clients.map(\.inputFramesSent)
         let clock = ContinuousClock()
         let started = clock.now
         for tick in 0..<totalTicks {
@@ -127,19 +139,28 @@ private struct PartyLoad {
             for (index, client) in clients.enumerated() {
                 let phase = (Double(index) / Double(max(1, clients.count))) * 2 * Double.pi
                 client.setInput(axisX: Float(sin((elapsed * 2.1) + phase)))
-                if let rtt = client.rttMilliseconds { rttSamples.append(rtt) }
+                if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
+                    rttSamples.append(rtt)
+                    lastRTTSampleCounts[index] = client.rttSampleCount
+                }
                 try requireConnected(client, index: index + 1, duringRun: true)
             }
             let target = started.advanced(by: interval * (tick + 1))
             try await clock.sleep(until: target)
         }
 
+        let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
+            client.inputFramesSent &- startingCount
+        }
         for client in clients { await client.disconnect() }
         let sorted = rttSamples.sorted()
         let p50 = percentile(0.50, values: sorted)
         let p95 = percentile(0.95, values: sorted)
         let maximum = sorted.last ?? 0
-        print("Completed \(totalTicks) input updates per controller at \(configuration.frequency) Hz for \(configuration.seconds)s")
+        let minimumSends = inputSendCounts.min() ?? 0
+        let maximumSends = inputSendCounts.max() ?? 0
+        print("Issued \(totalTicks) requested input updates per controller at \(configuration.frequency) Hz for \(configuration.seconds)s")
+        print("Observed transport sends per controller: \(minimumSends)–\(maximumSends)")
         print(String(format: "Ping RTT: p50 %.2f ms  p95 %.2f ms  max %.2f ms  (%d samples)", p50, p95, maximum, sorted.count))
         if sorted.isEmpty {
             print("Warning: run was too short to collect a ping sample (pings begin after two seconds).")

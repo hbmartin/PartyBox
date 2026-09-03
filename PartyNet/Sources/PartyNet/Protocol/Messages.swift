@@ -49,7 +49,7 @@ public enum RejectReason: Codable, Equatable, Sendable {
 
     public var message: String {
         switch self {
-        case .full: "This PartyBox already has eight controllers."
+        case .full: "This PartyBox already has \(PartyNetConstants.maximumControllers) controllers."
         case let .versionMismatch(hostVersion): "Controller version is incompatible with host protocol \(hostVersion)."
         case .malformedHello: "The host could not understand this controller."
         case .replaced: "This controller was replaced by another connection using the same identity."

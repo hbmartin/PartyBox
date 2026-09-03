@@ -220,12 +220,11 @@ final class PongScene: SKScene {
 
 private extension SKColor {
     static func partyHex(_ value: String) -> SKColor {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return .white }
+        guard let rgb = PartyColorParser.rgb(value) else { return .white }
         return SKColor(
-            red: CGFloat((number >> 16) & 0xFF) / 255,
-            green: CGFloat((number >> 8) & 0xFF) / 255,
-            blue: CGFloat(number & 0xFF) / 255,
+            red: CGFloat(rgb.red),
+            green: CGFloat(rgb.green),
+            blue: CGFloat(rgb.blue),
             alpha: 1
         )
     }
