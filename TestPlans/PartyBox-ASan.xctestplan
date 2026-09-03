@@ -1,0 +1,18 @@
+{
+  "configurations" : [
+    { "id" : "12B135C7-650A-4DC6-BFFD-9223CBA7C102", "name" : "Address Sanitizer", "options" : { "addressSanitizer" : { "enabled" : true } } }
+  ],
+  "defaultOptions" : { "codeCoverage" : false, "testTimeoutsEnabled" : true },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9B630486A7900592BFF", "name" : "PartyBoxTests" }
+    },
+    {
+      "parallelizable" : false,
+      "selectedTests" : ["PartyBoxUITests/testFourPlayerLobbyMenuPongNavigation"],
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9C030486A7900592BFF", "name" : "PartyBoxUITests" }
+    }
+  ],
+  "version" : 1
+}

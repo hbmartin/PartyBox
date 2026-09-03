@@ -25,14 +25,20 @@ public struct DiscoveredHost: Identifiable, Equatable, Sendable {
         target = .bonjour(endpoint)
     }
 
-    public init(host: String, port: UInt16, name: String? = nil) throws {
+    public init(
+        host: String,
+        port: UInt16,
+        name: String? = nil,
+        protocolVersion: UInt16? = nil,
+        instanceID: UUID? = nil
+    ) throws {
         guard port != 0, let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw PartyClientError.invalidAddress
         }
         id = "\(host):\(port)"
         self.name = name ?? id
-        protocolVersion = nil
-        instanceID = nil
+        self.protocolVersion = protocolVersion
+        self.instanceID = instanceID
         let nwHost: NWEndpoint.Host
         if let ipv4 = IPv4Address(host) {
             nwHost = .ipv4(ipv4)

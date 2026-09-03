@@ -1,0 +1,21 @@
+{
+  "configurations" : [
+    {
+      "id" : "22B135C7-650A-4DC6-BFFD-9223CBA7C104",
+      "name" : "Soak",
+      "options" : {
+        "testRepetitionMode" : "untilFailure",
+        "maximumTestRepetitions" : 25,
+        "relaunchTestsForEachRepetition" : true
+      }
+    }
+  ],
+  "defaultOptions" : { "codeCoverage" : false, "testTimeoutsEnabled" : true },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9E330486AB900592BFF", "name" : "PartyBox ControllerTests" }
+    }
+  ],
+  "version" : 1
+}

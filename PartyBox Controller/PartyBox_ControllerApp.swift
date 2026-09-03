@@ -10,8 +10,13 @@ import SwiftUI
 
 @main
 struct PartyBox_ControllerApp: App {
-    @State private var coordinator = ControllerCoordinator()
+    @State private var coordinator: ControllerCoordinator
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        preparePartyNetLiveClock()
+        _coordinator = State(initialValue: ControllerCoordinator())
+    }
 
     var body: some Scene {
         WindowGroup {

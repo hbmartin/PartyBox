@@ -40,6 +40,7 @@ struct MessagesTests {
             .layout(.spectator(SpectatorLayout(queuePosition: 2))),
             .layout(.gameOver(title: "Winner!", subtitle: "Great rally")),
             .feedback(.won),
+            .inputAck(sequence: 54),
             .pong(55),
         ]
         try assertRoundTrips(messages)
@@ -52,6 +53,17 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("", fallback: "\u{202E}Player") == "Player")
         #expect(DisplayName.sanitized("   ", fallback: "Player 1") == "Player 1")
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
+    }
+
+    @Test func arcadePaletteParsesSharedHexColors() throws {
+        let cyan = try #require(ArcadePalette.rgb(ArcadePalette.cyan))
+        #expect(cyan.red == Double(0x32) / 255)
+        #expect(cyan.green == Double(0xE6) / 255)
+        #expect(cyan.blue == 1)
+        #expect(PlayerPalette.colors[0] == ArcadePalette.cyan)
+        #expect(PlayerPalette.colors[1] == ArcadePalette.magenta)
+        #expect(PlayerPalette.colors[3] == ArcadePalette.lime)
+        #expect(ArcadePalette.rgb("not-a-color") == nil)
     }
 
     private func assertRoundTrips<T: Codable & Equatable>(_ values: [T]) throws {

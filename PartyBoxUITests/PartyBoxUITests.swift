@@ -8,34 +8,73 @@
 import XCTest
 
 final class PartyBoxUITests: XCTestCase {
-
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
-        app.launch()
-
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-    }
-
-    @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+    func testFixturePhasesAndScreenshots() throws {
+        for (scenario, identifier) in [
+            ("empty-lobby", "host.phase.lobby"),
+            ("four-player-lobby", "host.phase.lobby"),
+            ("menu", "host.phase.menu"),
+            ("four-way-match", "host.phase.playing"),
+            ("game-over", "host.phase.gameOver"),
+        ] {
+            let app = launch(scenario: scenario)
+            XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
+            let attachment = XCTAttachment(screenshot: app.screenshot())
+            attachment.name = "Host-\(scenario)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            app.terminate()
         }
+    }
+
+    @MainActor
+    func testFourPlayerLobbyMenuPongNavigation() throws {
+        let app = launch(additional: ["--bot-count", "4", "--host-name", "Automation PartyBox"])
+        XCTAssertTrue(app.staticTexts["PRESS SELECT TO CHOOSE A GAME"].waitForExistence(timeout: 10))
+        activateSelect(in: app)
+        XCTAssertTrue(element("host.phase.menu", in: app).waitForExistence(timeout: 5))
+        activateSelect(in: app)
+        XCTAssertTrue(element("host.arena", in: app).waitForExistence(timeout: 5))
+
+        activateExit(in: app)
+        XCTAssertTrue(element("host.arena", in: app).exists, "Menu/Exit must be ignored during a match")
+        app.terminate()
+    }
+
+    @MainActor
+    private func launch(scenario: String? = nil, additional: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--disable-animations", "--disable-effects", "--seed", "42"]
+        if let scenario { app.launchArguments += ["--scenario", scenario] }
+        app.launchArguments += additional
+        app.launch()
+        return app
+    }
+
+    @MainActor
+    private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    private func activateSelect(in app: XCUIApplication) {
+#if os(tvOS)
+        XCUIRemote.shared.press(.select)
+#else
+        app.typeKey(.return, modifierFlags: [])
+#endif
+    }
+
+    @MainActor
+    private func activateExit(in app: XCUIApplication) {
+#if os(tvOS)
+        XCUIRemote.shared.press(.menu)
+#else
+        app.typeKey(.escape, modifierFlags: [])
+#endif
     }
 }

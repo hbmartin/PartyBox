@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import Dependencies
 
 public enum HostEvent: Sendable {
     case playerJoined(PlayerInfo)
@@ -119,6 +120,13 @@ public final class PartyHost {
         transport = nil
     }
 
+#if DEBUG
+    public func configureFixture(hostName: String, players: [PlayerInfo]) {
+        self.hostName = hostName
+        self.players = players
+    }
+#endif
+
     private func handle(_ event: HostTransportEvent) async {
         switch event {
         case let .hello(connectionID, hello):
@@ -142,10 +150,18 @@ public final class PartyHost {
             return
         }
 
+        guard let udpPort = await transportUDPPort() else {
+            await transport?.respond(to: connectionID, with: .reject(.malformedHello))
+            return
+        }
+
         let fallbackName: String
         let session: PlayerSession
         let event: HostEvent
+        let isNewSession: Bool
+        let token: UInt64
         if var existing = sessions[hello.controllerID] {
+            isNewSession = false
             fallbackName = "Player \(existing.playerID.rawValue + 1)"
             if let oldToken = existing.sessionToken { await transport?.invalidate(token: oldToken) }
             if let oldConnection = existing.connectionID {
@@ -156,25 +172,27 @@ public final class PartyHost {
             existing.graceTask = nil
             existing.displayName = DisplayName.sanitized(hello.displayName, fallback: fallbackName)
             existing.connectionID = connectionID
-            let token = UInt64.random(in: UInt64.min...UInt64.max)
+            token = UInt64.random(in: UInt64.min...UInt64.max)
             existing.sessionToken = token
             sessions[hello.controllerID] = existing
             connectionOwners[connectionID] = hello.controllerID
             session = existing
             event = .playerReconnected(info(for: existing, connected: true))
         } else {
+            isNewSession = true
             guard sessions.count < PartyNetConstants.maximumControllers,
                   let playerID = lowestAvailablePlayerID() else {
                 await transport?.respond(to: connectionID, with: .reject(.full))
                 return
             }
             fallbackName = "Player \(playerID.rawValue + 1)"
+            token = UInt64.random(in: UInt64.min...UInt64.max)
             let created = PlayerSession(
                 controllerID: hello.controllerID,
                 playerID: playerID,
                 displayName: DisplayName.sanitized(hello.displayName, fallback: fallbackName),
                 connectionID: connectionID,
-                sessionToken: UInt64.random(in: UInt64.min...UInt64.max)
+                sessionToken: token
             )
             sessions[hello.controllerID] = created
             connectionOwners[connectionID] = hello.controllerID
@@ -183,10 +201,6 @@ public final class PartyHost {
         }
 
         let player = info(for: session, connected: true)
-        guard let udpPort = await transportUDPPort(), let token = session.sessionToken else {
-            await transport?.respond(to: connectionID, with: .reject(.malformedHello))
-            return
-        }
         let welcome = Welcome(
             player: player,
             udpPort: udpPort,
@@ -194,7 +208,15 @@ public final class PartyHost {
             hostName: hostName,
             hostInstanceID: hostInstanceID
         )
-        await transport?.respond(to: connectionID, with: .accept(welcome))
+        let accepted = await transport?.respond(to: connectionID, with: .accept(welcome)) ?? false
+        guard accepted else {
+            await rollbackFailedHello(
+                controllerID: hello.controllerID,
+                connectionID: connectionID,
+                isNewSession: isNewSession
+            )
+            return
+        }
         refreshPlayers()
         eventContinuation.yield(event)
         enqueueRosterBroadcast()
@@ -202,6 +224,24 @@ public final class PartyHost {
 
     private func transportUDPPort() async -> UInt16? {
         await transport?.udpPort
+    }
+
+    private func rollbackFailedHello(
+        controllerID: ControllerID,
+        connectionID: UUID,
+        isNewSession: Bool
+    ) async {
+        guard let session = sessions[controllerID], session.connectionID == connectionID else { return }
+        if isNewSession {
+            sessions.removeValue(forKey: controllerID)
+            connectionOwners.removeValue(forKey: connectionID)
+            if let token = session.sessionToken { await transport?.invalidate(token: token) }
+            session.graceTask?.cancel()
+            inputs.remove(session.playerID)
+            await transport?.disconnect(connectionID: connectionID)
+        } else {
+            await handleDisconnect(connectionID: connectionID)
+        }
     }
 
     private func handleMessage(connectionID: UUID, message: ClientMessage) async {
@@ -238,9 +278,10 @@ public final class PartyHost {
         session.sessionToken = nil
         session.graceTask?.cancel()
         let grace = reconnectGrace
+        @Dependency(\.continuousClock) var clock
         session.graceTask = Task { [weak self, grace] in
             do {
-                try await Task.sleep(for: grace)
+                try await clock.sleep(for: grace)
                 guard !Task.isCancelled else { return }
                 await self?.expire(controllerID: controllerID)
             } catch {}

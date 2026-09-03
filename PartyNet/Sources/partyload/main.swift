@@ -91,7 +91,7 @@ private struct PartyLoad {
         let interval = Duration.nanoseconds(Int64(1_000_000_000 / configuration.frequency))
         let clients = (1...configuration.count).map {
             PartyClient(
-                controllerID: ControllerID(),
+                controllerID: loadControllerID(index: $0),
                 displayName: "Load \($0)",
                 inputSendInterval: interval
             )
@@ -197,6 +197,12 @@ private struct PartyLoad {
             throw LoadError.invalidAddress
         }
         return (String(address[..<colon]), port)
+    }
+
+    private static func loadControllerID(index: Int) -> ControllerID {
+        let value = String(format: "50415254-5942-4F58-8000-%012X", index)
+        // `count` is validated above, so the fixed-width UUID is guaranteed to parse.
+        return ControllerID(rawValue: UUID(uuidString: value)!)
     }
 
     private static func percentile(_ fraction: Double, values: [Double]) -> Double {

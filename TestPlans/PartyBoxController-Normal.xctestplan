@@ -1,0 +1,34 @@
+{
+  "configurations" : [
+    { "id" : "22B135C7-650A-4DC6-BFFD-9223CBA7C101", "name" : "Normal", "options" : {} }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : true,
+    "environmentVariableEntries" : [
+      {
+        "key" : "PARTYFAULT_HOST",
+        "value" : "$(PARTYFAULT_HOST)"
+      }
+    ],
+    "mainThreadCheckerEnabled" : true,
+    "testTimeoutsEnabled" : true,
+    "defaultTestExecutionTimeAllowance" : 120,
+    "maximumTestExecutionTimeAllowance" : 300,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:PartyBox.xcodeproj",
+      "identifier" : "24B1C9D730486AB100592BFF",
+      "name" : "PartyBox Controller"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9E330486AB900592BFF", "name" : "PartyBox ControllerTests" }
+    },
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9ED30486ABA00592BFF", "name" : "PartyBox ControllerUITests" }
+    }
+  ],
+  "version" : 1
+}

@@ -12,20 +12,32 @@ struct ContentView: View {
                 case .browsing:
                     HostPickerView(coordinator: coordinator)
                 case let .connecting(name):
-                    ConnectionView(title: "CONNECTING", detail: name, spinning: true)
+                    ConnectionView(
+                        title: "CONNECTING", detail: name, spinning: true,
+                        accessibilityIdentifier: "controller.state.connecting"
+                    )
                 case let .connected(name):
                     ConnectedControllerView(coordinator: coordinator, hostName: name)
                 case let .reconnecting(detail):
-                    ConnectionView(title: "RECONNECTING", detail: detail, spinning: true)
+                    ConnectionView(
+                        title: "RECONNECTING", detail: detail, spinning: true,
+                        accessibilityIdentifier: "controller.state.reconnecting"
+                    )
                 case let .rejected(message):
-                    ConnectionErrorView(title: "CAN'T JOIN", detail: message, coordinator: coordinator)
+                    ConnectionErrorView(
+                        title: "CAN'T JOIN", detail: message, coordinator: coordinator,
+                        accessibilityIdentifier: "controller.state.rejected"
+                    )
                 case let .disconnected(message):
-                    ConnectionErrorView(title: "CONNECTION LOST", detail: friendly(message), coordinator: coordinator)
+                    ConnectionErrorView(
+                        title: "CONNECTION LOST", detail: friendly(message), coordinator: coordinator,
+                        accessibilityIdentifier: "controller.state.disconnected"
+                    )
                 }
             }
             .transition(.opacity.combined(with: .scale(scale: 0.98)))
         }
-        .animation(.easeOut(duration: 0.24), value: coordinator.client.state)
+        .animation(coordinator.configuration.disableAnimations ? nil : .easeOut(duration: 0.24), value: coordinator.client.state)
         .preferredColorScheme(.dark)
     }
 
@@ -51,6 +63,7 @@ private struct HostPickerView: View {
                     Text("YOUR NAME").font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
                     HStack {
                         TextField("Player", text: $coordinator.displayName)
+                            .accessibilityIdentifier("controller.name.field")
                             .textInputAutocapitalization(.words)
                             .autocorrectionDisabled()
                             .focused($editingName)
@@ -59,6 +72,7 @@ private struct HostPickerView: View {
                             editingName = false
                             Task { await coordinator.rename() }
                         }
+                        .accessibilityIdentifier("controller.name.save")
                         .font(.caption.monospaced().weight(.black))
                     }
                     .padding(16)
@@ -67,7 +81,9 @@ private struct HostPickerView: View {
 
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("CHOOSE A HOST").font(.headline.monospaced().weight(.black))
+                        Text("CHOOSE A HOST")
+                            .font(.headline.monospaced().weight(.black))
+                            .accessibilityIdentifier("controller.hostPicker")
                         Spacer()
                         ProgressView().tint(ControllerTheme.cyan)
                     }
@@ -106,27 +122,49 @@ private struct HostPickerView: View {
                             }
                             .buttonStyle(.plain)
                             .disabled(!host.isCompatible)
+                            .accessibilityIdentifier("controller.host.\(host.id)")
                         }
                     }
                 }
 
-                if coordinator.discoveryHelpVisible && coordinator.client.hosts.isEmpty {
+                if (coordinator.discoveryHelpVisible || coordinator.client.discoveryErrorMessage != nil),
+                   coordinator.client.hosts.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("NO HOSTS FOUND").font(.headline.monospaced().weight(.black)).foregroundStyle(.orange)
-                        Text("Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings.")
+                        Text(coordinator.client.discoveryErrorMessage == nil ? "NO HOSTS FOUND" : "DISCOVERY ERROR")
+                            .font(.headline.monospaced().weight(.black))
+                            .foregroundStyle(.orange)
+                        Text(discoveryHelpMessage)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.7))
-                        Button("OPEN SETTINGS") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        HStack {
+                            Button("TRY AGAIN") {
+                                Task { await coordinator.retryDiscovery() }
+                            }
+                            .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                            Button("OPEN SETTINGS") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            }
+                            .buttonStyle(ArcadeButtonStyle(color: .orange))
                         }
-                        .buttonStyle(ArcadeButtonStyle(color: .orange))
                     }
                     .padding(18)
                     .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
+                    .accessibilityIdentifier("controller.discovery.help")
                 }
             }
             .padding(24)
         }
+    }
+
+    private var discoveryHelpMessage: String {
+        guard let message = coordinator.client.discoveryErrorMessage else {
+            return "Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings."
+        }
+        let lower = message.lowercased()
+        if lower.contains("denied") || lower.contains("policy") {
+            return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
+        }
+        return message
     }
 }
 
@@ -138,7 +176,10 @@ private struct ConnectedControllerView: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(hostName).font(.caption.monospaced().weight(.bold)).foregroundStyle(.white.opacity(0.55))
+                    Text(hostName)
+                        .font(.caption.monospaced().weight(.bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .accessibilityIdentifier("controller.state.connected")
                     Text(playerLabel).font(.headline.weight(.black))
                 }
                 Spacer()
@@ -189,7 +230,9 @@ private struct LobbyControllerView: View {
                     .font(.system(size: 64))
                     .foregroundStyle(ControllerTheme.lime)
                     .shadow(color: ControllerTheme.lime.opacity(0.6), radius: 18)
-                Text("YOU'RE IN").font(.system(size: 38, weight: .black, design: .rounded))
+                Text("YOU'RE IN")
+                    .font(.system(size: 38, weight: .black, design: .rounded))
+                    .accessibilityIdentifier("controller.layout.lobby")
                 Text("Anyone connected can move the party forward.")
                     .foregroundStyle(.white.opacity(0.64))
                     .multilineTextAlignment(.center)
@@ -198,6 +241,7 @@ private struct LobbyControllerView: View {
 
                 Button("OPEN GAME MENU") { Task { await coordinator.client.sendMenu(.select) } }
                     .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
+                    .accessibilityIdentifier("controller.lobby.openMenu")
             }
             .padding(24)
         }
@@ -212,18 +256,25 @@ private struct MenuControllerView: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text("GAME SELECT").font(.caption.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
+            Text("GAME SELECT")
+                .font(.caption.monospaced().weight(.black))
+                .foregroundStyle(ControllerTheme.cyan)
+                .accessibilityIdentifier("controller.layout.menu")
             Text(items.indices.contains(selected) ? items[selected] : "PARTYBOX")
                 .font(.system(size: 34, weight: .black, design: .rounded))
                 .multilineTextAlignment(.center)
             HStack(spacing: 16) {
                 MenuPadButton(symbol: "chevron.up", action: .up, coordinator: coordinator)
+                    .accessibilityIdentifier("controller.menu.up")
                 MenuPadButton(symbol: "chevron.down", action: .down, coordinator: coordinator)
+                    .accessibilityIdentifier("controller.menu.down")
             }
             Button("SELECT") { Task { await coordinator.client.sendMenu(.select) } }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
+                .accessibilityIdentifier("controller.menu.select")
             Button("BACK") { Task { await coordinator.client.sendMenu(.back) } }
                 .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
+                .accessibilityIdentifier("controller.menu.back")
             Spacer()
         }
         .padding(24)
@@ -251,7 +302,10 @@ private struct PaddleControllerView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            Text(layout.label).font(.title2.weight(.black)).foregroundStyle(Color.controllerHex(layout.colorHex))
+            Text(layout.label)
+                .font(.title2.weight(.black))
+                .foregroundStyle(Color.controllerHex(layout.colorHex))
+                .accessibilityIdentifier("controller.layout.paddle.\(layout.edge.rawValue)")
             Text(edgeInstruction)
                 .font(.caption.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.56))
@@ -272,6 +326,7 @@ private struct PaddleControllerView: View {
                     localAxis = axis
                     coordinator.client.setInput(axisX: axis)
                 })
+                .accessibilityIdentifier("controller.paddle.track")
             }
             .frame(height: 170)
             .padding(.horizontal, 4)
@@ -279,6 +334,10 @@ private struct PaddleControllerView: View {
             Text("DRAG ANYWHERE ON THE TRACK")
                 .font(.caption.monospaced().weight(.black))
                 .foregroundStyle(.white.opacity(0.45))
+            Text(String(format: "%.3f", localAxis))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.45))
+                .accessibilityIdentifier("controller.paddle.value")
             Spacer()
         }
         .padding(.horizontal, 16)
@@ -300,8 +359,11 @@ private struct SpectatorControllerView: View {
         VStack(spacing: 24) {
             Spacer()
             Image(systemName: "person.3.sequence.fill").font(.system(size: 62)).foregroundStyle(ControllerTheme.cyan)
-            Text("SPECTATING").font(.system(size: 36, weight: .black, design: .rounded))
+            Text("SPECTATING")
+                .font(.system(size: 36, weight: .black, design: .rounded))
+                .accessibilityIdentifier("controller.layout.spectator")
             Text("#\(layout.queuePosition) IN QUEUE").font(.title2.monospaced().weight(.black)).foregroundStyle(ControllerTheme.lime)
+                .accessibilityIdentifier("controller.spectator.position")
             Text(layout.message).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
             Spacer()
         }
@@ -317,12 +379,17 @@ private struct GameOverControllerView: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text(title).font(.system(size: 36, weight: .black, design: .rounded)).multilineTextAlignment(.center)
+            Text(title)
+                .font(.system(size: 36, weight: .black, design: .rounded))
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("controller.layout.gameOver")
             Text(subtitle).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
             Button("NEXT MATCH") { Task { await coordinator.client.sendMenu(.select) } }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.lime))
+                .accessibilityIdentifier("controller.gameOver.next")
             Button("GAME MENU") { Task { await coordinator.client.sendMenu(.back) } }
                 .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
+                .accessibilityIdentifier("controller.gameOver.menu")
             Spacer()
         }
         .padding(24)
@@ -346,6 +413,7 @@ private struct RosterView: View {
                 }
                 .padding(12)
                 .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityIdentifier("controller.roster.player.\(player.number)")
             }
         }
     }
@@ -355,11 +423,14 @@ private struct ConnectionView: View {
     let title: String
     let detail: String
     let spinning: Bool
+    let accessibilityIdentifier: String
 
     var body: some View {
         VStack(spacing: 22) {
             if spinning { ProgressView().controlSize(.large).tint(ControllerTheme.cyan) }
-            Text(title).font(.system(size: 34, weight: .black, design: .rounded))
+            Text(title)
+                .font(.system(size: 34, weight: .black, design: .rounded))
+                .accessibilityIdentifier(accessibilityIdentifier)
             Text(detail).foregroundStyle(.white.opacity(0.65)).multilineTextAlignment(.center)
         }
         .padding(30)
@@ -370,14 +441,19 @@ private struct ConnectionErrorView: View {
     let title: String
     let detail: String
     @Bindable var coordinator: ControllerCoordinator
+    let accessibilityIdentifier: String
 
     var body: some View {
         VStack(spacing: 22) {
             Image(systemName: "wifi.exclamationmark").font(.system(size: 58)).foregroundStyle(.orange)
-            Text(title).font(.system(size: 34, weight: .black, design: .rounded))
+            Text(title)
+                .font(.system(size: 34, weight: .black, design: .rounded))
+                .accessibilityIdentifier(accessibilityIdentifier)
             Text(detail).foregroundStyle(.white.opacity(0.68)).multilineTextAlignment(.center)
+                .accessibilityIdentifier("controller.error.message")
             Button("BACK TO HOST PICKER") { Task { await coordinator.returnToPicker() } }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                .accessibilityIdentifier("controller.error.back")
         }
         .padding(30)
     }
@@ -420,19 +496,14 @@ private struct ArcadeButtonStyle: ButtonStyle {
 }
 
 private enum ControllerTheme {
-    static let cyan = Color(red: 0.20, green: 0.90, blue: 1)
-    static let magenta = Color(red: 1, green: 0.31, blue: 0.85)
-    static let lime = Color(red: 0.43, green: 1, blue: 0.47)
+    static let cyan = Color.controllerHex(ArcadePalette.cyan)
+    static let magenta = Color.controllerHex(ArcadePalette.magenta)
+    static let lime = Color.controllerHex(ArcadePalette.lime)
 }
 
 private extension Color {
     static func controllerHex(_ value: String) -> Color {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return .white }
-        return Color(
-            red: Double((number >> 16) & 0xFF) / 255,
-            green: Double((number >> 8) & 0xFF) / 255,
-            blue: Double(number & 0xFF) / 255
-        )
+        guard let rgb = ArcadePalette.rgb(value) else { return .white }
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }
