@@ -1,17 +1,18 @@
 import Foundation
 import Network
+import Dependencies
 
-typealias HostControlProtocol = Coder<HostMessage, ClientMessage, NetworkJSONCoder>
-typealias ClientControlProtocol = Coder<ClientMessage, HostMessage, NetworkJSONCoder>
-typealias HostControlConnection = NetworkConnection<HostControlProtocol>
-typealias ClientControlConnection = NetworkConnection<ClientControlProtocol>
+package typealias HostControlProtocol = Coder<HostMessage, ClientMessage, NetworkJSONCoder>
+package typealias ClientControlProtocol = Coder<ClientMessage, HostMessage, NetworkJSONCoder>
+package typealias HostControlConnection = NetworkConnection<HostControlProtocol>
+package typealias ClientControlConnection = NetworkConnection<ClientControlProtocol>
 
-enum PartyNetTransportError: Error, LocalizedError, Sendable {
+package enum PartyNetTransportError: Error, LocalizedError, Sendable {
     case timedOut(String)
     case invalidRemoteEndpoint
     case stopped
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case let .timedOut(operation): "Timed out while \(operation)."
         case .invalidRemoteEndpoint: "The host did not provide a usable network address."
@@ -20,7 +21,7 @@ enum PartyNetTransportError: Error, LocalizedError, Sendable {
     }
 }
 
-func hostControlStack() -> HostControlProtocol {
+package func hostControlStack() -> HostControlProtocol {
     Coder(sending: HostMessage.self, receiving: ClientMessage.self, using: .json) {
         TCP()
             .noDelay(true)
@@ -29,7 +30,7 @@ func hostControlStack() -> HostControlProtocol {
     }
 }
 
-func clientControlStack() -> ClientControlProtocol {
+package func clientControlStack() -> ClientControlProtocol {
     Coder(sending: ClientMessage.self, receiving: HostMessage.self, using: .json) {
         TCP()
             .noDelay(true)
@@ -43,10 +44,12 @@ func withTimeout<T: Sendable>(
     operationName: String,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
+    @Dependency(\.continuousClock) var dependencyClock
+    let clock = AnyClock(dependencyClock)
+    return try await withThrowingTaskGroup(of: T.self) { group in
         group.addTask { try await operation() }
         group.addTask {
-            try await Task.sleep(for: duration)
+            try await clock.sleep(for: duration)
             throw PartyNetTransportError.timedOut(operationName)
         }
         guard let result = try await group.next() else {

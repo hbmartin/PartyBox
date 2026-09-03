@@ -19,6 +19,7 @@ struct GameResult: Equatable {
 @Observable
 final class HostCoordinator {
     let host = PartyHost()
+    let configuration: HostLaunchConfiguration
     private(set) var phase: HostPhase = .lobby
     private(set) var seatQueue = SeatQueue()
     private(set) var pongScene: PongScene?
@@ -26,7 +27,8 @@ final class HostCoordinator {
     private(set) var menuSelection = 0
 
     let menuItems = ["FOUR-WAY PONG"]
-    private let sounds = ArcadeSoundPlayer()
+    private let sounds: ArcadeSoundPlayer?
+    private var bots: [PartyClient] = []
     private var hostEventsTask: Task<Void, Never>?
     private var isStarted = false
     private var currentMatchPlayerCount = 0
@@ -39,9 +41,24 @@ final class HostCoordinator {
         }
     }
 
+    init(configuration suppliedConfiguration: HostLaunchConfiguration? = nil) {
+        let configuration = suppliedConfiguration ?? .current
+        self.configuration = configuration
+        sounds = configuration.disableEffects ? nil : ArcadeSoundPlayer()
+#if DEBUG
+        if let scenario = configuration.scenario {
+            applyFixture(scenario: scenario)
+        }
+#endif
+    }
+
     func start() async {
         guard !isStarted else { return }
         isStarted = true
+        if configuration.scenario != nil {
+            statusMessage = "UI test fixture"
+            return
+        }
         let stream = host.events
         hostEventsTask = Task { [weak self] in
             for await event in stream {
@@ -52,8 +69,13 @@ final class HostCoordinator {
         do {
             let name = ProcessInfo.processInfo.hostName
                 .replacingOccurrences(of: ".local", with: "")
-            _ = try await host.start(hostName: "\(name)'s PartyBox")
+            _ = try await host.start(hostName: configuration.hostName ?? "\(name)'s PartyBox")
             statusMessage = "Ready for controllers"
+            for index in 0..<configuration.botCount {
+                let bot = PartyClient(displayName: "Bot \(index + 1)")
+                bots.append(bot)
+                if let port = host.port { await bot.connect(host: "127.0.0.1", port: port) }
+            }
         } catch {
             hostEventsTask?.cancel()
             hostEventsTask = nil
@@ -68,6 +90,8 @@ final class HostCoordinator {
     func stop() async {
         hostEventsTask?.cancel()
         hostEventsTask = nil
+        for bot in bots { await bot.stop() }
+        bots.removeAll()
         await host.stop()
         isStarted = false
     }
@@ -147,7 +171,8 @@ final class HostCoordinator {
         let scene = PongScene(
             assignments: assignments,
             players: host.players,
-            inputs: host.inputs
+            inputs: host.inputs,
+            seed: configuration.seed
         ) { [weak self] events in
             Task { @MainActor [weak self] in self?.handlePong(events) }
         }
@@ -160,7 +185,7 @@ final class HostCoordinator {
     private func handlePong(_ events: [PongEvent]) {
         guard phase == .playing else { return }
         for event in events {
-            sounds.play(event)
+            sounds?.play(event)
             switch event {
             case let .paddleHit(playerID):
                 Task { await host.send(.feedback(.paddleHit), to: playerID) }
@@ -230,4 +255,44 @@ final class HostCoordinator {
         }
         await host.send(.layout(layout), to: playerID)
     }
+
+#if DEBUG
+    private func applyFixture(scenario: String) {
+        let names = ["Ada", "Grace", "Katherine", "Margaret"]
+        let players = names.indices.map { index in
+            let id = PlayerID(UInt8(index))
+            return PlayerInfo(
+                id: id,
+                displayName: names[index],
+                colorHex: PlayerPalette.color(for: id)
+            )
+        }
+        let fixturePlayers = scenario == "empty-lobby" ? [] : players
+        host.configureFixture(hostName: configuration.hostName ?? "UI Test PartyBox", players: fixturePlayers)
+        for player in fixturePlayers { seatQueue.joined(player.id) }
+        switch scenario {
+        case "menu":
+            phase = .gameMenu
+        case "four-way-match":
+            currentMatchAssignments = seatQueue.assignments
+            currentMatchPlayerCount = currentMatchAssignments.count
+            pongScene = PongScene(
+                assignments: currentMatchAssignments,
+                players: fixturePlayers,
+                inputs: host.inputs,
+                seed: configuration.seed,
+                onEvents: { _ in }
+            )
+            phase = .playing
+        case "game-over":
+            phase = .gameOver(GameResult(
+                title: "P1 ADA WINS",
+                subtitle: "Winner stays  •  Select for the next match",
+                winner: PlayerID(0)
+            ))
+        default:
+            phase = .lobby
+        }
+    }
+#endif
 }

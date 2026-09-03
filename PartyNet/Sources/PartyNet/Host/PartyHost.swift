@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import Dependencies
 
 public enum HostEvent: Sendable {
     case playerJoined(PlayerInfo)
@@ -120,8 +121,9 @@ public final class PartyHost {
     }
 
 #if DEBUG
-    func setDropsUDPInputsForTesting(_ drops: Bool) async {
-        await transport?.setDropsUDPInputsForTesting(drops)
+    public func configureFixture(hostName: String, players: [PlayerInfo]) {
+        self.hostName = hostName
+        self.players = players
     }
 #endif
 
@@ -276,9 +278,10 @@ public final class PartyHost {
         session.sessionToken = nil
         session.graceTask?.cancel()
         let grace = reconnectGrace
+        @Dependency(\.continuousClock) var clock
         session.graceTask = Task { [weak self, grace] in
             do {
-                try await Task.sleep(for: grace)
+                try await clock.sleep(for: grace)
                 guard !Task.isCancelled else { return }
                 await self?.expire(controllerID: controllerID)
             } catch {}

@@ -6,10 +6,16 @@
 //
 
 import SwiftUI
+import PartyNet
 
 @main
 struct PartyBoxApp: App {
-    @State private var coordinator = HostCoordinator()
+    @State private var coordinator: HostCoordinator
+
+    init() {
+        preparePartyNetLiveClock()
+        _coordinator = State(initialValue: HostCoordinator())
+    }
 
     var body: some Scene {
         WindowGroup {

@@ -40,6 +40,7 @@ struct MessagesTests {
             .layout(.spectator(SpectatorLayout(queuePosition: 2))),
             .layout(.gameOver(title: "Winner!", subtitle: "Great rally")),
             .feedback(.won),
+            .inputAck(sequence: 54),
             .pong(55),
         ]
         try assertRoundTrips(messages)

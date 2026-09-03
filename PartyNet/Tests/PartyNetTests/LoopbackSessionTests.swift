@@ -1,217 +1,274 @@
+import DependenciesTestSupport
 import Foundation
 import Testing
+
 @testable import PartyNet
 
-@Suite("Host/client loopback", .serialized)
-@MainActor
-struct LoopbackSessionTests {
+extension NetworkIntegrationTests {
+  @Suite("Host/client loopback", .serialized, .dependency(\.continuousClock, ContinuousClock()))
+  @MainActor
+  struct LoopbackSessionTests {
+    private actor EventRecorder {
+      private(set) var feedback: [Feedback] = []
+      private(set) var menuActions: [MenuAction] = []
+
+      func record(_ event: ClientEvent) {
+        if case .feedback(let value) = event { feedback.append(value) }
+      }
+
+      func record(_ event: HostEvent) {
+        if case .menu(_, let action) = event { menuActions.append(action) }
+      }
+
+      func contains(feedback expectedFeedback: [Feedback], menu expectedMenu: [MenuAction]) -> Bool
+      {
+        feedback == expectedFeedback && menuActions == expectedMenu
+      }
+    }
+
     @Test func joinsRenamesStreamsInputAndLeaves() async throws {
-        let host = PartyHost(reconnectGrace: .milliseconds(100))
-        let port = try await host.start(hostName: "Test Host", advertise: false)
-        let client = PartyClient(
-            controllerID: ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!),
-            displayName: "Tester"
-        )
-        await client.connect(host: "127.0.0.1", port: port)
+      let host = PartyHost(reconnectGrace: .milliseconds(100))
+      let port = try await host.start(hostName: "Test Host", advertise: false)
+      let client = PartyClient(
+        controllerID: ControllerID(
+          rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!),
+        displayName: "Tester"
+      )
+      await client.connect(host: "127.0.0.1", port: port)
 
-        #expect(client.player?.id == PlayerID(0))
-        try await waitUntil { host.players.count == 1 }
-        #expect(host.players.first?.displayName == "Tester")
+      #expect(client.player?.id == PlayerID(0))
+      try await waitUntil { host.players.count == 1 }
+      #expect(host.players.first?.displayName == "Tester")
 
-        await client.rename(to: "Renamed")
-        try await waitUntil { host.players.first?.displayName == "Renamed" }
+      await client.rename(to: "Renamed")
+      try await waitUntil { host.players.first?.displayName == "Renamed" }
 
-        client.setInput(axisX: 0.75)
-        try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.75 }
+      client.setInput(axisX: 0.75)
+      try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.75 }
 
-        await client.disconnect()
-        try await waitUntil { host.players.isEmpty }
-        await host.stop()
+      await client.disconnect()
+      try await waitUntil { host.players.isEmpty }
+      await host.stop()
     }
 
     @Test func rejectsWrongProtocolVersion() async throws {
-        let host = PartyHost()
-        let port = try await host.start(hostName: "Version Host", advertise: false)
-        let transport = ClientTransport()
-        let target = try DiscoveredHost(host: "127.0.0.1", port: port)
-        let hello = Hello(protocolVersion: 999, controllerID: ControllerID(), displayName: "Old")
-        await #expect(throws: PartyClientError.self) {
-            _ = try await transport.connect(to: target, hello: hello)
-        }
-        await transport.stop()
-        await host.stop()
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Version Host", advertise: false)
+      let transport = ClientTransport()
+      let target = try DiscoveredHost(host: "127.0.0.1", port: port)
+      let hello = Hello(protocolVersion: 999, controllerID: ControllerID(), displayName: "Old")
+      await #expect(throws: PartyClientError.self) {
+        _ = try await transport.connect(to: target, hello: hello)
+      }
+      await transport.stop()
+      await host.stop()
     }
 
     @Test func ninthControllerIsRejected() async throws {
-        let host = PartyHost()
-        let port = try await host.start(hostName: "Capacity Host", advertise: false)
-        var clients: [PartyClient] = []
-        for index in 0..<PartyNetConstants.maximumControllers {
-            let client = PartyClient(displayName: "Load \(index + 1)")
-            await client.connect(host: "127.0.0.1", port: port)
-            clients.append(client)
-        }
-        try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
-        #expect(host.players.count == PartyNetConstants.maximumControllers)
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Capacity Host", advertise: false)
+      var clients: [PartyClient] = []
+      for index in 0..<PartyNetConstants.maximumControllers {
+        let client = PartyClient(displayName: "Load \(index + 1)")
+        await client.connect(host: "127.0.0.1", port: port)
+        clients.append(client)
+      }
+      try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
+      #expect(host.players.count == PartyNetConstants.maximumControllers)
 
-        let ninth = PartyClient(displayName: "Ninth")
-        await ninth.connect(host: "127.0.0.1", port: port)
-        guard case .rejected = ninth.state else {
-            Issue.record("Expected the ninth controller to be rejected")
-            await host.stop()
-            return
-        }
-        ninth.reconnectAfterForeground()
-        try await Task.sleep(for: .milliseconds(100))
-        guard case .rejected = ninth.state else {
-            Issue.record("A rejected controller must not reconnect after foregrounding")
-            await host.stop()
-            return
-        }
-
-        for client in clients { await client.disconnect() }
-        await ninth.disconnect()
+      let ninth = PartyClient(displayName: "Ninth")
+      await ninth.connect(host: "127.0.0.1", port: port)
+      guard case .rejected = ninth.state else {
+        Issue.record("Expected the ninth controller to be rejected")
         await host.stop()
+        return
+      }
+      ninth.reconnectAfterForeground()
+      try await Task.sleep(for: .milliseconds(100))
+      guard case .rejected = ninth.state else {
+        Issue.record("A rejected controller must not reconnect after foregrounding")
+        await host.stop()
+        return
+      }
+
+      for client in clients { await client.disconnect() }
+      await ninth.disconnect()
+      await host.stop()
+    }
+
+    @Test func admitsEightConcurrentControllersWithUniqueSlots() async throws {
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Concurrent Capacity Host", advertise: false)
+      let clients = (0..<PartyNetConstants.maximumControllers).map {
+        PartyClient(displayName: "Concurrent \($0 + 1)")
+      }
+
+      await withTaskGroup(of: Void.self) { group in
+        for client in clients {
+          group.addTask { await client.connect(host: "127.0.0.1", port: port) }
+        }
+      }
+      try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
+
+      #expect(Set(host.players.map(\.id)).count == PartyNetConstants.maximumControllers)
+      #expect(host.players.allSatisfy { $0.isConnected })
+      for client in clients { await client.disconnect() }
+      await host.stop()
+    }
+
+    @Test func propagatesRosterLayoutFeedbackMenuAndPing() async throws {
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Propagation Host", advertise: false)
+      let client = PartyClient(displayName: "Signals")
+      let recorder = EventRecorder()
+      let clientEvents = Task {
+        for await event in client.events { await recorder.record(event) }
+      }
+      let hostEvents = Task {
+        for await event in host.events { await recorder.record(event) }
+      }
+
+      await client.connect(host: "127.0.0.1", port: port)
+      try await waitUntil { client.roster.count == 1 }
+      let spectatorLayout = ControllerLayout.spectator(SpectatorLayout(queuePosition: 3))
+      await host.send(.layout(spectatorLayout), to: PlayerID(0))
+      await host.send(.feedback(.paddleHit), to: PlayerID(0))
+      await client.sendMenu(.right)
+      client.reconnectAfterForeground()
+
+      try await waitUntil {
+        client.layout == spectatorLayout && client.rttSampleCount > 0
+      }
+      try await waitUntilAsync {
+        await recorder.contains(feedback: [.paddleHit], menu: [.right])
+      }
+
+      clientEvents.cancel()
+      hostEvents.cancel()
+      await client.disconnect()
+      await host.stop()
+    }
+
+    @Test func bonjourPublishesServiceNameVersionAndInstanceID() async throws {
+      let serviceName = "PartyBox Metadata \(UUID().uuidString.prefix(8))"
+      let host = PartyHost()
+      _ = try await host.start(hostName: serviceName, advertise: true)
+      let client = PartyClient(displayName: "Browser")
+      await client.startBrowsing()
+
+      try await waitUntil(timeout: .seconds(8)) {
+        client.hosts.contains { $0.instanceID == host.hostInstanceID }
+      }
+      let discovered = try #require(client.hosts.first { $0.instanceID == host.hostInstanceID })
+      #expect(discovered.name == serviceName)
+      #expect(discovered.protocolVersion == PartyNetConstants.protocolVersion)
+      #expect(discovered.isCompatible)
+
+      await client.stop()
+      await host.stop()
     }
 
     @Test func rapidInputUpdatesPreserveTheLatestValue() async throws {
-        let host = PartyHost()
-        let port = try await host.start(hostName: "Ordered Input Host", advertise: false)
-        let client = PartyClient(displayName: "Rapid Input", inputSendInterval: .milliseconds(1))
-        await client.connect(host: "127.0.0.1", port: port)
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Ordered Input Host", advertise: false)
+      let client = PartyClient(displayName: "Rapid Input", inputSendInterval: .milliseconds(1))
+      await client.connect(host: "127.0.0.1", port: port)
 
-        for index in 0..<500 {
-            client.setInput(axisX: Float(index) / 500)
-        }
-        client.setInput(axisX: -0.875)
+      for index in 0..<500 {
+        client.setInput(axisX: Float(index) / 500)
+      }
+      client.setInput(axisX: -0.875)
 
-        try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == -0.875 }
-        await client.disconnect()
-        await host.stop()
-    }
-
-    @Test func tcpCheckpointDeliversInputWhenUDPIsBlackholed() async throws {
-        let host = PartyHost()
-        let port = try await host.start(hostName: "Blackhole Host", advertise: false)
-        let client = PartyClient(displayName: "Checkpoint", inputSendInterval: .milliseconds(5))
-        await client.connect(host: "127.0.0.1", port: port)
-        try await waitUntil { host.inputs.snapshot()[PlayerID(0)] != nil }
-        try await Task.sleep(for: PartyNetConstants.inputTCPCheckpointInterval + .milliseconds(20))
-        await host.setDropsUDPInputsForTesting(true)
-
-        client.setInput(axisX: 0.625)
-
-        try await waitUntil(timeout: .seconds(1)) {
-            host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.625
-        }
-        await client.disconnect()
-        await host.stop()
+      try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == -0.875 }
+      await client.disconnect()
+      await host.stop()
     }
 
     @Test func duplicateIdentityReplacesConnectionAndKeepsPlayer() async throws {
-        let host = PartyHost(reconnectGrace: .milliseconds(200))
-        let port = try await host.start(hostName: "Duplicate Host", advertise: false)
-        let controllerID = ControllerID(rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
-        let first = PartyClient(controllerID: controllerID, displayName: "First")
-        let replacement = PartyClient(controllerID: controllerID, displayName: "Replacement")
+      let host = PartyHost(reconnectGrace: .milliseconds(200))
+      let port = try await host.start(hostName: "Duplicate Host", advertise: false)
+      let controllerID = ControllerID(
+        rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
+      let first = PartyClient(controllerID: controllerID, displayName: "First")
+      let replacement = PartyClient(controllerID: controllerID, displayName: "Replacement")
 
-        await first.connect(host: "127.0.0.1", port: port)
-        await replacement.connect(host: "127.0.0.1", port: port)
+      await first.connect(host: "127.0.0.1", port: port)
+      await replacement.connect(host: "127.0.0.1", port: port)
 
-        try await waitUntil { host.players.first?.displayName == "Replacement" }
-        try await waitUntil {
-            if case .rejected = first.state { return true }
-            return false
-        }
-        #expect(host.players.count == 1)
-        #expect(replacement.player?.id == PlayerID(0))
-        await replacement.disconnect()
-        await first.disconnect()
-        await host.stop()
-    }
-
-    @Test func reconnectInsideGracePreservesSlotAndCancelsExpiry() async throws {
-        let host = PartyHost(reconnectGrace: .milliseconds(180))
-        let port = try await host.start(hostName: "Grace Host", advertise: false)
-        let controllerID = ControllerID(rawValue: UUID(uuidString: "66666666-7777-8888-9999-AAAAAAAAAAAA")!)
-        let first = PartyClient(controllerID: controllerID, displayName: "Grace")
-        await first.connect(host: "127.0.0.1", port: port)
-        await first.interruptForTesting()
-        try await waitUntil { host.players.first?.isConnected == false }
-
-        let reconnected = PartyClient(controllerID: controllerID, displayName: "Grace Again")
-        await reconnected.connect(host: "127.0.0.1", port: port)
-        try await waitUntil { host.players.first?.isConnected == true }
-        try await Task.sleep(for: .milliseconds(240))
-
-        #expect(host.players.count == 1)
-        #expect(host.players.first?.id == PlayerID(0))
-        await reconnected.disconnect()
-        await host.stop()
-    }
-
-    @Test func expiredGraceReleasesPlayerSlot() async throws {
-        let host = PartyHost(reconnectGrace: .milliseconds(80))
-        let port = try await host.start(hostName: "Expiry Host", advertise: false)
-        let client = PartyClient(displayName: "Gone")
-        await client.connect(host: "127.0.0.1", port: port)
-
-        await client.interruptForTesting()
-        try await waitUntil(timeout: .seconds(1)) { host.players.isEmpty }
-
-        #expect(host.inputs.snapshot().isEmpty)
-        await host.stop()
+      try await waitUntil { host.players.first?.displayName == "Replacement" }
+      try await waitUntil {
+        if case .rejected = first.state { return true }
+        return false
+      }
+      #expect(host.players.count == 1)
+      #expect(replacement.player?.id == PlayerID(0))
+      await replacement.disconnect()
+      await first.disconnect()
+      await host.stop()
     }
 
     @Test func connectingToAnotherHostReplacesTheActiveSession() async throws {
-        let firstHost = PartyHost(reconnectGrace: .milliseconds(100))
-        let secondHost = PartyHost(reconnectGrace: .milliseconds(100))
-        let firstPort = try await firstHost.start(hostName: "First Host", advertise: false)
-        let secondPort = try await secondHost.start(hostName: "Second Host", advertise: false)
-        let client = PartyClient(displayName: "Mover")
+      let firstHost = PartyHost(reconnectGrace: .milliseconds(100))
+      let secondHost = PartyHost(reconnectGrace: .milliseconds(100))
+      let firstPort = try await firstHost.start(hostName: "First Host", advertise: false)
+      let secondPort = try await secondHost.start(hostName: "Second Host", advertise: false)
+      let client = PartyClient(displayName: "Mover")
 
-        await client.connect(host: "127.0.0.1", port: firstPort)
-        try await waitUntil { firstHost.players.count == 1 }
-        await client.connect(host: "127.0.0.1", port: secondPort)
+      await client.connect(host: "127.0.0.1", port: firstPort)
+      try await waitUntil { firstHost.players.count == 1 }
+      await client.connect(host: "127.0.0.1", port: secondPort)
 
-        try await waitUntil { firstHost.players.isEmpty && secondHost.players.count == 1 }
-        #expect(client.player?.id == PlayerID(0))
-        await client.disconnect()
-        await firstHost.stop()
-        await secondHost.stop()
+      try await waitUntil { firstHost.players.isEmpty && secondHost.players.count == 1 }
+      #expect(client.player?.id == PlayerID(0))
+      await client.disconnect()
+      await firstHost.stop()
+      await secondHost.stop()
     }
 
     @Test func foregroundRecoveryProbesLiveConnectionButHonorsExplicitDisconnect() async throws {
-        let host = PartyHost()
-        let port = try await host.start(hostName: "Foreground Host", advertise: false)
-        let client = PartyClient(displayName: "Foreground")
-        await client.connect(host: "127.0.0.1", port: port)
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Foreground Host", advertise: false)
+      let client = PartyClient(displayName: "Foreground")
+      await client.connect(host: "127.0.0.1", port: port)
 
-        client.reconnectAfterForeground()
-        try await waitUntil(timeout: .seconds(1)) { client.rttSampleCount > 0 }
-        guard case .connected = client.state else {
-            Issue.record("Expected a healthy foreground probe to preserve the connection")
-            await host.stop()
-            return
-        }
-
-        await client.disconnect()
-        client.reconnectAfterForeground()
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(client.state == .browsing)
-        #expect(host.players.isEmpty)
+      client.reconnectAfterForeground()
+      try await waitUntil(timeout: .seconds(1)) { client.rttSampleCount > 0 }
+      guard case .connected = client.state else {
+        Issue.record("Expected a healthy foreground probe to preserve the connection")
         await host.stop()
+        return
+      }
+
+      await client.disconnect()
+      client.reconnectAfterForeground()
+      try await Task.sleep(for: .milliseconds(100))
+      #expect(client.state == .browsing)
+      #expect(host.players.isEmpty)
+      await host.stop()
     }
 
     private func waitUntil(
-        timeout: Duration = .seconds(3),
-        condition: @escaping @MainActor () -> Bool
+      timeout: Duration = .seconds(3),
+      condition: @escaping @MainActor () -> Bool
     ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while !condition(), clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(condition())
+      let clock = ContinuousClock()
+      let deadline = clock.now.advanced(by: timeout)
+      while !condition(), clock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      #expect(condition())
     }
+
+    private func waitUntilAsync(
+      timeout: Duration = .seconds(3),
+      condition: @escaping @Sendable () async -> Bool
+    ) async throws {
+      let clock = ContinuousClock()
+      let deadline = clock.now.advanced(by: timeout)
+      while !(await condition()), clock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      #expect(await condition())
+    }
+  }
 }

@@ -12,22 +12,43 @@ struct ContentView: View {
             switch coordinator.phase {
             case .lobby:
                 LobbyView(coordinator: coordinator)
+                    .accessibilityIdentifier("host.phase.lobby")
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .gameMenu:
                 GameMenuView(coordinator: coordinator)
+                    .accessibilityIdentifier("host.phase.menu")
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
             case .playing:
                 if let scene = coordinator.pongScene {
-                    SpriteView(scene: scene, options: [.ignoresSiblingOrder])
-                        .transition(.opacity)
+                    ZStack {
+                        SpriteView(scene: scene, options: [.ignoresSiblingOrder])
+                            .accessibilityLabel("Four-way Pong arena")
+                            .accessibilityIdentifier("host.arena")
+                        VStack {
+                            Text("Pong match in progress")
+                                .accessibilityIdentifier("host.phase.playing")
+                            ForEach(1...4, id: \.self) { number in
+                                Text("Player \(number) lives")
+                                    .accessibilityIdentifier("host.lives.\(number)")
+                            }
+                        }
+                        .font(.system(size: 1))
+                        .foregroundStyle(.white.opacity(0.01))
+                        .frame(width: 1, height: 1)
+                    }
+                    .transition(.opacity)
                 }
             case let .gameOver(result):
                 GameOverView(result: result)
+                    .accessibilityIdentifier("host.phase.gameOver")
                     .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
             keyboardButtons
         }
-        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: coordinator.phase)
+        .animation(
+            coordinator.configuration.disableAnimations ? nil : .spring(response: 0.42, dampingFraction: 0.86),
+            value: coordinator.phase
+        )
         .focusable()
         .focused($focused)
         .onAppear { focused = true }
@@ -79,6 +100,7 @@ private struct LobbyView: View {
                 .font(.title3.weight(.medium))
                 .foregroundStyle(.white.opacity(0.72))
             Text(coordinator.host.hostName)
+                .accessibilityIdentifier("host.name")
                 .font(.title2.monospaced().weight(.bold))
                 .foregroundStyle(PartyTheme.cyan)
                 .padding(.horizontal, 24)
@@ -91,6 +113,7 @@ private struct LobbyView: View {
                     PlayerCard(number: index + 1, player: player, isActive: player.map {
                         coordinator.seatQueue.active.contains($0.id)
                     } ?? false)
+                    .accessibilityIdentifier("host.playerSlot.\(index + 1)")
                 }
             }
             .frame(maxWidth: 1_220)
@@ -98,10 +121,12 @@ private struct LobbyView: View {
             HStack(spacing: 18) {
                 Circle().fill(coordinator.canStart ? PartyTheme.lime : .gray).frame(width: 12, height: 12)
                 Text(coordinator.canStart ? "PRESS SELECT TO CHOOSE A GAME" : "WAITING FOR A CONTROLLER")
+                    .accessibilityIdentifier("host.lobby.start")
                     .font(.headline.monospaced().weight(.bold))
             }
             .foregroundStyle(.white)
             Text(coordinator.statusMessage)
+                .accessibilityIdentifier("host.status")
                 .font(.subheadline.monospaced())
                 .foregroundStyle(.white.opacity(0.5))
         }
@@ -130,6 +155,7 @@ private struct GameMenuView: View {
                 .frame(maxWidth: 850, alignment: .leading)
                 .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 24))
                 .overlay(RoundedRectangle(cornerRadius: 24).stroke(PartyTheme.magenta.opacity(0.6), lineWidth: 2))
+                .accessibilityIdentifier("host.menu.action.\(index)")
             }
             Text("SELECT TO PLAY  •  MENU/ESC TO RETURN")
                 .font(.headline.monospaced().weight(.bold))
@@ -148,6 +174,7 @@ private struct GameOverView: View {
                 .font(.headline.monospaced().weight(.bold))
                 .foregroundStyle(PartyTheme.cyan)
             Text(result.title)
+                .accessibilityIdentifier("host.gameOver.title")
                 .font(.system(size: 72, weight: .black, design: .rounded))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white)
@@ -156,6 +183,7 @@ private struct GameOverView: View {
                 .font(.title2.monospaced())
                 .foregroundStyle(.white.opacity(0.74))
             Text("SELECT: NEXT MATCH   •   MENU/ESC: GAME SELECT")
+                .accessibilityIdentifier("host.gameOver.controls")
                 .font(.headline.monospaced().weight(.bold))
                 .padding(.top, 36)
                 .foregroundStyle(PartyTheme.lime)

@@ -1,0 +1,23 @@
+{
+  "configurations" : [
+    { "id" : "12B135C7-650A-4DC6-BFFD-9223CBA7C101", "name" : "Normal", "options" : {} }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : true,
+    "mainThreadCheckerEnabled" : true,
+    "testTimeoutsEnabled" : true,
+    "defaultTestExecutionTimeAllowance" : 120,
+    "maximumTestExecutionTimeAllowance" : 300
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9B630486A7900592BFF", "name" : "PartyBoxTests" }
+    },
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9C030486A7900592BFF", "name" : "PartyBoxUITests" }
+    }
+  ],
+  "version" : 1
+}

@@ -1,0 +1,18 @@
+{
+  "configurations" : [
+    { "id" : "22B135C7-650A-4DC6-BFFD-9223CBA7C102", "name" : "Address Sanitizer", "options" : { "addressSanitizer" : { "enabled" : true } } }
+  ],
+  "defaultOptions" : { "codeCoverage" : false, "testTimeoutsEnabled" : true },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9E330486AB900592BFF", "name" : "PartyBox ControllerTests" }
+    },
+    {
+      "parallelizable" : false,
+      "selectedTests" : ["PartyBox_ControllerUITests/testConnectionErrorRecoversToPicker"],
+      "target" : { "containerPath" : "container:PartyBox.xcodeproj", "identifier" : "24B1C9ED30486ABA00592BFF", "name" : "PartyBox ControllerUITests" }
+    }
+  ],
+  "version" : 1
+}

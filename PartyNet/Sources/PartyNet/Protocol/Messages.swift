@@ -88,5 +88,6 @@ public enum HostMessage: Codable, Equatable, Sendable {
     case roster([PlayerInfo])
     case layout(ControllerLayout)
     case feedback(Feedback)
+    case inputAck(sequence: UInt32)
     case pong(UInt64)
 }

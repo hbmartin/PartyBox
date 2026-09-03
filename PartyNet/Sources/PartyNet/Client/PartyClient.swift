@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Dependencies
 
 public enum PartyClientState: Equatable, Sendable {
     case browsing
@@ -27,6 +28,7 @@ public final class PartyClient {
     public private(set) var rttMilliseconds: Double?
     public private(set) var rttSampleCount: UInt64 = 0
     public private(set) var inputFramesSent: UInt64 = 0
+    public private(set) var usesTCPFallback = false
     public nonisolated let events: AsyncStream<ClientEvent>
 
     public let controllerID: ControllerID
@@ -47,6 +49,10 @@ public final class PartyClient {
     private var selectedHost: DiscoveredHost?
     private var expectedInstanceID: UUID?
     private var isExplicitlyDisconnected = false
+#if DEBUG
+    private var skipsReconnectNetworkingForTesting = false
+    private var injectedHosts: [DiscoveredHost] = []
+#endif
 
     private struct PendingInput: Sendable {
         let connectionID: UUID
@@ -135,6 +141,7 @@ public final class PartyClient {
         player = nil
         roster = []
         layout = .lobby
+        usesTCPFallback = false
         discoveryErrorMessage = nil
         state = .browsing
     }
@@ -156,11 +163,42 @@ public final class PartyClient {
     }
 
 #if DEBUG
+    public func configureFixture(
+        state: PartyClientState,
+        hosts: [DiscoveredHost] = [],
+        discoveryErrorMessage: String? = nil,
+        player: PlayerInfo? = nil,
+        roster: [PlayerInfo] = [],
+        layout: ControllerLayout = .lobby
+    ) {
+        self.state = state
+        self.hosts = hosts
+        self.discoveryErrorMessage = discoveryErrorMessage
+        self.player = player
+        self.roster = roster
+        self.layout = layout
+    }
+
+    public func insertTestingHost(_ host: DiscoveredHost) {
+        injectedHosts.removeAll { $0.id == host.id }
+        injectedHosts.append(host)
+        hosts = mergedHosts(hosts)
+        eventContinuation.yield(.hostsChanged(hosts))
+    }
+
     func interruptForTesting() async {
         guard let connectionID else { return }
         await transport.disconnect(connectionID: connectionID, sendLeave: false)
         self.connectionID = nil
         state = .disconnected("Simulated connection interruption")
+    }
+
+    func beginReconnectForTesting(host: String, port: UInt16) throws {
+        selectedHost = try DiscoveredHost(host: host, port: port)
+        expectedInstanceID = UUID()
+        isExplicitlyDisconnected = false
+        skipsReconnectNetworkingForTesting = true
+        beginReconnect(reason: "Simulated connection interruption")
     }
 #endif
 
@@ -174,6 +212,20 @@ public final class PartyClient {
                 await transport.disconnect(connectionID: id)
                 return
             }
+            if reconnecting, let expectedInstanceID,
+               welcome.hostInstanceID != expectedInstanceID {
+                await transport.disconnect(connectionID: id)
+                selectedHost = nil
+                self.expectedInstanceID = nil
+                connectionAttemptID = nil
+                cancelReconnect()
+                player = nil
+                roster = []
+                layout = .lobby
+                usesTCPFallback = false
+                state = .browsing
+                return
+            }
             connectionAttemptID = nil
             connectionID = id
             expectedInstanceID = welcome.hostInstanceID
@@ -181,6 +233,7 @@ public final class PartyClient {
             rttMilliseconds = nil
             rttSampleCount = 0
             inputFramesSent = 0
+            usesTCPFallback = false
             state = .connected(welcome.hostName)
         } catch let error as PartyClientError {
             guard connectionAttemptID == attemptID, !Task.isCancelled else { return }
@@ -213,25 +266,40 @@ public final class PartyClient {
     private func handle(_ event: ClientTransportEvent) async {
         switch event {
         case let .hosts(found):
-            hosts = found
+            hosts = mergedHosts(found)
             if !found.isEmpty { discoveryErrorMessage = nil }
-            eventContinuation.yield(.hostsChanged(found))
+            eventContinuation.yield(.hostsChanged(hosts))
         case let .message(id, message):
             guard id == connectionID else { return }
             handle(message)
         case let .inputSent(id):
             guard id == connectionID else { return }
             inputFramesSent &+= 1
+        case let .transportMode(id, usesTCPFallback):
+            guard id == connectionID else { return }
+            self.usesTCPFallback = usesTCPFallback
         case let .disconnected(id, reason):
             guard id == connectionID else { return }
             cancelForegroundProbe()
             cancelInputFlush()
             connectionID = nil
+            usesTCPFallback = false
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)
         case let .discoveryFailed(message):
             discoveryErrorMessage = message
         }
+    }
+
+    private func mergedHosts(_ found: [DiscoveredHost]) -> [DiscoveredHost] {
+#if DEBUG
+        let discoveredIDs = Set(found.map(\.id))
+        return (found + injectedHosts.filter { !discoveredIDs.contains($0.id) }).sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+#else
+        return found
+#endif
     }
 
     private func handle(_ message: HostMessage) {
@@ -252,6 +320,8 @@ public final class PartyClient {
             }
         case let .feedback(value):
             eventContinuation.yield(.feedback(value))
+        case .inputAck:
+            break
         case let .pong(sentNanos):
             let elapsed = DispatchTime.now().uptimeNanoseconds &- sentNanos
             rttMilliseconds = Double(elapsed) / 1_000_000
@@ -265,12 +335,19 @@ public final class PartyClient {
         let reconnectID = UUID()
         reconnectAttemptID = reconnectID
         state = .reconnecting(reason)
+        @Dependency(\.continuousClock) var continuousClock
+        let clock = AnyClock(continuousClock)
         reconnectTask = Task { [weak self] in
             guard let self else { return }
-            let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: PartyNetConstants.clientReconnectWindow)
             while !Task.isCancelled, clock.now < deadline {
                 guard self.reconnectAttemptID == reconnectID, !self.isExplicitlyDisconnected else { return }
+#if DEBUG
+                if self.skipsReconnectNetworkingForTesting {
+                    do { try await clock.sleep(for: .seconds(1)) } catch { return }
+                    continue
+                }
+#endif
                 if let candidate = self.reconnectCandidate() {
                     self.selectedHost = candidate
                     let attemptID = UUID()
@@ -282,7 +359,7 @@ public final class PartyClient {
                         return
                     }
                 }
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                do { try await clock.sleep(for: .seconds(1)) } catch { return }
             }
             guard !Task.isCancelled, self.reconnectAttemptID == reconnectID else { return }
             self.state = .disconnected("Could not reconnect within 30 seconds.")
@@ -338,11 +415,13 @@ public final class PartyClient {
         cancelForegroundProbe()
         let nonce = DispatchTime.now().uptimeNanoseconds
         foregroundProbeNonce = nonce
+        @Dependency(\.continuousClock) var continuousClock
+        let clock = AnyClock(continuousClock)
         foregroundProbeTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.transport.send(.ping(nonce), connectionID: connectionID)
-                try await Task.sleep(for: .seconds(2))
+                try await clock.sleep(for: PartyNetConstants.pingInterval)
             } catch is CancellationError {
                 return
             } catch {
