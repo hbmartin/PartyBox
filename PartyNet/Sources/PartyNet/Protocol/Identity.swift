@@ -58,7 +58,8 @@ public enum ArcadePalette {
     public static let lime = "#6DFF78"
 
     public static func rgb(_ value: String) -> RGBComponents? {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hex = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
         guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return nil }
         return RGBComponents(
             red: Double((number >> 16) & 0xFF) / 255,
@@ -90,10 +91,19 @@ public enum DisplayName {
     private static func compact(_ value: String) -> String {
         let space = Unicode.Scalar(" ")
         let safeScalars = value.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
+            if scalar.properties.isDefaultIgnorableCodePoint,
+               scalar.value != 0x200D,
+               !(0xFE00...0xFE0F).contains(scalar.value) {
+                return nil
+            }
             if CharacterSet.whitespacesAndNewlines.contains(scalar) { return space }
             if scalar.properties.isBidiControl || scalar.properties.generalCategory == .control { return nil }
             return scalar
         }
+        guard safeScalars.contains(where: {
+            !CharacterSet.whitespacesAndNewlines.contains($0)
+                && !$0.properties.isDefaultIgnorableCodePoint
+        }) else { return "" }
         let compact = String(String.UnicodeScalarView(safeScalars))
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)

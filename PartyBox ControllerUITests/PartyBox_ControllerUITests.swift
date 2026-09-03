@@ -22,7 +22,11 @@ final class PartyBox_ControllerUITests: XCTestCase {
 
         let name = element("controller.name.field", in: app)
         replaceText(in: name, with: "Ada Lovelace")
-        element("controller.name.save", in: app).tap()
+        let save = element("controller.name.save", in: app)
+        save.tap()
+        let saved = NSPredicate(format: "value == %@", "Saved Ada Lovelace")
+        expectation(for: saved, evaluatedWith: save)
+        waitForExpectations(timeout: 3)
         app.terminate()
 
         app = launch(scenario: "empty-picker", additional: ["--defaults-suite", suite])
@@ -68,16 +72,14 @@ final class PartyBox_ControllerUITests: XCTestCase {
     func testPaddleEndpointsUpdateLocalValueImmediately() throws {
         let app = launch(scenario: "paddle-left")
         let track = element("controller.paddle.track", in: app)
-        let value = element("controller.paddle.value", in: app)
         XCTAssertTrue(track.waitForExistence(timeout: 5))
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.05, thenDragTo: track.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)))
-        XCTAssertTrue(value.waitForExistence(timeout: 2))
-        XCTAssertNotEqual(value.label, "0.000")
+        XCTAssertNotEqual(track.value as? String, "0.000")
 
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5))
             .press(forDuration: 0.05, thenDragTo: track.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)))
-        XCTAssertTrue(value.label.hasPrefix("-"))
+        XCTAssertTrue((track.value as? String)?.hasPrefix("-") == true)
     }
 
     @MainActor

@@ -29,12 +29,12 @@ public final class PartyClient {
     public private(set) var rttSampleCount: UInt64 = 0
     public private(set) var inputFramesSent: UInt64 = 0
     public private(set) var usesTCPFallback = false
-    public nonisolated let events: AsyncStream<ClientEvent>
+    public nonisolated var events: AsyncStream<ClientEvent> { eventHub.stream() }
 
     public let controllerID: ControllerID
     public private(set) var displayName: String
 
-    private let eventContinuation: AsyncStream<ClientEvent>.Continuation
+    private nonisolated let eventHub = EventHub<ClientEvent>()
     private let transport: ClientTransport
     private var transportTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -69,9 +69,6 @@ public final class PartyClient {
         self.controllerID = controllerID
         self.displayName = DisplayName.sanitized(displayName, fallback: "Player")
         transport = ClientTransport(inputSendInterval: inputSendInterval)
-        var continuation: AsyncStream<ClientEvent>.Continuation!
-        events = AsyncStream { continuation = $0 }
-        eventContinuation = continuation
     }
 
     public func startBrowsing() async {
@@ -81,6 +78,13 @@ public final class PartyClient {
         if connectionID == nil { state = .browsing }
     }
 
+    public func restartBrowsing() async {
+        ensureEventTask()
+        discoveryErrorMessage = nil
+        await transport.restartBrowsing()
+        if connectionID == nil, connectionAttemptID == nil { state = .browsing }
+    }
+
     public func connect(to host: DiscoveredHost) async {
         ensureEventTask()
         cancelReconnect()
@@ -88,14 +92,14 @@ public final class PartyClient {
         cancelInputFlush()
         let attemptID = UUID()
         connectionAttemptID = attemptID
-        if let connectionID {
-            await transport.disconnect(connectionID: connectionID)
-            guard connectionAttemptID == attemptID else { return }
-            self.connectionID = nil
-        }
         selectedHost = host
         expectedInstanceID = host.instanceID
         isExplicitlyDisconnected = false
+        if let previousConnectionID = connectionID {
+            connectionID = nil
+            await transport.disconnect(connectionID: previousConnectionID)
+            guard connectionAttemptID == attemptID else { return }
+        }
         await connectSelectedHost(reconnecting: false, attemptID: attemptID)
     }
 
@@ -132,12 +136,25 @@ public final class PartyClient {
 
     public func disconnect() async {
         isExplicitlyDisconnected = true
-        connectionAttemptID = nil
         cancelReconnect()
         cancelForegroundProbe()
         cancelInputFlush()
-        if let connectionID { await transport.disconnect(connectionID: connectionID) }
-        self.connectionID = nil
+        let pendingAttemptID = connectionAttemptID
+        if let pendingAttemptID {
+            await transport.cancelConnectionAttempt(pendingAttemptID)
+            guard isExplicitlyDisconnected else { return }
+            if connectionAttemptID == pendingAttemptID {
+                connectionAttemptID = nil
+            } else if connectionAttemptID != nil {
+                return
+            }
+        }
+        let establishedConnectionID = connectionID
+        connectionID = nil
+        if let establishedConnectionID {
+            await transport.disconnect(connectionID: establishedConnectionID)
+            guard connectionAttemptID == nil, isExplicitlyDisconnected else { return }
+        }
         player = nil
         roster = []
         layout = .lobby
@@ -155,9 +172,11 @@ public final class PartyClient {
 
     public func reconnectAfterForeground() {
         guard !isExplicitlyDisconnected, selectedHost != nil else { return }
+        guard connectionAttemptID == nil else { return }
         if let connectionID {
             startForegroundProbe(connectionID: connectionID)
         } else {
+            cancelReconnect()
             beginReconnect(reason: "Connection interrupted")
         }
     }
@@ -183,7 +202,7 @@ public final class PartyClient {
         injectedHosts.removeAll { $0.id == host.id }
         injectedHosts.append(host)
         hosts = mergedHosts(hosts)
-        eventContinuation.yield(.hostsChanged(hosts))
+        eventHub.yield(.hostsChanged(hosts))
     }
 
     func interruptForTesting() async {
@@ -207,7 +226,11 @@ public final class PartyClient {
         state = reconnecting ? .reconnecting(host.name) : .connecting(host.name)
         do {
             let hello = Hello(controllerID: controllerID, displayName: displayName)
-            let (id, welcome) = try await transport.connect(to: host, hello: hello)
+            let (id, welcome) = try await transport.connect(
+                to: host,
+                hello: hello,
+                attemptID: attemptID
+            )
             guard connectionAttemptID == attemptID, !isExplicitlyDisconnected else {
                 await transport.disconnect(connectionID: id)
                 return
@@ -232,11 +255,12 @@ public final class PartyClient {
             player = welcome.player
             rttMilliseconds = nil
             rttSampleCount = 0
-            inputFramesSent = 0
             usesTCPFallback = false
             state = .connected(welcome.hostName)
         } catch let error as PartyClientError {
-            guard connectionAttemptID == attemptID, !Task.isCancelled else { return }
+            guard connectionAttemptID == attemptID,
+                  !isExplicitlyDisconnected,
+                  !Task.isCancelled else { return }
             connectionAttemptID = nil
             switch error {
             case let .rejected(reason):
@@ -246,7 +270,9 @@ public final class PartyClient {
                 state = reconnecting ? .reconnecting(host.name) : .disconnected(error.localizedDescription)
             }
         } catch {
-            guard connectionAttemptID == attemptID, !Task.isCancelled else { return }
+            guard connectionAttemptID == attemptID,
+                  !isExplicitlyDisconnected,
+                  !Task.isCancelled else { return }
             connectionAttemptID = nil
             state = reconnecting ? .reconnecting(host.name) : .disconnected(error.localizedDescription)
         }
@@ -268,7 +294,7 @@ public final class PartyClient {
         case let .hosts(found):
             hosts = mergedHosts(found)
             if !found.isEmpty { discoveryErrorMessage = nil }
-            eventContinuation.yield(.hostsChanged(hosts))
+            eventHub.yield(.hostsChanged(hosts))
         case let .message(id, message):
             guard id == connectionID else { return }
             handle(message)
@@ -314,12 +340,13 @@ public final class PartyClient {
             if let id = player?.id { player = value.first { $0.id == id } ?? player }
         case let .layout(value):
             let wasPaddleLayout = if case .paddle = layout { true } else { false }
-            layout = value
-            if case .paddle = value, !wasPaddleLayout {
+            let isPaddleLayout = if case .paddle = value { true } else { false }
+            if wasPaddleLayout || isPaddleLayout {
                 setInput(axisX: 0)
             }
+            layout = value
         case let .feedback(value):
-            eventContinuation.yield(.feedback(value))
+            eventHub.yield(.feedback(value))
         case .inputAck:
             break
         case let .pong(sentNanos):
@@ -339,6 +366,7 @@ public final class PartyClient {
         let clock = AnyClock(continuousClock)
         reconnectTask = Task { [weak self] in
             guard let self else { return }
+            await self.transport.restartBrowsing()
             let deadline = clock.now.advanced(by: PartyNetConstants.clientReconnectWindow)
             while !Task.isCancelled, clock.now < deadline {
                 guard self.reconnectAttemptID == reconnectID, !self.isExplicitlyDisconnected else { return }
@@ -348,6 +376,7 @@ public final class PartyClient {
                     continue
                 }
 #endif
+                await self.transport.startBrowsing()
                 if let candidate = self.reconnectCandidate() {
                     self.selectedHost = candidate
                     let attemptID = UUID()
@@ -421,7 +450,7 @@ public final class PartyClient {
             guard let self else { return }
             do {
                 try await self.transport.send(.ping(nonce), connectionID: connectionID)
-                try await clock.sleep(for: PartyNetConstants.pingInterval)
+                try await clock.sleep(for: PartyNetConstants.pingTimeout)
             } catch is CancellationError {
                 return
             } catch {
@@ -431,10 +460,13 @@ public final class PartyClient {
                   self.foregroundProbeNonce == nonce,
                   self.connectionID == connectionID,
                   !self.isExplicitlyDisconnected else { return }
-            self.foregroundProbeTask = nil
-            self.foregroundProbeNonce = nil
             await self.transport.disconnect(connectionID: connectionID, sendLeave: false)
-            guard self.connectionID == connectionID else { return }
+            guard self.connectionID == connectionID,
+                  !self.isExplicitlyDisconnected else { return }
+            if self.foregroundProbeNonce == nonce {
+                self.foregroundProbeTask = nil
+                self.foregroundProbeNonce = nil
+            }
             self.connectionID = nil
             self.beginReconnect(reason: "Connection interrupted")
         }

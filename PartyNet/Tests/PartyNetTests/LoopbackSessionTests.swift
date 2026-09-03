@@ -1,5 +1,6 @@
 import DependenciesTestSupport
 import Foundation
+import Network
 import Testing
 
 @testable import PartyNet
@@ -8,6 +9,24 @@ extension NetworkIntegrationTests {
   @Suite("Host/client loopback", .serialized, .dependency(\.continuousClock, ContinuousClock()))
   @MainActor
   struct LoopbackSessionTests {
+    private actor StalledHandshakeServer {
+      private(set) var receivedHello = false
+      private(set) var activeConnections = 0
+
+      func handle(_ connection: HostControlConnection) async {
+        activeConnections += 1
+        defer { activeConnections -= 1 }
+        do {
+          let first = try await connection.receive().content
+          guard case .hello = first else { return }
+          receivedHello = true
+          _ = try await connection.receive().content
+        } catch {
+          // Cancellation of the client handshake should close this flow promptly.
+        }
+      }
+    }
+
     private actor EventRecorder {
       private(set) var feedback: [Feedback] = []
       private(set) var menuActions: [MenuAction] = []
@@ -58,9 +77,56 @@ extension NetworkIntegrationTests {
       let target = try DiscoveredHost(host: "127.0.0.1", port: port)
       let hello = Hello(protocolVersion: 999, controllerID: ControllerID(), displayName: "Old")
       await #expect(throws: PartyClientError.self) {
-        _ = try await transport.connect(to: target, hello: hello)
+        _ = try await transport.connect(to: target, hello: hello, attemptID: UUID())
       }
       await transport.stop()
+      await host.stop()
+    }
+
+    @Test func disconnectCancelsAHandshakeWaitingForWelcome() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = StalledHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in
+          await server.handle(connection)
+        }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let port = try #require(listener.port?.rawValue)
+      let client = PartyClient(displayName: "Cancelled Handshake")
+      let connectTask = Task { await client.connect(host: "127.0.0.1", port: port) }
+
+      try await waitUntilAsync { await server.receivedHello }
+      await client.disconnect()
+      await connectTask.value
+
+      #expect(client.state == .browsing)
+      try await waitUntilAsync(timeout: .seconds(1)) {
+        await server.activeConnections == 0
+      }
+    }
+
+    @Test func hostAndClientCanRestartWithFreshEventSubscriptions() async throws {
+      let host = PartyHost(reconnectGrace: .milliseconds(100))
+      let client = PartyClient(displayName: "Restarter")
+
+      let firstPort = try await host.start(hostName: "First Lifecycle", advertise: false)
+      await client.connect(host: "127.0.0.1", port: firstPort)
+      try await waitUntil { host.players.count == 1 }
+      await client.stop()
+      await host.stop()
+
+      let secondPort = try await host.start(hostName: "Second Lifecycle", advertise: false)
+      await client.connect(host: "127.0.0.1", port: secondPort)
+      try await waitUntil { host.players.count == 1 }
+
+      #expect(host.players.first?.displayName == "Restarter")
+      await client.stop()
       await host.stop()
     }
 
@@ -127,6 +193,10 @@ extension NetworkIntegrationTests {
       let hostEvents = Task {
         for await event in host.events { await recorder.record(event) }
       }
+      defer {
+        clientEvents.cancel()
+        hostEvents.cancel()
+      }
 
       await client.connect(host: "127.0.0.1", port: port)
       try await waitUntil { client.roster.count == 1 }
@@ -143,8 +213,6 @@ extension NetworkIntegrationTests {
         await recorder.contains(feedback: [.paddleHit], menu: [.right])
       }
 
-      clientEvents.cancel()
-      hostEvents.cancel()
       await client.disconnect()
       await host.stop()
     }
@@ -256,7 +324,7 @@ extension NetworkIntegrationTests {
       while !condition(), clock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
       }
-      #expect(condition())
+      try #require(condition())
     }
 
     private func waitUntilAsync(
@@ -268,7 +336,7 @@ extension NetworkIntegrationTests {
       while !(await condition()), clock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
       }
-      #expect(await condition())
+      try #require(await condition())
     }
   }
 }

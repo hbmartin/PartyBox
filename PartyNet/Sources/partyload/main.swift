@@ -127,8 +127,7 @@ private struct PartyLoad {
             print("Connected \(clients.count) controllers to \(discovered.name)")
         }
 
-        let (totalTicks, overflow) = configuration.seconds.multipliedReportingOverflow(by: configuration.frequency)
-        guard !overflow else { throw LoadError.invalidNumbers }
+        let totalTicks = configuration.seconds * configuration.frequency
         var rttSamples: [Double] = []
         var lastRTTSampleCounts = clients.map(\.rttSampleCount)
         let startingInputCounts = clients.map(\.inputFramesSent)
@@ -149,8 +148,14 @@ private struct PartyLoad {
             try await clock.sleep(until: target)
         }
 
+        // Allow the clients' coalescing input loops to flush the final requested frame.
+        try await clock.sleep(for: interval * 2)
+        for (index, client) in clients.enumerated() {
+            try requireConnected(client, index: index + 1, duringRun: true)
+        }
+
         let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
-            client.inputFramesSent &- startingCount
+            client.inputFramesSent - startingCount
         }
         for client in clients { await client.disconnect() }
         let sorted = rttSamples.sorted()

@@ -174,7 +174,9 @@ extension NetworkIntegrationTests {
             return
           }
         }
-        #expect(rig.host.players.count == PartyNetConstants.maximumControllers)
+        try await waitUntil {
+          rig.host.players.count == PartyNetConstants.maximumControllers
+        }
 
         for client in clients { await client.disconnect() }
         try await waitUntil {
@@ -197,6 +199,13 @@ extension NetworkIntegrationTests {
       #expect(
         FaultProfile(delayMilliseconds: -1, jitterMilliseconds: -2, reorderWindow: 0)
           == FaultProfile(delayMilliseconds: 0, jitterMilliseconds: 0, reorderWindow: 1))
+      #expect(
+        FaultProfile(delayMilliseconds: .max, jitterMilliseconds: .max, reorderWindow: .max)
+          == FaultProfile(
+            delayMilliseconds: FaultProfile.maximumDelayMilliseconds,
+            jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
+            reorderWindow: FaultProfile.maximumReorderWindow
+          ))
     }
 
     private func waitUntil(
@@ -208,7 +217,7 @@ extension NetworkIntegrationTests {
       while !(await condition()), clock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
       }
-      #expect(await condition())
+      try #require(await condition())
     }
   }
 }

@@ -82,11 +82,25 @@ final class ArcadeSoundPlayer {
             Task { @MainActor [weak self] in _ = self?.ensureEngineRunning() }
         })
 #if os(tvOS)
-        for name in [AVAudioSession.interruptionNotification, AVAudioSession.routeChangeNotification] {
-            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        notificationTokens.append(center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: rawType) == .ended,
+                  let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                  AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
+            else { return }
+            Task { @MainActor [weak self] in _ = self?.ensureEngineRunning() }
+        })
+        notificationTokens.append(center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
                 Task { @MainActor [weak self] in _ = self?.ensureEngineRunning() }
-            })
-        }
+        })
 #endif
     }
 }

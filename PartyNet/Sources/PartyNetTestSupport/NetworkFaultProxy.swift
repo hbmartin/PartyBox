@@ -19,6 +19,8 @@ public actor NetworkFaultProxy {
     private var downstreamTCPListener: NetworkListener<HostControlProtocol>?
     private var downstreamUDPListener: NetworkListener<UDP>?
     private var listenerTasks: [Task<Void, Never>] = []
+    private var controlHandlerTasks: [UUID: Task<Void, Never>] = [:]
+    private var udpHandlerTasks: [UUID: Task<Void, Never>] = [:]
     private var bridgeTasks: [UUID: [Task<Void, Never>]] = [:]
     private var bridgeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var bridgeControllerIDs: [UUID: ControllerID] = [:]
@@ -29,6 +31,7 @@ public actor NetworkFaultProxy {
     private var upstreamUDPPorts: [UInt64: NWEndpoint.Port] = [:]
     private var reorderQueues: [UInt64: [BufferedDatagram]] = [:]
     private var packetOrdinal = 0
+    private var lifecycleGeneration: UInt64 = 0
 
     public private(set) var tcpPort: UInt16?
     public private(set) var udpPort: UInt16?
@@ -43,51 +46,66 @@ public actor NetworkFaultProxy {
     @discardableResult
     public func start(upstreamHost: String = "127.0.0.1", upstreamTCPPort: UInt16) async throws -> (tcp: UInt16, udp: UInt16) {
         stop()
+        let generation = lifecycleGeneration
         guard let tcpPort = NWEndpoint.Port(rawValue: upstreamTCPPort) else {
             throw PartyNetTransportError.invalidRemoteEndpoint
         }
         self.upstreamHost = NWEndpoint.Host(upstreamHost)
         self.upstreamTCPPort = tcpPort
-
-        let udpParameters = NWParametersBuilder.parameters { UDP() }
-            .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
-            .localOnly(true)
-            .peerToPeerIncluded(false)
-        let udpListener = try NetworkListener<UDP>(for: nil, using: udpParameters)
-        downstreamUDPListener = udpListener
-        let proxy = self
-        listenerTasks.append(Task { [udpListener, proxy] in
-            do {
-                try await udpListener.run { connection in
-                    await proxy.receiveDatagrams(on: connection)
+        do {
+            let udpParameters = NWParametersBuilder.parameters { UDP() }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+            let udpListener = try NetworkListener<UDP>(for: nil, using: udpParameters)
+            downstreamUDPListener = udpListener
+            let proxy = self
+            listenerTasks.append(Task { [udpListener, proxy] in
+                do {
+                    try await udpListener.run { connection in
+                        await proxy.acceptDatagramConnection(connection, generation: generation)
+                    }
+                } catch is CancellationError {
+                } catch {
+                    await proxy.listenerFailed(generation: generation)
                 }
-            } catch is CancellationError {
-            } catch {
-                await proxy.listenerFailed()
-            }
-        })
-        let boundUDP = try await waitForPort(of: udpListener, operation: "starting fault-proxy UDP")
-        udpPort = boundUDP
+            })
+            let boundUDP = try await waitForPort(
+                of: udpListener,
+                operation: "starting fault-proxy UDP",
+                generation: generation
+            )
+            guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
+            udpPort = boundUDP
 
-        let tcpParameters = NWParametersBuilder.parameters { hostControlStack() }
-            .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
-            .localOnly(true)
-            .peerToPeerIncluded(false)
-        let tcpListener = try NetworkListener<HostControlProtocol>(for: nil, using: tcpParameters)
-        downstreamTCPListener = tcpListener
-        listenerTasks.append(Task { [tcpListener, proxy] in
-            do {
-                try await tcpListener.run { connection in
-                    await proxy.receiveControl(on: connection)
+            let tcpParameters = NWParametersBuilder.parameters { hostControlStack() }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+            let tcpListener = try NetworkListener<HostControlProtocol>(for: nil, using: tcpParameters)
+            downstreamTCPListener = tcpListener
+            listenerTasks.append(Task { [tcpListener, proxy] in
+                do {
+                    try await tcpListener.run { connection in
+                        await proxy.acceptControlConnection(connection, generation: generation)
+                    }
+                } catch is CancellationError {
+                } catch {
+                    await proxy.listenerFailed(generation: generation)
                 }
-            } catch is CancellationError {
-            } catch {
-                await proxy.listenerFailed()
-            }
-        })
-        let boundTCP = try await waitForPort(of: tcpListener, operation: "starting fault-proxy TCP")
-        self.tcpPort = boundTCP
-        return (boundTCP, boundUDP)
+            })
+            let boundTCP = try await waitForPort(
+                of: tcpListener,
+                operation: "starting fault-proxy TCP",
+                generation: generation
+            )
+            guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
+            self.tcpPort = boundTCP
+            return (boundTCP, boundUDP)
+        } catch {
+            if lifecycleGeneration == generation { stop() }
+            throw error
+        }
     }
 
     public func setProfile(_ profile: FaultProfile) {
@@ -137,18 +155,25 @@ public actor NetworkFaultProxy {
                 bridgedControllerID == controllerID ? bridgeID : nil
             }
         } else {
-            Array(downstreamConnections.keys)
+            Array(Set(downstreamConnections.keys).union(controlHandlerTasks.keys))
         }
+        let handlers = bridgeIDs.compactMap { controlHandlerTasks[$0] }
         for bridgeID in bridgeIDs {
             // Cancel both bridge directions without synthesizing `.leave`: a network cut must
             // exercise the host's disconnect grace period, not the explicit-leave path.
             removeBridge(bridgeID)
         }
+        for handler in handlers { await handler.value }
     }
 
     public func stop() {
+        lifecycleGeneration &+= 1
         listenerTasks.forEach { $0.cancel() }
         listenerTasks.removeAll()
+        controlHandlerTasks.values.forEach { $0.cancel() }
+        controlHandlerTasks.removeAll()
+        udpHandlerTasks.values.forEach { $0.cancel() }
+        udpHandlerTasks.removeAll()
         for bridgeID in Array(downstreamConnections.keys) { removeBridge(bridgeID) }
         downstreamTCPListener = nil
         downstreamUDPListener = nil
@@ -160,21 +185,45 @@ public actor NetworkFaultProxy {
         upstreamUDPPorts.removeAll()
         reorderQueues.removeAll()
         metrics.activeTCPBridges = 0
-        metrics.activeTCPHandlers = 0
         metrics.activeUDPSessions = 0
         tcpPort = nil
         udpPort = nil
     }
 
-    private func listenerFailed() {
+    private func listenerFailed(generation: UInt64) {
+        guard lifecycleGeneration == generation else { return }
         // Listener state is observable through missing ports/failed client connections.
     }
 
-    private func receiveControl(on downstream: HostControlConnection) async {
+    private func acceptControlConnection(
+        _ downstream: HostControlConnection,
+        generation: UInt64
+    ) {
+        guard lifecycleGeneration == generation else { return }
+        let bridgeID = UUID()
+        let proxy = self
+        controlHandlerTasks[bridgeID] = Task { [downstream, proxy] in
+            await proxy.receiveControl(
+                on: downstream,
+                bridgeID: bridgeID,
+                generation: generation
+            )
+        }
+    }
+
+    private func receiveControl(
+        on downstream: HostControlConnection,
+        bridgeID: UUID,
+        generation: UInt64
+    ) async {
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
         guard let upstreamHost, let upstreamTCPPort, let proxyUDPPort = udpPort else { return }
         metrics.activeTCPHandlers += 1
-        defer { metrics.activeTCPHandlers -= 1 }
-        let bridgeID = UUID()
+        defer {
+            metrics.activeTCPHandlers -= 1
+            controlHandlerTasks.removeValue(forKey: bridgeID)
+            removeBridge(bridgeID, cancelHandler: false)
+        }
         let upstream = ClientControlConnection(
             to: .hostPort(host: upstreamHost, port: upstreamTCPPort),
             using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
@@ -185,15 +234,24 @@ public actor NetworkFaultProxy {
         metrics.activeTCPBridges = downstreamConnections.count
 
         do {
-            let first = try await downstream.receive().content
+            let first = try await withProxyTimeout(
+                operationName: "waiting for fault-proxy downstream hello"
+            ) {
+                try await downstream.receive().content
+            }
             guard case let .hello(hello) = first else {
                 try? await downstream.send(.rejected(.malformedHello))
-                removeBridge(bridgeID)
                 return
             }
             bridgeControllerIDs[bridgeID] = hello.controllerID
             try await upstream.send(.hello(hello))
-            let response = try await upstream.receive().content
+            let response = try await withProxyTimeout(
+                operationName: "waiting for fault-proxy upstream welcome"
+            ) {
+                try await upstream.receive().content
+            }
+            guard lifecycleGeneration == generation,
+                  downstreamConnections[bridgeID] != nil else { return }
             switch response {
             case let .welcome(welcome):
                 bridgeTokens[bridgeID] = welcome.sessionToken
@@ -210,7 +268,6 @@ public actor NetworkFaultProxy {
                 try await downstream.send(.welcome(proxiedWelcome))
             default:
                 try await downstream.send(response)
-                removeBridge(bridgeID)
                 return
             }
 
@@ -238,7 +295,6 @@ public actor NetworkFaultProxy {
         } catch {
             // Either side closing is an expected fault-proxy lifecycle event.
         }
-        removeBridge(bridgeID)
     }
 
     private func forwardToHost(_ message: ClientMessage, bridgeID: UUID) async throws {
@@ -261,7 +317,8 @@ public actor NetworkFaultProxy {
         removeBridge(bridgeID)
     }
 
-    private func removeBridge(_ bridgeID: UUID) {
+    private func removeBridge(_ bridgeID: UUID, cancelHandler: Bool = true) {
+        if cancelHandler { controlHandlerTasks.removeValue(forKey: bridgeID)?.cancel() }
         bridgeTasks.removeValue(forKey: bridgeID)?.forEach { $0.cancel() }
         downstreamConnections.removeValue(forKey: bridgeID)
         upstreamConnections.removeValue(forKey: bridgeID)
@@ -276,9 +333,31 @@ public actor NetworkFaultProxy {
         metrics.activeTCPBridges = downstreamConnections.count
     }
 
-    private func receiveDatagrams(on connection: NetworkConnection<UDP>) async {
+    private func acceptDatagramConnection(
+        _ connection: NetworkConnection<UDP>,
+        generation: UInt64
+    ) {
+        guard lifecycleGeneration == generation else { return }
+        let handlerID = UUID()
+        let proxy = self
+        udpHandlerTasks[handlerID] = Task { [connection, proxy] in
+            await proxy.receiveDatagrams(
+                on: connection,
+                handlerID: handlerID,
+                generation: generation
+            )
+        }
+    }
+
+    private func receiveDatagrams(
+        on connection: NetworkConnection<UDP>,
+        handlerID: UUID,
+        generation: UInt64
+    ) async {
+        defer { udpHandlerTasks.removeValue(forKey: handlerID) }
         do {
             while !Task.isCancelled {
+                guard lifecycleGeneration == generation else { return }
                 let data = try await connection.receive().content
                 await acceptDatagram(data)
             }
@@ -377,13 +456,35 @@ public actor NetworkFaultProxy {
 
     private func waitForPort<ApplicationProtocol: NetworkProtocolOptions>(
         of listener: NetworkListener<ApplicationProtocol>,
-        operation: String
+        operation: String,
+        generation: UInt64
     ) async throws -> UInt16 {
         for _ in 0..<500 {
+            guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
             if let port = listener.port, port.rawValue != 0 { return port.rawValue }
             try Task.checkCancellation()
             try await clock.sleep(for: .milliseconds(10))
         }
         throw PartyNetTransportError.timedOut(operation)
+    }
+
+    private func withProxyTimeout<T: Sendable>(
+        _ duration: Duration = PartyNetConstants.helloTimeout,
+        operationName: String,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let clock = clock
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await clock.sleep(for: duration)
+                throw PartyNetTransportError.timedOut(operationName)
+            }
+            guard let result = try await group.next() else {
+                throw PartyNetTransportError.stopped
+            }
+            group.cancelAll()
+            return result
+        }
     }
 }

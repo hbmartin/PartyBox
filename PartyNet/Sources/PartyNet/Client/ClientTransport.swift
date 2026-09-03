@@ -29,7 +29,7 @@ public enum PartyClientError: Error, LocalizedError, Sendable {
 }
 
 actor ClientTransport {
-  nonisolated let events: AsyncStream<ClientTransportEvent>
+  nonisolated var events: AsyncStream<ClientTransportEvent> { eventHub.stream() }
 
   private struct DesiredInput: Equatable, Sendable {
     var axisX: Float = 0
@@ -46,9 +46,11 @@ actor ClientTransport {
     var desired = DesiredInput()
     var lastUDPSent: DesiredInput?
     var lastUDPSentAt: AnyClock<Duration>.Instant?
+    var lastUDPAttemptAt: AnyClock<Duration>.Instant?
     var lastTCPSentAt: AnyClock<Duration>.Instant?
     var lastAcknowledgedAt: AnyClock<Duration>.Instant?
     var usesTCPFallback = false
+    var fallbackProbeSequenceFloor: UInt32?
     var pingSentAt: AnyClock<Duration>.Instant?
     var pingNonce: UInt64?
     var sequence: UInt32 = 0
@@ -56,7 +58,12 @@ actor ClientTransport {
     var pingTask: Task<Void, Never>?
   }
 
-  private let eventContinuation: AsyncStream<ClientTransportEvent>.Continuation
+  private struct PendingHandshake: Sendable {
+    let connection: ClientControlConnection
+    let task: Task<HostMessage, Error>
+  }
+
+  private nonisolated let eventHub = EventHub<ClientTransportEvent>()
   private let logger = Logger(subsystem: "PartyNet", category: "ClientTransport")
   private let clock: AnyClock<Duration>
   private let inputSendInterval: Duration
@@ -65,14 +72,12 @@ actor ClientTransport {
   private var browserGeneration: UUID?
   private var receiveTasks: [UUID: Task<Void, Never>] = [:]
   private var sessions: [UUID: Session] = [:]
+  private var pendingHandshakes: [UUID: PendingHandshake] = [:]
 
   init(inputSendInterval: Duration = .milliseconds(16)) {
     @Dependency(\.continuousClock) var continuousClock
     clock = AnyClock(continuousClock)
     self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
-    var continuation: AsyncStream<ClientTransportEvent>.Continuation!
-    events = AsyncStream { continuation = $0 }
-    eventContinuation = continuation
   }
 
   func startBrowsing() {
@@ -93,15 +98,21 @@ actor ClientTransport {
       } catch is CancellationError {
         // Expected on shutdown.
       } catch {
-        transport.eventContinuation.yield(
+        transport.eventHub.yield(
           .discoveryFailed("Discovery failed: \(error.localizedDescription)"))
       }
       await transport.browserDidFinish(generation: generation)
     }
   }
 
-  func connect(to host: DiscoveredHost, hello: Hello) async throws -> (UUID, Welcome) {
+  func restartBrowsing() {
+    stopBrowsing()
+    startBrowsing()
+  }
+
+  func connect(to host: DiscoveredHost, hello: Hello, attemptID: UUID) async throws -> (UUID, Welcome) {
     guard host.isCompatible else { throw PartyClientError.incompatibleHost }
+    await cancelAllPendingHandshakes()
     await disconnectAllSessions()
     let connection: ClientControlConnection
     switch host.target {
@@ -118,19 +129,27 @@ actor ClientTransport {
     }
 
     let connectionID = UUID()
-    do {
-      try await withTimeout(PartyNetConstants.helloTimeout, operationName: "connecting to the host")
-      {
+    let handshakeTask = Task { [connection] in
+      try await withTimeout(PartyNetConstants.helloTimeout, operationName: "connecting to the host") {
         try await connection.send(.hello(hello))
       }
-      let response = try await withTimeout(
-        PartyNetConstants.helloTimeout, operationName: "waiting for host welcome"
+      return try await withTimeout(
+        PartyNetConstants.helloTimeout,
+        operationName: "waiting for host welcome"
       ) {
         try await connection.receive().content
       }
+    }
+    pendingHandshakes[attemptID] = PendingHandshake(connection: connection, task: handshakeTask)
+    var receivedWelcome = false
+    do {
+      let response = try await handshakeTask.value
+      guard pendingHandshakes[attemptID] != nil else { throw CancellationError() }
       let welcome: Welcome
       switch response {
-      case .welcome(let value): welcome = value
+      case .welcome(let value):
+        welcome = value
+        receivedWelcome = true
       case .rejected(let reason): throw PartyClientError.rejected(reason)
       default: throw PartyClientError.unexpectedHandshake
       }
@@ -166,10 +185,20 @@ actor ClientTransport {
       receiveTasks[connectionID] = Task { [connection, transport] in
         await transport.receiveMessages(connectionID: connectionID, connection: connection)
       }
+      pendingHandshakes.removeValue(forKey: attemptID)
       return (connectionID, welcome)
     } catch {
+      if receivedWelcome { try? await connection.send(.leave) }
+      pendingHandshakes.removeValue(forKey: attemptID)
+      handshakeTask.cancel()
       throw error
     }
+  }
+
+  func cancelConnectionAttempt(_ attemptID: UUID) async {
+    guard let pending = pendingHandshakes.removeValue(forKey: attemptID) else { return }
+    pending.task.cancel()
+    _ = try? await pending.task.value
   }
 
   func send(_ message: ClientMessage, connectionID: UUID) async throws {
@@ -194,10 +223,9 @@ actor ClientTransport {
   }
 
   func stop() {
-    browserTask?.cancel()
-    browserTask = nil
-    browserGeneration = nil
-    browser = nil
+    stopBrowsing()
+    pendingHandshakes.values.forEach { $0.task.cancel() }
+    pendingHandshakes.removeAll()
     receiveTasks.values.forEach { $0.cancel() }
     receiveTasks.removeAll()
     for session in sessions.values {
@@ -211,7 +239,7 @@ actor ClientTransport {
     let hosts = endpoints.map(DiscoveredHost.init(endpoint:)).sorted {
       $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
     }
-    eventContinuation.yield(.hosts(hosts))
+    eventHub.yield(.hosts(hosts))
   }
 
   private func browserDidFinish(generation: UUID) {
@@ -228,6 +256,20 @@ actor ClientTransport {
     }
   }
 
+  private func cancelAllPendingHandshakes() async {
+    let pending = Array(pendingHandshakes.values)
+    pendingHandshakes.removeAll()
+    for handshake in pending { handshake.task.cancel() }
+    for handshake in pending { _ = try? await handshake.task.value }
+  }
+
+  private func stopBrowsing() {
+    browserTask?.cancel()
+    browserTask = nil
+    browserGeneration = nil
+    browser = nil
+  }
+
   private func receiveMessages(connectionID: UUID, connection: ClientControlConnection) async {
     do {
       for try await message in connection.messages {
@@ -242,7 +284,7 @@ actor ClientTransport {
           session.pingNonce = nil
           sessions[connectionID] = session
         }
-        eventContinuation.yield(.message(connectionID: connectionID, message.content))
+        eventHub.yield(.message(connectionID: connectionID, message.content))
       }
       endSession(connectionID, reason: "The host closed the connection.")
     } catch is CancellationError {
@@ -269,9 +311,10 @@ actor ClientTransport {
       if shouldFallback != session.usesTCPFallback {
         if var latest = sessions[connectionID] {
           latest.usesTCPFallback = shouldFallback
+          latest.fallbackProbeSequenceFloor = shouldFallback ? latest.sequence : nil
           sessions[connectionID] = latest
         }
-        eventContinuation.yield(
+        eventHub.yield(
           .transportMode(
             connectionID: connectionID,
             usesTCPFallback: shouldFallback
@@ -279,7 +322,7 @@ actor ClientTransport {
       }
 
       let udpRefreshDue =
-        session.lastUDPSentAt.map {
+        (shouldFallback ? session.lastUDPAttemptAt : session.lastUDPSentAt).map {
           $0.duration(to: now) >= PartyNetConstants.inputRefreshInterval
         } ?? true
       let udpChanged = session.desired != session.lastUDPSent
@@ -304,6 +347,7 @@ actor ClientTransport {
     // Record the sequence before suspending in `send`. On loopback, the acknowledgment can
     // otherwise reenter this actor before the sequence has advanced and be rejected as unsent.
     session.sequence &+= 1
+    session.lastUDPAttemptAt = now
     sessions[connectionID] = session
     do {
       try await session.udp.send(frame.encode())
@@ -311,7 +355,7 @@ actor ClientTransport {
       latest.lastUDPSent = session.desired
       latest.lastUDPSentAt = now
       sessions[connectionID] = latest
-      eventContinuation.yield(.inputSent(connectionID: connectionID))
+      eventHub.yield(.inputSent(connectionID: connectionID))
     } catch {
       // A datagram path can fail independently. The acknowledgment deadline drives fallback.
     }
@@ -327,7 +371,7 @@ actor ClientTransport {
       guard var latest = sessions[connectionID] else { return true }
       latest.lastTCPSentAt = now
       sessions[connectionID] = latest
-      eventContinuation.yield(.inputSent(connectionID: connectionID))
+      eventHub.yield(.inputSent(connectionID: connectionID))
       return true
     } catch {
       endSession(connectionID, reason: error.localizedDescription)
@@ -353,12 +397,17 @@ actor ClientTransport {
     guard distanceFromAcknowledged > 0,
       distanceFromAcknowledged < (UInt32.max / 2) + 1
     else { return }
+    if let floor = session.fallbackProbeSequenceFloor {
+      let distanceFromFloor = sequence &- floor
+      guard sequence == floor || distanceFromFloor < (UInt32.max / 2) + 1 else { return }
+    }
     session.lastAcknowledgedAt = clock.now
     let wasUsingFallback = session.usesTCPFallback
     session.usesTCPFallback = false
+    session.fallbackProbeSequenceFloor = nil
     sessions[connectionID] = session
     if wasUsingFallback {
-      eventContinuation.yield(.transportMode(connectionID: connectionID, usesTCPFallback: false))
+      eventHub.yield(.transportMode(connectionID: connectionID, usesTCPFallback: false))
     }
   }
 
@@ -391,7 +440,7 @@ actor ClientTransport {
     guard sessions[connectionID] != nil else { return }
     removeSession(connectionID)
     logger.debug("Client session ended: \(reason)")
-    eventContinuation.yield(.disconnected(connectionID: connectionID, reason: reason))
+    eventHub.yield(.disconnected(connectionID: connectionID, reason: reason))
   }
 
   private func removeSession(_ connectionID: UUID) {

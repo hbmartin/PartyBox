@@ -216,8 +216,9 @@ extension NetworkIntegrationTests {
       for _ in 0..<attempts {
         if condition() { return }
         await settle()
+        try await Task.sleep(nanoseconds: 1_000_000)
       }
-      #expect(condition())
+      try #require(condition())
     }
 
     private func waitUntil(
@@ -228,7 +229,7 @@ extension NetworkIntegrationTests {
         if await condition() { return }
         try await Task.sleep(nanoseconds: 1_000_000)
       }
-      #expect(await condition())
+      try #require(await condition())
     }
 
     private func settle() async {

@@ -28,6 +28,19 @@ struct PartyBox_ControllerTests {
         #expect(configuration.defaultsSuite == "PartyBoxControllerTests.Launch")
     }
 
+    @Test func controllerLaunchArgumentsRequireBracketsForIPv6Hosts() {
+        let bracketed = ControllerLaunchConfiguration(arguments: [
+            "PartyBox Controller", "--host", "[::1]:49999",
+        ])
+        #expect(bracketed.hostAddress?.host == "::1")
+        #expect(bracketed.hostAddress?.port == 49_999)
+
+        let unbracketed = ControllerLaunchConfiguration(arguments: [
+            "PartyBox Controller", "--host", "fe80::1:49999",
+        ])
+        #expect(unbracketed.hostAddress == nil)
+    }
+
     @Test func identityAndSanitizedNamePersistAcrossLaunches() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()

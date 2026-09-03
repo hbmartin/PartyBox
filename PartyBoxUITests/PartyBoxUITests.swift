@@ -34,7 +34,7 @@ final class PartyBoxUITests: XCTestCase {
     @MainActor
     func testFourPlayerLobbyMenuPongNavigation() throws {
         let app = launch(additional: ["--bot-count", "4", "--host-name", "Automation PartyBox"])
-        XCTAssertTrue(app.staticTexts["PRESS SELECT TO CHOOSE A GAME"].waitForExistence(timeout: 10))
+        XCTAssertTrue(element("host.lobby.start", in: app).waitForExistence(timeout: 10))
         activateSelect(in: app)
         XCTAssertTrue(element("host.phase.menu", in: app).waitForExistence(timeout: 5))
         activateSelect(in: app)
