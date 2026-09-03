@@ -31,17 +31,25 @@ public enum PartyClientError: Error, LocalizedError, Sendable {
 struct PingWatchdog: Sendable {
   private(set) var oldestUnansweredAt: AnyClock<Duration>.Instant?
   private(set) var outstandingNonces: Set<UInt64> = []
+  private var nonceOrder: [UInt64] = []
+  private var sentAtByNonce: [UInt64: AnyClock<Duration>.Instant] = [:]
 
   mutating func record(nonce: UInt64, sentAt: AnyClock<Duration>.Instant) {
-    if outstandingNonces.isEmpty { oldestUnansweredAt = sentAt }
-    outstandingNonces.insert(nonce)
+    guard outstandingNonces.insert(nonce).inserted else { return }
+    nonceOrder.append(nonce)
+    sentAtByNonce[nonce] = sentAt
+    if nonceOrder.count == 1 { oldestUnansweredAt = sentAt }
   }
 
   @discardableResult
   mutating func acknowledge(nonce: UInt64) -> Bool {
-    guard outstandingNonces.contains(nonce) else { return false }
-    outstandingNonces.removeAll()
-    oldestUnansweredAt = nil
+    guard let acknowledgedIndex = nonceOrder.firstIndex(of: nonce) else { return false }
+    for acknowledged in nonceOrder[...acknowledgedIndex] {
+      outstandingNonces.remove(acknowledged)
+      sentAtByNonce.removeValue(forKey: acknowledged)
+    }
+    nonceOrder.removeFirst(acknowledgedIndex + 1)
+    oldestUnansweredAt = nonceOrder.first.flatMap { sentAtByNonce[$0] }
     return true
   }
 

@@ -9,6 +9,18 @@ public actor NetworkFaultProxy {
         let token: UInt64
     }
 
+    private struct ScheduledDatagram: Sendable {
+        let packet: BufferedDatagram
+        let deadline: AnyClock<Duration>.Instant
+    }
+
+    private struct UDPForwardWorker: Sendable {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    package static let maximumQueuedForwardsPerToken = 256
+
     private let clock: AnyClock<Duration>
     private var profile: FaultProfile
     private var randomState: UInt64
@@ -21,7 +33,8 @@ public actor NetworkFaultProxy {
     private var listenerTasks: [Task<Void, Never>] = []
     private var controlHandlerTasks: [UUID: Task<Void, Never>] = [:]
     private var udpHandlerTasks: [UUID: Task<Void, Never>] = [:]
-    private var udpForwardTasks: [UUID: Task<Void, Never>] = [:]
+    private var udpForwardTasks: [UInt64: UDPForwardWorker] = [:]
+    private var udpForwardQueues: [UInt64: [ScheduledDatagram]] = [:]
     private var bridgeTasks: [UUID: [Task<Void, Never>]] = [:]
     private var bridgeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var bridgeControllerIDs: [UUID: ControllerID] = [:]
@@ -131,6 +144,10 @@ public actor NetworkFaultProxy {
 
     public func currentMetrics() -> FaultMetrics { metrics }
 
+    package func pendingUDPForwardCount() -> Int {
+        udpForwardTasks.count + udpForwardQueues.values.reduce(0) { $0 + $1.count }
+    }
+
     public func connectedControllerIDs() -> Set<ControllerID> {
         Set(bridgeControllerIDs.values)
     }
@@ -141,6 +158,7 @@ public actor NetworkFaultProxy {
         }
         upstreamHost = NWEndpoint.Host(host)
         upstreamTCPPort = port
+        cancelAllUDPForwards()
         upstreamUDPConnections.removeAll()
         upstreamUDPPorts.removeAll()
         reorderQueues.removeAll()
@@ -177,8 +195,7 @@ public actor NetworkFaultProxy {
         controlHandlerTasks.removeAll()
         udpHandlerTasks.values.forEach { $0.cancel() }
         udpHandlerTasks.removeAll()
-        udpForwardTasks.values.forEach { $0.cancel() }
-        udpForwardTasks.removeAll()
+        cancelAllUDPForwards()
         for bridgeID in Array(downstreamConnections.keys) { removeBridge(bridgeID) }
         downstreamTCPListener = nil
         downstreamUDPListener = nil
@@ -333,6 +350,8 @@ public actor NetworkFaultProxy {
         upstreamConnections.removeValue(forKey: bridgeID)
         bridgeControllerIDs.removeValue(forKey: bridgeID)
         if let token = bridgeTokens.removeValue(forKey: bridgeID) {
+            udpForwardTasks.removeValue(forKey: token)?.task.cancel()
+            udpForwardQueues.removeValue(forKey: token)
             upstreamUDPConnections.removeValue(forKey: token)
             upstreamUDPPorts.removeValue(forKey: token)
             reorderQueues.removeValue(forKey: token)
@@ -403,33 +422,79 @@ public actor NetworkFaultProxy {
     private func scheduleForward(_ packet: BufferedDatagram) {
         let delay = nextDelayMilliseconds()
         if delay > 0 { metrics.udpDelayed += 1 }
-        let taskID = UUID()
+        let scheduled = ScheduledDatagram(
+            packet: packet,
+            deadline: clock.now.advanced(by: .milliseconds(delay))
+        )
+        var queue = udpForwardQueues[packet.token, default: []]
+        if queue.count >= Self.maximumQueuedForwardsPerToken {
+            queue[queue.index(before: queue.endIndex)] = scheduled
+            metrics.udpDropped += 1
+        } else {
+            queue.append(scheduled)
+        }
+        udpForwardQueues[packet.token] = queue
+        guard udpForwardTasks[packet.token] == nil else { return }
+
+        let workerID = UUID()
         let generation = lifecycleGeneration
         let clock = clock
         let proxy = self
-        udpForwardTasks[taskID] = Task { [clock, proxy] in
-            if delay > 0 {
+        let task = Task { [clock, proxy] in
+            await proxy.runForwardQueue(
+                token: packet.token,
+                workerID: workerID,
+                generation: generation,
+                clock: clock
+            )
+        }
+        udpForwardTasks[packet.token] = UDPForwardWorker(id: workerID, task: task)
+    }
+
+    private func runForwardQueue(
+        token: UInt64,
+        workerID: UUID,
+        generation: UInt64,
+        clock: AnyClock<Duration>
+    ) async {
+        defer { finishForward(token: token, workerID: workerID) }
+        while !Task.isCancelled, lifecycleGeneration == generation {
+            guard var queue = udpForwardQueues[token], !queue.isEmpty else { return }
+            let scheduled = queue.removeFirst()
+            if queue.isEmpty {
+                udpForwardQueues.removeValue(forKey: token)
+            } else {
+                udpForwardQueues[token] = queue
+            }
+
+            let remaining = clock.now.duration(to: scheduled.deadline)
+            if remaining > .zero {
                 do {
-                    try await clock.sleep(for: .milliseconds(delay))
+                    try await clock.sleep(for: remaining)
                 } catch {
-                    await proxy.finishForward(taskID: taskID)
                     return
                 }
             }
-            guard !Task.isCancelled else {
-                await proxy.finishForward(taskID: taskID)
-                return
-            }
-            await proxy.forward(packet, taskID: taskID, generation: generation)
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+            await forward(scheduled.packet, generation: generation)
         }
     }
 
-    private func finishForward(taskID: UUID) {
-        udpForwardTasks.removeValue(forKey: taskID)
+    private func finishForward(token: UInt64, workerID: UUID) {
+        guard udpForwardTasks[token]?.id == workerID else { return }
+        udpForwardTasks.removeValue(forKey: token)
+        if udpForwardQueues[token]?.isEmpty == true {
+            udpForwardQueues.removeValue(forKey: token)
+        }
     }
 
-    private func forward(_ packet: BufferedDatagram, taskID: UUID, generation: UInt64) async {
-        defer { udpForwardTasks.removeValue(forKey: taskID) }
+    private func cancelAllUDPForwards() {
+        udpForwardTasks.values.forEach { $0.task.cancel() }
+        udpForwardTasks.removeAll()
+        udpForwardQueues.removeAll()
+    }
+
+    private func forward(_ packet: BufferedDatagram, generation: UInt64) async {
         guard !Task.isCancelled, lifecycleGeneration == generation else { return }
         guard let upstreamHost, let port = upstreamUDPPorts[packet.token] else {
             metrics.udpRejected += 1
@@ -447,7 +512,6 @@ public actor NetworkFaultProxy {
         }
         do {
             try await connection.send(packet.data)
-            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
             metrics.udpForwarded += 1
         } catch {
             guard lifecycleGeneration == generation else { return }

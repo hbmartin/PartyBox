@@ -10,6 +10,7 @@ struct ControllerLaunchConfiguration {
     let controllerID: UUID?
     let displayName: String?
     let hostAddress: HostAddress?
+    let hostAddressError: PartyClientError?
     let defaultsSuite: String?
 
     static var current: Self { Self(arguments: ProcessInfo.processInfo.arguments) }
@@ -24,7 +25,13 @@ struct ControllerLaunchConfiguration {
         controllerID = Self.option("--controller-id", in: arguments).flatMap(UUID.init(uuidString:))
         displayName = Self.option("--display-name", in: arguments)
         defaultsSuite = Self.option("--defaults-suite", in: arguments)
-        hostAddress = Self.option("--host", in: arguments).flatMap { HostAddress(parsing: $0) }
+        if let requestedHost = Self.option("--host", in: arguments) {
+            hostAddress = HostAddress(parsing: requestedHost)
+            hostAddressError = hostAddress == nil ? .invalidAddress : nil
+        } else {
+            hostAddress = nil
+            hostAddressError = nil
+        }
 #else
         isUITesting = false
         scenario = nil
@@ -35,6 +42,7 @@ struct ControllerLaunchConfiguration {
         displayName = nil
         defaultsSuite = nil
         hostAddress = nil
+        hostAddressError = nil
 #endif
     }
 

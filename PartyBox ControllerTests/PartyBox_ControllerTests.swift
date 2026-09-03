@@ -25,6 +25,7 @@ struct PartyBox_ControllerTests {
         #expect(configuration.displayName == "Ada")
         #expect(configuration.hostAddress?.host == "127.0.0.1")
         #expect(configuration.hostAddress?.port == 49_999)
+        #expect(configuration.hostAddressError == nil)
         #expect(configuration.defaultsSuite == "PartyBoxControllerTests.Launch")
     }
 
@@ -39,6 +40,13 @@ struct PartyBox_ControllerTests {
             "PartyBox Controller", "--host", "fe80::1:49999",
         ])
         #expect(unbracketed.hostAddress == nil)
+        #expect(unbracketed.hostAddressError?.localizedDescription == PartyClientError.invalidAddress.localizedDescription)
+
+        let malformed = ControllerLaunchConfiguration(arguments: [
+            "PartyBox Controller", "--host", "[not-an-ipv6]:49999",
+        ])
+        #expect(malformed.hostAddress == nil)
+        #expect(malformed.hostAddressError?.localizedDescription == PartyClientError.invalidAddress.localizedDescription)
     }
 
     @Test func identityAndSanitizedNamePersistAcrossLaunches() async throws {
@@ -57,6 +65,24 @@ struct PartyBox_ControllerTests {
             let relaunched = ControllerCoordinator(defaults: defaults)
             #expect(relaunched.client.controllerID == controllerID)
             #expect(relaunched.displayName == "Ada Lovelace")
+        }
+    }
+
+    @Test func invalidDebugHostSurfacesAnAddressError() async {
+        await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--host", "[not-an-ipv6]:49999",
+            ])
+            let coordinator = ControllerCoordinator(configuration: configuration)
+
+            await coordinator.start()
+            #expect(
+                coordinator.client.state
+                    == .disconnected(PartyClientError.invalidAddress.localizedDescription)
+            )
+            await coordinator.stop()
         }
     }
 }

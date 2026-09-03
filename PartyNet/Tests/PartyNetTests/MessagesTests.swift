@@ -64,6 +64,18 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("©\u{200D}®", fallback: "Player") == "©®")
         #expect(DisplayName.sanitized("A\u{E0067}da", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized("\u{FE0F}Ada", fallback: "Player") == "Ada")
+        #expect(DisplayName.sanitized("A\u{FE0F}", fallback: "Player") == "A")
+        let standardizedVariant = "\u{2268}\u{FE00}"
+        #expect(DisplayName.sanitized(standardizedVariant, fallback: "Player") == standardizedVariant)
+        let tonedEmoji = "👩🏽‍💻"
+        #expect(DisplayName.sanitized(tonedEmoji, fallback: "Player") == tonedEmoji)
+        let california = emojiTagSequence("usca")
+        #expect(DisplayName.sanitized(california, fallback: "Player") == california)
+        #expect(DisplayName.sanitized(emojiTagSequence("ushuh"), fallback: "Player") == "🏴")
+        let overlong = emojiTagSequence(String(repeating: "a", count: 30))
+        #expect(DisplayName.sanitized(overlong, fallback: "Player") == "🏴")
+        let beyondAnalysisLimit = String(repeating: "\u{200B}", count: 128) + "Visible"
+        #expect(DisplayName.sanitized(beyondAnalysisLimit, fallback: "Player") == "Player")
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }
 
@@ -81,6 +93,12 @@ struct MessagesTests {
         #expect(HostAddress(parsing: "partybox.local:0") == nil)
         #expect(HostAddress(parsing: "partybox.local:65536") == nil)
         #expect(HostAddress(parsing: "partybox.local") == nil)
+        #expect(HostAddress(parsing: "[not-an-ipv6]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80:::1]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%lo0%en0]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%not-an-interface]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%4294967296]:49999") == nil)
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {
@@ -103,5 +121,10 @@ struct MessagesTests {
             let decoded = try decoder.decode(T.self, from: encoder.encode(value))
             #expect(decoded == value)
         }
+    }
+
+    private func emojiTagSequence(_ payload: String) -> String {
+        let tags = payload.unicodeScalars.compactMap { Unicode.Scalar($0.value + 0xE0000) }
+        return "🏴" + String(String.UnicodeScalarView(tags)) + "\u{E007F}"
     }
 }

@@ -50,14 +50,18 @@ extension NetworkIntegrationTests {
 
       let acknowledgedOutstandingPing = watchdog.acknowledge(nonce: 2)
       #expect(acknowledgedOutstandingPing)
-      #expect(watchdog.outstandingNonces.isEmpty)
-      #expect(watchdog.oldestUnansweredAt == nil)
+      #expect(watchdog.outstandingNonces == [3])
+      #expect(watchdog.oldestUnansweredAt != nil)
 
       watchdog.record(nonce: 4, sentAt: erasedClock.now)
-      let acknowledgedStalePing = watchdog.acknowledge(nonce: 3)
+      let acknowledgedStalePing = watchdog.acknowledge(nonce: 2)
       #expect(!acknowledgedStalePing)
-      await clock.advance(by: .seconds(6))
+      await clock.advance(by: .seconds(4))
       #expect(watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
+
+      let acknowledgedNextPing = watchdog.acknowledge(nonce: 3)
+      #expect(acknowledgedNextPing)
+      #expect(watchdog.outstandingNonces == [4])
     }
 
     @Test func reconnectWindowExpiresAtExactlyThirtySeconds() async throws {
