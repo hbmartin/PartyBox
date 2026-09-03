@@ -16,7 +16,13 @@ struct PartyBox_ControllerApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(coordinator: coordinator)
-                .task { await coordinator.start() }
+                .task {
+                    await coordinator.start()
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+                    }
+                    await coordinator.stop()
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { coordinator.client.reconnectAfterForeground() }
                 }

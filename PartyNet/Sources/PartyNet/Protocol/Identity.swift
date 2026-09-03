@@ -53,9 +53,22 @@ public enum PlayerPalette {
 
 public enum DisplayName {
     public static func sanitized(_ candidate: String, fallback: String) -> String {
-        let compact = candidate
+        let compactCandidate = compact(candidate)
+        let compactFallback = compact(fallback)
+        let resolved = compactCandidate.isEmpty ? compactFallback : compactCandidate
+        return String((resolved.isEmpty ? "Player" : resolved).prefix(24))
+    }
+
+    private static func compact(_ value: String) -> String {
+        let space = Unicode.Scalar(" ")
+        let safeScalars = value.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) { return space }
+            if scalar.properties.isBidiControl || scalar.properties.generalCategory == .control { return nil }
+            return scalar
+        }
+        let compact = String(String.UnicodeScalarView(safeScalars))
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        return String((compact.isEmpty ? fallback : compact).prefix(24))
+        return compact
     }
 }

@@ -51,6 +51,7 @@ struct LoopbackSessionTests {
             await client.connect(host: "127.0.0.1", port: port)
             clients.append(client)
         }
+        try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
         #expect(host.players.count == PartyNetConstants.maximumControllers)
 
         let ninth = PartyClient(displayName: "Ninth")
@@ -118,6 +119,46 @@ struct LoopbackSessionTests {
         try await waitUntil(timeout: .seconds(1)) { host.players.isEmpty }
 
         #expect(host.inputs.snapshot().isEmpty)
+        await host.stop()
+    }
+
+    @Test func connectingToAnotherHostReplacesTheActiveSession() async throws {
+        let firstHost = PartyHost(reconnectGrace: .milliseconds(100))
+        let secondHost = PartyHost(reconnectGrace: .milliseconds(100))
+        let firstPort = try await firstHost.start(hostName: "First Host", advertise: false)
+        let secondPort = try await secondHost.start(hostName: "Second Host", advertise: false)
+        let client = PartyClient(displayName: "Mover")
+
+        await client.connect(host: "127.0.0.1", port: firstPort)
+        try await waitUntil { firstHost.players.count == 1 }
+        await client.connect(host: "127.0.0.1", port: secondPort)
+
+        try await waitUntil { firstHost.players.isEmpty && secondHost.players.count == 1 }
+        #expect(client.player?.id == PlayerID(0))
+        await client.disconnect()
+        await firstHost.stop()
+        await secondHost.stop()
+    }
+
+    @Test func foregroundRecoveryProbesLiveConnectionButHonorsExplicitDisconnect() async throws {
+        let host = PartyHost()
+        let port = try await host.start(hostName: "Foreground Host", advertise: false)
+        let client = PartyClient(displayName: "Foreground")
+        await client.connect(host: "127.0.0.1", port: port)
+
+        client.reconnectAfterForeground()
+        try await waitUntil(timeout: .seconds(1)) { client.rttSampleCount > 0 }
+        guard case .connected = client.state else {
+            Issue.record("Expected a healthy foreground probe to preserve the connection")
+            await host.stop()
+            return
+        }
+
+        await client.disconnect()
+        client.reconnectAfterForeground()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(client.state == .browsing)
+        #expect(host.players.isEmpty)
         await host.stop()
     }
 

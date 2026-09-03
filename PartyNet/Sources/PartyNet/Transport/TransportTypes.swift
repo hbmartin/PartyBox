@@ -8,14 +8,12 @@ typealias ClientControlConnection = NetworkConnection<ClientControlProtocol>
 
 enum PartyNetTransportError: Error, LocalizedError, Sendable {
     case timedOut(String)
-    case unexpectedFirstMessage
     case invalidRemoteEndpoint
     case stopped
 
     var errorDescription: String? {
         switch self {
         case let .timedOut(operation): "Timed out while \(operation)."
-        case .unexpectedFirstMessage: "The first controller message was not a hello."
         case .invalidRemoteEndpoint: "The host did not provide a usable network address."
         case .stopped: "The network session stopped."
         }

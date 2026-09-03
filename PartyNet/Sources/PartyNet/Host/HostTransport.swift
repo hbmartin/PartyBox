@@ -42,59 +42,63 @@ actor HostTransport {
 
     func start(hostName: String, hostInstanceID: UUID, advertise: Bool = true) async throws -> UInt16 {
         stop()
-
-        let udp = try NetworkListener<UDP>(
-            for: nil,
-            using: .parameters { UDP() }.peerToPeerIncluded(false)
-        )
-        udpListener = udp
-        let transport = self
-        let udpTask = Task { [udp, transport] in
-            do {
-                try await udp.run { connection in
-                    await transport.receiveDatagrams(on: connection)
-                }
-            } catch is CancellationError {
-                // Expected during stop.
-            } catch {
-                transport.eventContinuation.yield(.failure("UDP listener failed: \(error.localizedDescription)"))
-            }
-        }
-        listenerTasks.append(udpTask)
-        let udpPort = try await waitForPort(of: udp, operation: "starting the UDP listener")
-        boundUDPPort = udpPort
-
-        let provider: (any ListenerProvider)? = advertise
-            ? BonjourListenerProvider(
-                name: hostName,
-                type: PartyNetConstants.serviceType,
-                txtRecord: NWTXTRecord([
-                    "v": String(PartyNetConstants.protocolVersion),
-                    "id": hostInstanceID.uuidString,
-                ])
+        do {
+            let udp = try NetworkListener<UDP>(
+                for: nil,
+                using: .parameters { UDP() }.peerToPeerIncluded(false)
             )
-            : nil
-        let tcp = try NetworkListener<HostControlProtocol>(
-            for: provider,
-            using: .parameters { hostControlStack() }.peerToPeerIncluded(false)
-        )
-        _ = tcp.newConnectionLimit(PartyNetConstants.maximumControllers + 8)
-        tcpListener = tcp
-        let tcpTask = Task { [tcp, transport] in
-            do {
-                try await tcp.run { connection in
-                    await transport.receiveControl(on: connection)
+            udpListener = udp
+            let transport = self
+            let udpTask = Task { [udp, transport] in
+                do {
+                    try await udp.run { connection in
+                        await transport.receiveDatagrams(on: connection)
+                    }
+                } catch is CancellationError {
+                    // Expected during stop.
+                } catch {
+                    transport.eventContinuation.yield(.failure("UDP listener failed: \(error.localizedDescription)"))
                 }
-            } catch is CancellationError {
-                // Expected during stop.
-            } catch {
-                transport.eventContinuation.yield(.failure("TCP listener failed: \(error.localizedDescription)"))
             }
+            listenerTasks.append(udpTask)
+            let udpPort = try await waitForPort(of: udp, operation: "starting the UDP listener")
+            boundUDPPort = udpPort
+
+            let provider: (any ListenerProvider)? = advertise
+                ? BonjourListenerProvider(
+                    name: hostName,
+                    type: PartyNetConstants.serviceType,
+                    txtRecord: NWTXTRecord([
+                        "v": String(PartyNetConstants.protocolVersion),
+                        "id": hostInstanceID.uuidString,
+                    ])
+                )
+                : nil
+            let tcp = try NetworkListener<HostControlProtocol>(
+                for: provider,
+                using: .parameters { hostControlStack() }.peerToPeerIncluded(false)
+            )
+            _ = tcp.newConnectionLimit(PartyNetConstants.maximumControllers + 8)
+            tcpListener = tcp
+            let tcpTask = Task { [tcp, transport] in
+                do {
+                    try await tcp.run { connection in
+                        await transport.receiveControl(on: connection)
+                    }
+                } catch is CancellationError {
+                    // Expected during stop.
+                } catch {
+                    transport.eventContinuation.yield(.failure("TCP listener failed: \(error.localizedDescription)"))
+                }
+            }
+            listenerTasks.append(tcpTask)
+            let tcpPort = try await waitForPort(of: tcp, operation: "starting the control listener")
+            logger.info("PartyBox host ready on TCP \(tcpPort), UDP \(udpPort)")
+            return tcpPort
+        } catch {
+            stop()
+            throw error
         }
-        listenerTasks.append(tcpTask)
-        let tcpPort = try await waitForPort(of: tcp, operation: "starting the control listener")
-        logger.info("PartyBox host ready on TCP \(tcpPort), UDP \(udpPort)")
-        return tcpPort
     }
 
     func respond(to connectionID: UUID, with decision: HandshakeDecision) async {
@@ -227,9 +231,7 @@ actor HostTransport {
     private func receiveDatagrams(on connection: NetworkConnection<UDP>) async {
         do {
             while !Task.isCancelled {
-                let packet = try await withTimeout(PartyNetConstants.udpIdleTimeout, operationName: "waiting for controller input") {
-                    try await connection.receive().content
-                }
+                let packet = try await connection.receive().content
                 guard let frame = InputFrame(data: packet), let playerID = tokenToPlayer[frame.token] else {
                     continue
                 }

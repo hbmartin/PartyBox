@@ -47,6 +47,9 @@ struct MessagesTests {
 
     @Test func displayNameValidation() {
         #expect(DisplayName.sanitized("  Ada   Lovelace  ", fallback: "Player") == "Ada Lovelace")
+        #expect(DisplayName.sanitized("Ada\nLovelace", fallback: "Player") == "Ada Lovelace")
+        #expect(DisplayName.sanitized("\u{202E}Admin\u{0007}", fallback: "Player") == "Admin")
+        #expect(DisplayName.sanitized("", fallback: "\u{202E}Player") == "Player")
         #expect(DisplayName.sanitized("   ", fallback: "Player 1") == "Player 1")
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }

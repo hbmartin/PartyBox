@@ -10,5 +10,4 @@ public enum PartyNetConstants {
     public static let udpReadyTimeout: Duration = .seconds(1)
     public static let inputRefreshInterval: Duration = .milliseconds(200)
     public static let tcpFallbackInterval: Duration = .milliseconds(33)
-    public static let udpIdleTimeout: Duration = .seconds(10)
 }

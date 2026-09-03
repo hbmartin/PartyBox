@@ -110,7 +110,7 @@ private struct HostPickerView: View {
                     }
                 }
 
-                if coordinator.discoveryHelpVisible {
+                if coordinator.discoveryHelpVisible && coordinator.client.hosts.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("NO HOSTS FOUND").font(.headline.monospaced().weight(.black)).foregroundStyle(.orange)
                         Text("Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings.")

@@ -14,7 +14,7 @@ public final class InputStore: Sendable {
         guard let valid = frame.validated else { return false }
         return state.withLock { state in
             if let existing = state.frames[playerID], existing.token == valid.token,
-               valid.sequence <= existing.sequence {
+               !Self.isNewer(valid.sequence, than: existing.sequence) {
                 return false
             }
             state.frames[playerID] = valid
@@ -34,5 +34,10 @@ public final class InputStore: Sendable {
 
     public func removeAll() {
         state.withLock { $0.frames.removeAll() }
+    }
+
+    private static func isNewer(_ candidate: UInt32, than existing: UInt32) -> Bool {
+        let distance = candidate &- existing
+        return distance != 0 && distance < (UInt32.max / 2) + 1
     }
 }

@@ -26,7 +26,7 @@ public struct DiscoveredHost: Identifiable, Equatable, Sendable {
     }
 
     public init(host: String, port: UInt16, name: String? = nil) throws {
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+        guard port != 0, let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw PartyClientError.invalidAddress
         }
         id = "\(host):\(port)"
