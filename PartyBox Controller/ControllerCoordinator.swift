@@ -72,6 +72,12 @@ final class ControllerCoordinator {
                 self.handle(event)
             }
         }
+#if DEBUG
+        if let hostAddressError = configuration.hostAddressError {
+            client.configureFixture(state: .disconnected(hostAddressError.localizedDescription))
+            return
+        }
+#endif
         await client.startBrowsing()
         guard isStarted else { return }
 #if DEBUG

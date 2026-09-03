@@ -81,6 +81,34 @@ public enum PlayerPalette {
 }
 
 public enum DisplayName {
+    private final class ScalarMatcher: @unchecked Sendable {
+        private let expression: NSRegularExpression
+
+        init(_ pattern: String) {
+            expression = try! NSRegularExpression(pattern: pattern)
+        }
+
+        func matches(_ scalar: Unicode.Scalar) -> Bool {
+            let value = String(scalar)
+            let range = NSRange(value.startIndex..<value.endIndex, in: value)
+            return expression.firstMatch(in: value, range: range) != nil
+        }
+    }
+
+    private static let maximumAnalyzedScalars = 128
+    private static let leftJoiningMatcher = ScalarMatcher(
+        #"^[\p{Joining_Type=Left_Joining}\p{Joining_Type=Dual_Joining}]$"#
+    )
+    private static let rightJoiningMatcher = ScalarMatcher(
+        #"^[\p{Joining_Type=Right_Joining}\p{Joining_Type=Dual_Joining}]$"#
+    )
+    private static let transparentJoiningMatcher = ScalarMatcher(
+        #"^\p{Joining_Type=Transparent}$"#
+    )
+    private static let dependentVowelMatcher = ScalarMatcher(
+        #"^\p{Indic_Syllabic_Category=Vowel_Dependent}$"#
+    )
+
     public static func sanitized(_ candidate: String, fallback: String) -> String {
         let compactCandidate = compact(candidate)
         let compactFallback = compact(fallback)
@@ -89,8 +117,11 @@ public enum DisplayName {
     }
 
     private static func compact(_ value: String) -> String {
-        let normalized = value.precomposedStringWithCanonicalMapping
-        let scalars = Array(normalized.unicodeScalars)
+        let bounded = String(String.UnicodeScalarView(
+            value.unicodeScalars.prefix(maximumAnalyzedScalars)
+        ))
+        let normalized = bounded.precomposedStringWithCanonicalMapping
+        let scalars = Array(normalized.unicodeScalars.prefix(maximumAnalyzedScalars))
         let permittedIgnorables = permittedDefaultIgnorables(in: scalars)
         let space = Unicode.Scalar(" ")
         let safeScalars = scalars.enumerated().compactMap { index, scalar -> Unicode.Scalar? in
@@ -131,7 +162,10 @@ public enum DisplayName {
                 }
             case 0xFE00...0xFE0F:
                 if index > scalars.startIndex,
-                   !scalars[index - 1].properties.isDefaultIgnorableCodePoint {
+                   UnicodeSequenceData.isRegisteredVariationSequence(
+                    base: scalars[index - 1],
+                    selector: scalars[index]
+                   ) {
                     permitted.insert(index)
                 }
             case 0x1F3F4:
@@ -153,9 +187,8 @@ public enum DisplayName {
     ) -> Bool {
         guard let previous = nonTransparentScalar(before: index, in: scalars),
               let next = nonTransparentScalar(after: index, in: scalars) else { return false }
-        let leftJoining = #"^[\p{Joining_Type=Left_Joining}\p{Joining_Type=Dual_Joining}]$"#
-        let rightJoining = #"^[\p{Joining_Type=Right_Joining}\p{Joining_Type=Dual_Joining}]$"#
-        return matches(previous, pattern: leftJoining) && matches(next, pattern: rightJoining)
+        return matches(previous, using: leftJoiningMatcher)
+            && matches(next, using: rightJoiningMatcher)
     }
 
     private static func nonTransparentScalar(
@@ -165,7 +198,7 @@ public enum DisplayName {
         var cursor = index - 1
         while cursor >= scalars.startIndex {
             let scalar = scalars[cursor]
-            if !matches(scalar, pattern: #"^\p{Joining_Type=Transparent}$"#) { return scalar }
+            if !matches(scalar, using: transparentJoiningMatcher) { return scalar }
             cursor -= 1
         }
         return nil
@@ -178,7 +211,7 @@ public enum DisplayName {
         var cursor = index + 1
         while cursor < scalars.endIndex {
             let scalar = scalars[cursor]
-            if !matches(scalar, pattern: #"^\p{Joining_Type=Transparent}$"#) { return scalar }
+            if !matches(scalar, using: transparentJoiningMatcher) { return scalar }
             cursor += 1
         }
         return nil
@@ -188,27 +221,59 @@ public enum DisplayName {
         at index: Int,
         in scalars: [Unicode.Scalar]
     ) -> Bool {
-        var left = index - 1
-        while left >= scalars.startIndex, (0xFE00...0xFE0F).contains(scalars[left].value) {
-            left -= 1
-        }
-        var right = index + 1
-        while right < scalars.endIndex, (0xFE00...0xFE0F).contains(scalars[right].value) {
-            right += 1
-        }
-        guard left >= scalars.startIndex, right < scalars.endIndex,
-              isEmojiPresentationComponent(at: left, in: scalars),
-              isEmojiPresentationComponent(at: right, in: scalars) else { return false }
-        let sequence = String(String.UnicodeScalarView(scalars[left...right]))
+        guard let left = emojiComponent(endingBefore: index, in: scalars),
+              let right = emojiComponent(startingAfter: index, in: scalars) else { return false }
+        let sequence = String(String.UnicodeScalarView(
+            scalars[left.lowerBound...right.upperBound]
+        ))
         return sequence.count == 1
     }
 
-    private static func isEmojiPresentationComponent(
-        at index: Int,
+    private static func emojiComponent(
+        endingBefore index: Int,
         in scalars: [Unicode.Scalar]
-    ) -> Bool {
-        scalars[index].properties.isEmojiPresentation
-            || (index + 1 < scalars.endIndex && scalars[index + 1].value == 0xFE0F)
+    ) -> ClosedRange<Int>? {
+        let end = index - 1
+        guard end >= scalars.startIndex else { return nil }
+        if scalars[end].properties.isEmojiModifier {
+            let base = end - 1
+            guard base >= scalars.startIndex,
+                  scalars[base].properties.isEmojiModifierBase else { return nil }
+            return base...end
+        }
+        if scalars[end].value == 0xFE0F {
+            let base = end - 1
+            guard base >= scalars.startIndex,
+                  UnicodeSequenceData.isRegisteredVariationSequence(
+                    base: scalars[base], selector: scalars[end]
+                  ) else { return nil }
+            return base...end
+        }
+        guard scalars[end].properties.isEmojiPresentation,
+              !scalars[end].properties.isEmojiModifier else { return nil }
+        return end...end
+    }
+
+    private static func emojiComponent(
+        startingAfter index: Int,
+        in scalars: [Unicode.Scalar]
+    ) -> ClosedRange<Int>? {
+        let base = index + 1
+        guard base < scalars.endIndex,
+              !scalars[base].properties.isEmojiModifier else { return nil }
+        if base + 1 < scalars.endIndex,
+           scalars[base + 1].properties.isEmojiModifier {
+            guard scalars[base].properties.isEmojiModifierBase else { return nil }
+            return base...(base + 1)
+        }
+        if base + 1 < scalars.endIndex, scalars[base + 1].value == 0xFE0F {
+            guard UnicodeSequenceData.isRegisteredVariationSequence(
+                base: scalars[base], selector: scalars[base + 1]
+            ) else { return nil }
+            return base...(base + 1)
+        }
+        guard scalars[base].properties.isEmojiPresentation else { return nil }
+        return base...base
     }
 
     private static func hasViramaContext(
@@ -231,10 +296,7 @@ public enum DisplayName {
         let following = index + 1
         if !requiresFollowingLetter {
             return following >= scalars.endIndex
-                || !matches(
-                    scalars[following],
-                    pattern: #"^\p{Indic_Syllabic_Category=Vowel_Dependent}$"#
-                )
+                || !matches(scalars[following], using: dependentVowelMatcher)
         }
         var next = following
         while next < scalars.endIndex,
@@ -257,12 +319,20 @@ public enum DisplayName {
             cursor += 1
         }
         guard cursor > firstTag, cursor < scalars.endIndex,
-              scalars[cursor].value == 0xE007F else { return nil }
+              scalars[cursor].value == 0xE007F,
+              cursor - index + 1 <= 32 else { return nil }
+        let payload = String(String.UnicodeScalarView(
+            scalars[firstTag..<cursor].compactMap { Unicode.Scalar($0.value - 0xE0000) }
+        ))
+        guard UnicodeSequenceData.isValidSubdivisionIdentifier(payload) else { return nil }
         return cursor
     }
 
-    private static func matches(_ scalar: Unicode.Scalar, pattern: String) -> Bool {
-        String(scalar).range(of: pattern, options: .regularExpression) != nil
+    private static func matches(
+        _ scalar: Unicode.Scalar,
+        using matcher: ScalarMatcher
+    ) -> Bool {
+        matcher.matches(scalar)
     }
 
     private static func isNonspacingMark(_ scalar: Unicode.Scalar) -> Bool {

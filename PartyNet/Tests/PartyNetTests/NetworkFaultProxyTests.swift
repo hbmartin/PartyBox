@@ -109,6 +109,27 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
+    @Test func UDPDelayKeepsPendingWorkBoundedPerSession() async throws {
+      let rig = FaultRig(profile: FaultProfile(delayMilliseconds: 60_000))
+      let metadata = try await rig.start()
+      let client = PartyClient(displayName: "Bounded", inputSendInterval: .milliseconds(1))
+      await client.connect(host: metadata.host, port: metadata.tcpPort)
+
+      for index in 0..<400 {
+        client.setInput(axisX: index.isMultiple(of: 2) ? -1 : 1)
+        try await Task.sleep(for: .milliseconds(1))
+      }
+      try await waitUntil { await rig.proxy.currentMetrics().udpReceived >= 300 }
+
+      #expect(
+        await rig.proxy.pendingUDPForwardCount()
+          <= NetworkFaultProxy.maximumQueuedForwardsPerToken + 1
+      )
+      #expect(await rig.proxy.currentMetrics().udpDropped > 0)
+      await client.disconnect()
+      await rig.stop()
+    }
+
     @Test func TCPCutReconnectsToSameHostInstance() async throws {
       let rig = FaultRig()
       let metadata = try await rig.start()
