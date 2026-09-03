@@ -40,9 +40,37 @@ public struct PlayerInfo: Codable, Hashable, Sendable, Identifiable {
     public var number: Int { Int(id.rawValue) + 1 }
 }
 
+public struct RGBComponents: Equatable, Sendable {
+    public let red: Double
+    public let green: Double
+    public let blue: Double
+
+    public init(red: Double, green: Double, blue: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+}
+
+public enum ArcadePalette {
+    public static let cyan = "#32E6FF"
+    public static let magenta = "#FF4FD8"
+    public static let lime = "#6DFF78"
+
+    public static func rgb(_ value: String) -> RGBComponents? {
+        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return nil }
+        return RGBComponents(
+            red: Double((number >> 16) & 0xFF) / 255,
+            green: Double((number >> 8) & 0xFF) / 255,
+            blue: Double(number & 0xFF) / 255
+        )
+    }
+}
+
 public enum PlayerPalette {
     public static let colors = [
-        "#32E6FF", "#FF4FD8", "#FFE44D", "#6DFF78",
+        ArcadePalette.cyan, ArcadePalette.magenta, "#FFE44D", ArcadePalette.lime,
         "#FF7A3D", "#9F7BFF", "#F5F7FF", "#55A7FF",
     ]
 

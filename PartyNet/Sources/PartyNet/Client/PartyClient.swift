@@ -20,6 +20,7 @@ public enum ClientEvent: Sendable {
 public final class PartyClient {
     public private(set) var state: PartyClientState = .browsing
     public private(set) var hosts: [DiscoveredHost] = []
+    public private(set) var discoveryErrorMessage: String?
     public private(set) var player: PlayerInfo?
     public private(set) var roster: [PlayerInfo] = []
     public private(set) var layout: ControllerLayout = .lobby
@@ -39,10 +40,20 @@ public final class PartyClient {
     private var connectionAttemptID: UUID?
     private var foregroundProbeTask: Task<Void, Never>?
     private var foregroundProbeNonce: UInt64?
+    private var pendingInput: PendingInput?
+    private var inputFlushTask: Task<Void, Never>?
+    private var inputFlushID: UUID?
     private var connectionID: UUID?
     private var selectedHost: DiscoveredHost?
     private var expectedInstanceID: UUID?
     private var isExplicitlyDisconnected = false
+
+    private struct PendingInput: Sendable {
+        let connectionID: UUID
+        let axisX: Float
+        let axisY: Float
+        let buttons: Buttons
+    }
 
     public init(
         controllerID: ControllerID = ControllerID(),
@@ -59,6 +70,7 @@ public final class PartyClient {
 
     public func startBrowsing() async {
         ensureEventTask()
+        discoveryErrorMessage = nil
         await transport.startBrowsing()
         if connectionID == nil { state = .browsing }
     }
@@ -67,6 +79,7 @@ public final class PartyClient {
         ensureEventTask()
         cancelReconnect()
         cancelForegroundProbe()
+        cancelInputFlush()
         let attemptID = UUID()
         connectionAttemptID = attemptID
         if let connectionID {
@@ -102,7 +115,13 @@ public final class PartyClient {
 
     public func setInput(axisX: Float, axisY: Float = 0, buttons: Buttons = []) {
         guard let connectionID else { return }
-        Task { await transport.setInput(axisX: axisX, axisY: axisY, buttons: buttons, connectionID: connectionID) }
+        pendingInput = PendingInput(
+            connectionID: connectionID,
+            axisX: axisX,
+            axisY: axisY,
+            buttons: buttons
+        )
+        startInputFlushIfNeeded()
     }
 
     public func disconnect() async {
@@ -110,11 +129,13 @@ public final class PartyClient {
         connectionAttemptID = nil
         cancelReconnect()
         cancelForegroundProbe()
+        cancelInputFlush()
         if let connectionID { await transport.disconnect(connectionID: connectionID) }
         self.connectionID = nil
         player = nil
         roster = []
         layout = .lobby
+        discoveryErrorMessage = nil
         state = .browsing
     }
 
@@ -165,7 +186,9 @@ public final class PartyClient {
             guard connectionAttemptID == attemptID, !Task.isCancelled else { return }
             connectionAttemptID = nil
             switch error {
-            case let .rejected(reason): state = .rejected(reason.message)
+            case let .rejected(reason):
+                isExplicitlyDisconnected = true
+                state = .rejected(reason.message)
             default:
                 state = reconnecting ? .reconnecting(host.name) : .disconnected(error.localizedDescription)
             }
@@ -191,6 +214,7 @@ public final class PartyClient {
         switch event {
         case let .hosts(found):
             hosts = found
+            if !found.isEmpty { discoveryErrorMessage = nil }
             eventContinuation.yield(.hostsChanged(found))
         case let .message(id, message):
             guard id == connectionID else { return }
@@ -201,11 +225,12 @@ public final class PartyClient {
         case let .disconnected(id, reason):
             guard id == connectionID else { return }
             cancelForegroundProbe()
+            cancelInputFlush()
             connectionID = nil
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)
-        case let .failure(message):
-            if connectionID == nil { state = .disconnected(message) }
+        case let .discoveryFailed(message):
+            discoveryErrorMessage = message
         }
     }
 
@@ -220,7 +245,11 @@ public final class PartyClient {
             roster = value
             if let id = player?.id { player = value.first { $0.id == id } ?? player }
         case let .layout(value):
+            let wasPaddleLayout = if case .paddle = layout { true } else { false }
             layout = value
+            if case .paddle = value, !wasPaddleLayout {
+                setInput(axisX: 0)
+            }
         case let .feedback(value):
             eventContinuation.yield(.feedback(value))
         case let .pong(sentNanos):
@@ -271,6 +300,38 @@ public final class PartyClient {
         guard reconnectAttemptID == reconnectID else { return }
         reconnectTask = nil
         reconnectAttemptID = nil
+    }
+
+    private func startInputFlushIfNeeded() {
+        guard inputFlushTask == nil, pendingInput != nil else { return }
+        let flushID = UUID()
+        inputFlushID = flushID
+        inputFlushTask = Task { [weak self] in
+            await self?.flushPendingInputs(flushID: flushID)
+        }
+    }
+
+    private func flushPendingInputs(flushID: UUID) async {
+        while !Task.isCancelled, inputFlushID == flushID, let input = pendingInput {
+            pendingInput = nil
+            await transport.setInput(
+                axisX: input.axisX,
+                axisY: input.axisY,
+                buttons: input.buttons,
+                connectionID: input.connectionID
+            )
+        }
+        guard inputFlushID == flushID else { return }
+        inputFlushTask = nil
+        inputFlushID = nil
+        startInputFlushIfNeeded()
+    }
+
+    private func cancelInputFlush() {
+        inputFlushTask?.cancel()
+        inputFlushTask = nil
+        inputFlushID = nil
+        pendingInput = nil
     }
 
     private func startForegroundProbe(connectionID: UUID) {

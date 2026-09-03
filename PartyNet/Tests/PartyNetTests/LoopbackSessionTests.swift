@@ -61,9 +61,50 @@ struct LoopbackSessionTests {
             await host.stop()
             return
         }
+        ninth.reconnectAfterForeground()
+        try await Task.sleep(for: .milliseconds(100))
+        guard case .rejected = ninth.state else {
+            Issue.record("A rejected controller must not reconnect after foregrounding")
+            await host.stop()
+            return
+        }
 
         for client in clients { await client.disconnect() }
         await ninth.disconnect()
+        await host.stop()
+    }
+
+    @Test func rapidInputUpdatesPreserveTheLatestValue() async throws {
+        let host = PartyHost()
+        let port = try await host.start(hostName: "Ordered Input Host", advertise: false)
+        let client = PartyClient(displayName: "Rapid Input", inputSendInterval: .milliseconds(1))
+        await client.connect(host: "127.0.0.1", port: port)
+
+        for index in 0..<500 {
+            client.setInput(axisX: Float(index) / 500)
+        }
+        client.setInput(axisX: -0.875)
+
+        try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == -0.875 }
+        await client.disconnect()
+        await host.stop()
+    }
+
+    @Test func tcpCheckpointDeliversInputWhenUDPIsBlackholed() async throws {
+        let host = PartyHost()
+        let port = try await host.start(hostName: "Blackhole Host", advertise: false)
+        let client = PartyClient(displayName: "Checkpoint", inputSendInterval: .milliseconds(5))
+        await client.connect(host: "127.0.0.1", port: port)
+        try await waitUntil { host.inputs.snapshot()[PlayerID(0)] != nil }
+        try await Task.sleep(for: PartyNetConstants.inputTCPCheckpointInterval + .milliseconds(20))
+        await host.setDropsUDPInputsForTesting(true)
+
+        client.setInput(axisX: 0.625)
+
+        try await waitUntil(timeout: .seconds(1)) {
+            host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.625
+        }
+        await client.disconnect()
         await host.stop()
     }
 

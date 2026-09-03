@@ -40,6 +40,25 @@ struct InputStoreTests {
         #expect(store.snapshot().isEmpty)
     }
 
+    @Test func neutralizePreservesOrderingWatermark() {
+        let store = InputStore()
+        let player = PlayerID(0)
+        #expect(store.update(
+            InputFrame(token: 7, sequence: 12, clientTimeMs: 34, axisX: 0.8, axisY: -0.4, buttons: .primary),
+            for: player
+        ))
+
+        store.neutralize()
+
+        let neutral = store.snapshot()[player]
+        #expect(neutral?.axisX == 0)
+        #expect(neutral?.axisY == 0)
+        #expect(neutral?.buttons == [])
+        #expect(neutral?.token == 7)
+        #expect(neutral?.sequence == 12)
+        #expect(!store.update(frame(token: 7, sequence: 11, x: 0.9), for: player))
+    }
+
     private func frame(token: UInt64, sequence: UInt32, x: Float) -> InputFrame {
         InputFrame(token: token, sequence: sequence, clientTimeMs: 0, axisX: x, axisY: 0)
     }
