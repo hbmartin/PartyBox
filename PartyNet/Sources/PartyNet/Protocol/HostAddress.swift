@@ -50,9 +50,8 @@ public struct HostAddress: Equatable, Hashable, Sendable {
 
     private static func isValidScopeIdentifier(_ scope: Substring) -> Bool {
         guard !scope.isEmpty else { return false }
-        if scope.allSatisfy(\.isNumber) {
-            return UInt32(scope) != nil
-        }
+        let isASCIIDecimal = scope.utf8.allSatisfy { (0x30...0x39).contains($0) }
+        if isASCIIDecimal, let numericScope = UInt32(scope) { return numericScope != 0 }
         return String(scope).withCString { if_nametoindex($0) != 0 }
     }
 }
