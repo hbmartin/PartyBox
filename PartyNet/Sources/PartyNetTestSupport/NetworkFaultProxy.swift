@@ -239,7 +239,9 @@ public actor NetworkFaultProxy {
         metrics.activeTCPBridges = downstreamConnections.count
 
         do {
-            let first = try await withProxyTimeout(
+            let first = try await withTimeout(
+                PartyNetConstants.helloTimeout,
+                clock: clock,
                 operationName: "waiting for fault-proxy downstream hello"
             ) {
                 try await downstream.receive().content
@@ -250,7 +252,9 @@ public actor NetworkFaultProxy {
             }
             bridgeControllerIDs[bridgeID] = hello.controllerID
             try await upstream.send(.hello(hello))
-            let response = try await withProxyTimeout(
+            let response = try await withTimeout(
+                PartyNetConstants.helloTimeout,
+                clock: clock,
                 operationName: "waiting for fault-proxy upstream welcome"
             ) {
                 try await upstream.receive().content
@@ -490,23 +494,4 @@ public actor NetworkFaultProxy {
         guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
     }
 
-    private func withProxyTimeout<T: Sendable>(
-        _ duration: Duration = PartyNetConstants.helloTimeout,
-        operationName: String,
-        operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        let clock = clock
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await clock.sleep(for: duration)
-                throw PartyNetTransportError.timedOut(operationName)
-            }
-            guard let result = try await group.next() else {
-                throw PartyNetTransportError.stopped
-            }
-            group.cancelAll()
-            return result
-        }
-    }
 }

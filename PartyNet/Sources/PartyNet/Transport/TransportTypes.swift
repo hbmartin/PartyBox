@@ -94,23 +94,62 @@ package func waitForBoundPort<ApplicationProtocol: NetworkProtocolOptions>(
     )
 }
 
-func withTimeout<T: Sendable>(
+package func withTimeout<T: Sendable, TimeoutError: Error & Sendable>(
+    _ duration: Duration,
+    clock: AnyClock<Duration>,
+    timeoutError: @escaping @Sendable () -> TimeoutError,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await clock.sleep(for: duration)
+            throw timeoutError()
+        }
+        guard let result = try await group.next() else { throw timeoutError() }
+        group.cancelAll()
+        return result
+    }
+}
+
+package func withTimeout<T: Sendable, TimeoutError: Error & Sendable>(
+    _ duration: Duration,
+    timeoutError: @escaping @Sendable () -> TimeoutError,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    @Dependency(\.continuousClock) var dependencyClock
+    return try await withTimeout(
+        duration,
+        clock: AnyClock(dependencyClock),
+        timeoutError: timeoutError,
+        operation: operation
+    )
+}
+
+package func withTimeout<T: Sendable>(
+    _ duration: Duration,
+    clock: AnyClock<Duration>,
+    operationName: String,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withTimeout(
+        duration,
+        clock: clock,
+        timeoutError: { PartyNetTransportError.timedOut(operationName) },
+        operation: operation
+    )
+}
+
+package func withTimeout<T: Sendable>(
     _ duration: Duration,
     operationName: String,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     @Dependency(\.continuousClock) var dependencyClock
-    let clock = AnyClock(dependencyClock)
-    return try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await clock.sleep(for: duration)
-            throw PartyNetTransportError.timedOut(operationName)
-        }
-        guard let result = try await group.next() else {
-            throw PartyNetTransportError.stopped
-        }
-        group.cancelAll()
-        return result
-    }
+    return try await withTimeout(
+        duration,
+        clock: AnyClock(dependencyClock),
+        operationName: operationName,
+        operation: operation
+    )
 }

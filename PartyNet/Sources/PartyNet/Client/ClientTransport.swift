@@ -88,6 +88,7 @@ actor ClientTransport {
   private let logger = Logger(subsystem: "PartyNet", category: "ClientTransport")
   private let clock: AnyClock<Duration>
   private let inputSendInterval: Duration
+  private let handshakeResponseHook: (@Sendable (HostMessage) async -> Void)?
   private var browser: NetworkBrowser<Bonjour>?
   private var browserTask: Task<Void, Never>?
   private var browserGeneration: UUID?
@@ -95,10 +96,14 @@ actor ClientTransport {
   private var sessions: [UUID: Session] = [:]
   private var pendingHandshakes: [UUID: PendingHandshake] = [:]
 
-  init(inputSendInterval: Duration = .milliseconds(16)) {
+  init(
+    inputSendInterval: Duration = .milliseconds(16),
+    handshakeResponseHook: (@Sendable (HostMessage) async -> Void)? = nil
+  ) {
     @Dependency(\.continuousClock) var continuousClock
     clock = AnyClock(continuousClock)
     self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
+    self.handshakeResponseHook = handshakeResponseHook
   }
 
   func startBrowsing() {
@@ -151,11 +156,16 @@ actor ClientTransport {
 
     let connectionID = UUID()
     let handshakeTask = Task { [connection] in
-      try await withTimeout(PartyNetConstants.helloTimeout, operationName: "connecting to the host") {
+      try await withTimeout(
+        PartyNetConstants.helloTimeout,
+        clock: clock,
+        operationName: "connecting to the host"
+      ) {
         try await connection.send(.hello(hello))
       }
       return try await withTimeout(
         PartyNetConstants.helloTimeout,
+        clock: clock,
         operationName: "waiting for host welcome"
       ) {
         try await connection.receive().content
@@ -165,12 +175,13 @@ actor ClientTransport {
     var receivedWelcome = false
     do {
       let response = try await handshakeTask.value
+      if case .welcome = response { receivedWelcome = true }
+      if let handshakeResponseHook { await handshakeResponseHook(response) }
       guard pendingHandshakes[attemptID] != nil else { throw CancellationError() }
       let welcome: Welcome
       switch response {
       case .welcome(let value):
         welcome = value
-        receivedWelcome = true
       case .rejected(let reason): throw PartyClientError.rejected(reason)
       default: throw PartyClientError.unexpectedHandshake
       }

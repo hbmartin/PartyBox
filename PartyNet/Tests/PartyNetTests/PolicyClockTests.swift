@@ -9,6 +9,30 @@ extension NetworkIntegrationTests {
   @Suite("Controllable policy clocks", .serialized)
   @MainActor
   struct PolicyClockTests {
+    private enum ExpectedTimeout: Error, Sendable {
+      case elapsed
+    }
+
+    @Test func sharedTimeoutUsesTheProvidedClockAndError() async {
+      let clock = TestClock()
+      let task = Task {
+        try await withTimeout(
+          .seconds(5),
+          clock: AnyClock(clock),
+          timeoutError: { ExpectedTimeout.elapsed }
+        ) {
+          try await clock.sleep(for: .seconds(30))
+          return 1
+        }
+      }
+      await settle()
+
+      await clock.advance(by: .seconds(5))
+      await #expect(throws: ExpectedTimeout.self) {
+        try await task.value
+      }
+    }
+
     @Test func pingDeadlineTracksOldestUnansweredPing() async {
       let clock = TestClock()
       let erasedClock = AnyClock(clock)

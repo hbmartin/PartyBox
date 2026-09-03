@@ -258,7 +258,9 @@ actor HostTransport {
 
     do {
       let first = try await withTimeout(
-        PartyNetConstants.helloTimeout, operationName: "waiting for controller hello"
+        PartyNetConstants.helloTimeout,
+        clock: clock,
+        operationName: "waiting for controller hello"
       ) {
         try await connection.receive().content
       }
@@ -321,6 +323,7 @@ actor HostTransport {
         guard lifecycleGeneration == generation else { return }
         let packet = try await withTimeout(
           PartyNetConstants.udpIdleTimeout,
+          clock: clock,
           operationName: "waiting for controller input"
         ) {
           try await connection.receive().content

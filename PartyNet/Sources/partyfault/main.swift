@@ -75,16 +75,25 @@ private actor FaultControlServer {
 
     private func handle(_ connection: NetworkConnection<FaultServerProtocol>) async {
         do {
-            let request = try await withFaultTimeout {
+            let request = try await withTimeout(
+                .seconds(5),
+                timeoutError: { PartyFaultError.timedOut }
+            ) {
                 try await connection.receive().content
             }
             let response = await execute(request)
-            try await withFaultTimeout {
+            try await withTimeout(
+                .seconds(5),
+                timeoutError: { PartyFaultError.timedOut }
+            ) {
                 try await connection.send(response)
             }
         } catch {
             let metrics = await rig.proxy.currentMetrics()
-            try? await withFaultTimeout {
+            try? await withTimeout(
+                .seconds(5),
+                timeoutError: { PartyFaultError.timedOut }
+            ) {
                 try await connection.send(FaultControlResponse(
                     succeeded: false,
                     message: error.localizedDescription,
@@ -149,7 +158,7 @@ private actor FaultControlServer {
 
 }
 
-private enum PartyFaultError: Error, LocalizedError {
+private enum PartyFaultError: Error, LocalizedError, Sendable {
     case usage(String)
     case invalidAddress
     case timedOut
@@ -249,7 +258,10 @@ enum PartyFaultCommand {
             to: .hostPort(host: NWEndpoint.Host(endpoint.host), port: port),
             using: .parameters { faultClientStack() }.peerToPeerIncluded(false)
         )
-        let response = try await withFaultTimeout {
+        let response = try await withTimeout(
+            .seconds(5),
+            timeoutError: { PartyFaultError.timedOut }
+        ) {
             try await connection.send(request)
             return try await connection.receive().content
         }
@@ -289,20 +301,5 @@ enum PartyFaultCommand {
           partyfault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N]
           partyfault control --address HOST:PORT cut-tcp|restart-host|metrics
         """)
-    }
-}
-
-private func withFaultTimeout<T: Sendable>(
-    _ operation: @escaping @Sendable () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await Task.sleep(for: .seconds(5))
-            throw PartyFaultError.timedOut
-        }
-        guard let result = try await group.next() else { throw PartyFaultError.timedOut }
-        group.cancelAll()
-        return result
     }
 }

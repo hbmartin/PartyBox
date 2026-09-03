@@ -55,6 +55,15 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("\u{200B}\u{2060}", fallback: "Player 1") == "Player 1")
         #expect(DisplayName.sanitized("A\u{200B}da", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized("👩‍💻", fallback: "Player") == "👩‍💻")
+        let persian = "می\u{200C}روم"
+        #expect(DisplayName.sanitized(persian, fallback: "Player") == persian)
+        let scotland = "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}"
+        #expect(DisplayName.sanitized(scotland, fallback: "Player") == scotland)
+        #expect(DisplayName.sanitized("\u{200D}Ada\u{200D}", fallback: "Player") == "Ada")
+        #expect(DisplayName.sanitized("A\u{200C}B", fallback: "Player") == "AB")
+        #expect(DisplayName.sanitized("©\u{200D}®", fallback: "Player") == "©®")
+        #expect(DisplayName.sanitized("A\u{E0067}da", fallback: "Player") == "Ada")
+        #expect(DisplayName.sanitized("\u{FE0F}Ada", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }
 

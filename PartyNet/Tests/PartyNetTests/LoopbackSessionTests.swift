@@ -27,6 +27,46 @@ extension NetworkIntegrationTests {
       }
     }
 
+    private actor WelcomingHandshakeServer {
+      private(set) var receivedLeave = false
+
+      func handle(_ connection: HostControlConnection) async {
+        do {
+          let first = try await connection.receive().content
+          guard case .hello = first else { return }
+          let welcome = Welcome(
+            player: PlayerInfo(id: PlayerID(0), displayName: "Cancelled", colorHex: "#32E6FF"),
+            udpPort: 9,
+            sessionToken: 1,
+            hostName: "Cancellation Host",
+            hostInstanceID: UUID()
+          )
+          try await connection.send(.welcome(welcome))
+          for try await message in connection.messages {
+            if case .leave = message.content {
+              receivedLeave = true
+              return
+            }
+          }
+        } catch {}
+      }
+    }
+
+    private actor HandshakeResponseGate {
+      private(set) var isPaused = false
+      private var continuation: CheckedContinuation<Void, Never>?
+
+      func pause() async {
+        isPaused = true
+        await withCheckedContinuation { continuation = $0 }
+      }
+
+      func resume() {
+        continuation?.resume()
+        continuation = nil
+      }
+    }
+
     private actor EventRecorder {
       private(set) var feedback: [Feedback] = []
       private(set) var menuActions: [MenuAction] = []
@@ -109,6 +149,53 @@ extension NetworkIntegrationTests {
       try await waitUntilAsync(timeout: .seconds(1)) {
         await server.activeConnections == 0
       }
+    }
+
+    @Test func cancellationAfterWelcomeSendsLeave() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in
+          await server.handle(connection)
+        }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let port = try #require(listener.port?.rawValue)
+      let gate = HandshakeResponseGate()
+      let transport = ClientTransport(handshakeResponseHook: { response in
+        guard case .welcome = response else { return }
+        await gate.pause()
+      })
+      let target = try DiscoveredHost(host: "127.0.0.1", port: port)
+      let attemptID = UUID()
+      let connectTask = Task {
+        try await transport.connect(
+          to: target,
+          hello: Hello(controllerID: ControllerID(), displayName: "Cancelled"),
+          attemptID: attemptID
+        )
+      }
+      defer {
+        connectTask.cancel()
+        Task {
+          await gate.resume()
+          await transport.stop()
+        }
+      }
+
+      try await waitUntilAsync { await gate.isPaused }
+      await transport.cancelConnectionAttempt(attemptID)
+      await gate.resume()
+      await #expect(throws: CancellationError.self) {
+        try await connectTask.value
+      }
+      try await waitUntilAsync(timeout: .seconds(1)) { await server.receivedLeave }
+      await transport.stop()
     }
 
     @Test func hostAndClientCanRestartWithFreshEventSubscriptions() async throws {
