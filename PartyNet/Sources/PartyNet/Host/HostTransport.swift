@@ -30,6 +30,9 @@ actor HostTransport {
     private var tokenToPlayer: [UInt64: PlayerID] = [:]
     private var connectionTokens: [UUID: UInt64] = [:]
     private var boundUDPPort: UInt16?
+#if DEBUG
+    private var dropsUDPInputsForTesting = false
+#endif
 
     var udpPort: UInt16? { boundUDPPort }
 
@@ -101,9 +104,10 @@ actor HostTransport {
         }
     }
 
-    func respond(to connectionID: UUID, with decision: HandshakeDecision) async {
+    @discardableResult
+    func respond(to connectionID: UUID, with decision: HandshakeDecision) async -> Bool {
         guard let connection = connections[connectionID],
-              let continuation = decisions.removeValue(forKey: connectionID) else { return }
+              let continuation = decisions.removeValue(forKey: connectionID) else { return false }
         do {
             switch decision {
             case let .reject(reason):
@@ -114,8 +118,14 @@ actor HostTransport {
                 try await connection.send(.welcome(welcome))
             }
             continuation.resume(returning: decision)
+            return true
         } catch {
+            if case let .accept(welcome) = decision {
+                tokenToPlayer.removeValue(forKey: welcome.sessionToken)
+                connectionTokens.removeValue(forKey: connectionID)
+            }
             continuation.resume(returning: .reject(.malformedHello))
+            return false
         }
     }
 
@@ -136,6 +146,12 @@ actor HostTransport {
     func disconnect(connectionID: UUID) {
         controlTasks.removeValue(forKey: connectionID)?.cancel()
     }
+
+#if DEBUG
+    func setDropsUDPInputsForTesting(_ drops: Bool) {
+        dropsUDPInputsForTesting = drops
+    }
+#endif
 
     func replace(connectionID: UUID) async {
         if let connection = connections[connectionID] {
@@ -232,6 +248,9 @@ actor HostTransport {
         do {
             while !Task.isCancelled {
                 let packet = try await connection.receive().content
+#if DEBUG
+                if dropsUDPInputsForTesting { continue }
+#endif
                 guard let frame = InputFrame(data: packet), let playerID = tokenToPlayer[frame.token] else {
                     continue
                 }

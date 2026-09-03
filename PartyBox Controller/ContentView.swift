@@ -110,16 +110,25 @@ private struct HostPickerView: View {
                     }
                 }
 
-                if coordinator.discoveryHelpVisible && coordinator.client.hosts.isEmpty {
+                if (coordinator.discoveryHelpVisible || coordinator.client.discoveryErrorMessage != nil),
+                   coordinator.client.hosts.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("NO HOSTS FOUND").font(.headline.monospaced().weight(.black)).foregroundStyle(.orange)
-                        Text("Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings.")
+                        Text(coordinator.client.discoveryErrorMessage == nil ? "NO HOSTS FOUND" : "DISCOVERY ERROR")
+                            .font(.headline.monospaced().weight(.black))
+                            .foregroundStyle(.orange)
+                        Text(discoveryHelpMessage)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.7))
-                        Button("OPEN SETTINGS") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        HStack {
+                            Button("TRY AGAIN") {
+                                Task { await coordinator.retryDiscovery() }
+                            }
+                            .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                            Button("OPEN SETTINGS") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            }
+                            .buttonStyle(ArcadeButtonStyle(color: .orange))
                         }
-                        .buttonStyle(ArcadeButtonStyle(color: .orange))
                     }
                     .padding(18)
                     .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
@@ -127,6 +136,17 @@ private struct HostPickerView: View {
             }
             .padding(24)
         }
+    }
+
+    private var discoveryHelpMessage: String {
+        guard let message = coordinator.client.discoveryErrorMessage else {
+            return "Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings."
+        }
+        let lower = message.lowercased()
+        if lower.contains("denied") || lower.contains("policy") {
+            return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
+        }
+        return message
     }
 }
 
@@ -420,19 +440,14 @@ private struct ArcadeButtonStyle: ButtonStyle {
 }
 
 private enum ControllerTheme {
-    static let cyan = Color(red: 0.20, green: 0.90, blue: 1)
-    static let magenta = Color(red: 1, green: 0.31, blue: 0.85)
-    static let lime = Color(red: 0.43, green: 1, blue: 0.47)
+    static let cyan = Color.controllerHex(ArcadePalette.cyan)
+    static let magenta = Color.controllerHex(ArcadePalette.magenta)
+    static let lime = Color.controllerHex(ArcadePalette.lime)
 }
 
 private extension Color {
     static func controllerHex(_ value: String) -> Color {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6, let number = UInt64(hex, radix: 16) else { return .white }
-        return Color(
-            red: Double((number >> 16) & 0xFF) / 255,
-            green: Double((number >> 8) & 0xFF) / 255,
-            blue: Double(number & 0xFF) / 255
-        )
+        guard let rgb = ArcadePalette.rgb(value) else { return .white }
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }

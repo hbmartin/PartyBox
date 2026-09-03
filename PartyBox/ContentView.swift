@@ -231,14 +231,14 @@ private struct PartyBackdrop: View {
 }
 
 enum PartyTheme {
-    static let cyan = Color(red: 0.20, green: 0.90, blue: 1)
-    static let magenta = Color(red: 1, green: 0.31, blue: 0.85)
-    static let lime = Color(red: 0.43, green: 1, blue: 0.47)
+    static let cyan = Color.partyHex(ArcadePalette.cyan)
+    static let magenta = Color.partyHex(ArcadePalette.magenta)
+    static let lime = Color.partyHex(ArcadePalette.lime)
 }
 
 extension Color {
     static func partyHex(_ value: String) -> Color {
-        guard let rgb = PartyColorParser.rgb(value) else { return .white }
+        guard let rgb = ArcadePalette.rgb(value) else { return .white }
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }

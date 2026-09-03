@@ -7,7 +7,7 @@ enum ClientTransportEvent: Sendable {
     case message(connectionID: UUID, HostMessage)
     case inputSent(connectionID: UUID)
     case disconnected(connectionID: UUID, reason: String)
-    case failure(String)
+    case discoveryFailed(String)
 }
 
 public enum PartyClientError: Error, LocalizedError, Sendable {
@@ -44,6 +44,7 @@ actor ClientTransport {
         var desired = DesiredInput()
         var lastSent: DesiredInput?
         var lastSentAt: ContinuousClock.Instant?
+        var lastTCPCheckpointAt: ContinuousClock.Instant?
         var sequence: UInt32 = 0
         var inputTask: Task<Void, Never>?
         var pingTask: Task<Void, Never>?
@@ -83,7 +84,7 @@ actor ClientTransport {
             } catch is CancellationError {
                 // Expected on shutdown.
             } catch {
-                transport.eventContinuation.yield(.failure("Discovery failed: \(error.localizedDescription)"))
+                transport.eventContinuation.yield(.discoveryFailed("Discovery failed: \(error.localizedDescription)"))
             }
             await transport.browserDidFinish(generation: generation)
         }
@@ -243,15 +244,28 @@ actor ClientTransport {
             let sentSequence = session.sequence
             let canUseUDP = session.udp.state == .ready
             let udpWaitExpired = now - session.startedAt >= PartyNetConstants.udpReadyTimeout
+            let tcpCheckpointDue = session.lastTCPCheckpointAt.map {
+                now - $0 >= PartyNetConstants.inputTCPCheckpointInterval
+            } ?? true
             let fallbackRateReady = session.lastSentAt.map {
                 now - $0 >= PartyNetConstants.tcpFallbackInterval
             } ?? true
             if !canUseUDP, udpWaitExpired, !fallbackRateReady { continue }
+            var attemptedTCP = false
             do {
+                var sentOverTCP = false
                 if canUseUDP {
                     try await session.udp.send(frame.encode())
+                    if tcpCheckpointDue {
+                        // The host rejects the duplicate sequence if UDP already delivered it.
+                        attemptedTCP = true
+                        try await session.tcp.send(.input(frame))
+                        sentOverTCP = true
+                    }
                 } else if udpWaitExpired {
+                    attemptedTCP = true
                     try await session.tcp.send(.input(frame))
+                    sentOverTCP = true
                 } else {
                     // Sending the first datagram starts the connection and drives it to ready.
                     try await session.udp.send(frame.encode())
@@ -259,17 +273,22 @@ actor ClientTransport {
                 if var latest = sessions[connectionID] {
                     latest.lastSent = sentInput
                     latest.lastSentAt = now
+                    if sentOverTCP { latest.lastTCPCheckpointAt = now }
                     latest.sequence = sentSequence &+ 1
                     sessions[connectionID] = latest
                     eventContinuation.yield(.inputSent(connectionID: connectionID))
                 }
             } catch {
-                if udpWaitExpired {
+                if attemptedTCP {
+                    endSession(connectionID, reason: error.localizedDescription)
+                    return
+                } else if udpWaitExpired {
                     do {
                         try await session.tcp.send(.input(frame))
                         if var latest = sessions[connectionID] {
                             latest.lastSent = sentInput
                             latest.lastSentAt = now
+                            latest.lastTCPCheckpointAt = now
                             latest.sequence = sentSequence &+ 1
                             sessions[connectionID] = latest
                             eventContinuation.yield(.inputSent(connectionID: connectionID))

@@ -220,7 +220,7 @@ final class PongScene: SKScene {
 
 private extension SKColor {
     static func partyHex(_ value: String) -> SKColor {
-        guard let rgb = PartyColorParser.rgb(value) else { return .white }
+        guard let rgb = ArcadePalette.rgb(value) else { return .white }
         return SKColor(
             red: CGFloat(rgb.red),
             green: CGFloat(rgb.green),

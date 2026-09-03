@@ -30,6 +30,7 @@ final class HostCoordinator {
     private var hostEventsTask: Task<Void, Never>?
     private var isStarted = false
     private var currentMatchPlayerCount = 0
+    private var currentMatchAssignments: [SeatAssignment] = []
 
     var connectedCount: Int { host.players.filter(\.isConnected).count }
     var canStart: Bool {
@@ -139,9 +140,12 @@ final class HostCoordinator {
 
     private func startPong() {
         guard phase != .playing, canStart else { return }
-        currentMatchPlayerCount = seatQueue.assignments.count
+        let assignments = seatQueue.assignments
+        currentMatchAssignments = assignments
+        currentMatchPlayerCount = assignments.count
+        host.inputs.neutralize()
         let scene = PongScene(
-            assignments: seatQueue.assignments,
+            assignments: assignments,
             players: host.players,
             inputs: host.inputs
         ) { [weak self] events in
@@ -211,7 +215,7 @@ final class HostCoordinator {
         case .gameMenu:
             layout = .menu(items: menuItems, selected: menuSelection)
         case .playing:
-            if let assignment = seatQueue.assignments.first(where: { $0.playerID == playerID }),
+            if let assignment = currentMatchAssignments.first(where: { $0.playerID == playerID }),
                let info = host.players.first(where: { $0.id == playerID }) {
                 layout = .paddle(PaddleLayout(
                     edge: assignment.edge,

@@ -36,6 +36,20 @@ public final class InputStore: Sendable {
         state.withLock { $0.frames.removeAll() }
     }
 
+    public func neutralize() {
+        state.withLock { state in
+            state.frames = state.frames.mapValues { frame in
+                InputFrame(
+                    token: frame.token,
+                    sequence: frame.sequence,
+                    clientTimeMs: frame.clientTimeMs,
+                    axisX: 0,
+                    axisY: 0
+                )
+            }
+        }
+    }
+
     private static func isNewer(_ candidate: UInt32, than existing: UInt32) -> Bool {
         let distance = candidate &- existing
         return distance != 0 && distance < (UInt32.max / 2) + 1

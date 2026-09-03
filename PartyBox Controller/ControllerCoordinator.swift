@@ -78,6 +78,11 @@ final class ControllerCoordinator {
         setIdleTimer(connected: false)
     }
 
+    func retryDiscovery() async {
+        await client.startBrowsing()
+        armDiscoveryHelp(resetVisibility: true)
+    }
+
     func updateIdleTimer() {
         setIdleTimer(connected: isConnected)
     }

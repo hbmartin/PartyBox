@@ -54,6 +54,17 @@ struct MessagesTests {
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }
 
+    @Test func arcadePaletteParsesSharedHexColors() throws {
+        let cyan = try #require(ArcadePalette.rgb(ArcadePalette.cyan))
+        #expect(cyan.red == Double(0x32) / 255)
+        #expect(cyan.green == Double(0xE6) / 255)
+        #expect(cyan.blue == 1)
+        #expect(PlayerPalette.colors[0] == ArcadePalette.cyan)
+        #expect(PlayerPalette.colors[1] == ArcadePalette.magenta)
+        #expect(PlayerPalette.colors[3] == ArcadePalette.lime)
+        #expect(ArcadePalette.rgb("not-a-color") == nil)
+    }
+
     private func assertRoundTrips<T: Codable & Equatable>(_ values: [T]) throws {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
