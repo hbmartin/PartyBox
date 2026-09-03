@@ -25,6 +25,11 @@ struct PartyBoxTests {
         #expect(configuration.botCount == PartyNetConstants.maximumControllers)
     }
 
+    @Test func hostLaunchArgumentsDoNotForceAProductionSeed() {
+        let configuration = HostLaunchConfiguration(arguments: ["PartyBox"])
+        #expect(configuration.seed == nil)
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))
@@ -166,7 +171,7 @@ struct PartyBoxTests {
         while !condition(), clock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        #expect(condition())
+        try #require(condition())
     }
 
     @MainActor

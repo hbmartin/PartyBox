@@ -9,11 +9,14 @@ final class ControllerCoordinator {
     let client: PartyClient
     let configuration: ControllerLaunchConfiguration
     var displayName: String
+    private(set) var savedDisplayName: String
     private(set) var discoveryHelpVisible = false
 
     private let defaults: UserDefaults
     private var eventTask: Task<Void, Never>?
     private var discoveryHelpTask: Task<Void, Never>?
+    private var discoveryHelpGeneration: UUID?
+    private var stopOperation: (id: UUID, task: Task<Void, Never>)?
     private var isStarted = false
 
     init(
@@ -41,6 +44,7 @@ final class ControllerCoordinator {
             fallback: "Player"
         )
         displayName = name
+        savedDisplayName = name
         client = PartyClient(controllerID: controllerID, displayName: name)
 #if DEBUG
         if let scenario = configuration.scenario { applyFixture(scenario: scenario) }
@@ -48,10 +52,15 @@ final class ControllerCoordinator {
     }
 
     func start() async {
+        if let operation = stopOperation {
+            await operation.task.value
+            if stopOperation?.id == operation.id { stopOperation = nil }
+        }
         guard !isStarted else { return }
         isStarted = true
 #if DEBUG
-        if configuration.scenario != nil {
+        if let scenario = configuration.scenario {
+            applyFixture(scenario: scenario)
             setIdleTimer(connected: isConnected)
             return
         }
@@ -64,6 +73,7 @@ final class ControllerCoordinator {
             }
         }
         await client.startBrowsing()
+        guard isStarted else { return }
 #if DEBUG
         if let address = configuration.hostAddress,
            let host = try? DiscoveredHost(host: address.host, port: address.port, name: "UI Test Host") {
@@ -74,19 +84,29 @@ final class ControllerCoordinator {
     }
 
     func stop() async {
+        if let operation = stopOperation {
+            await operation.task.value
+            return
+        }
+        isStarted = false
         discoveryHelpTask?.cancel()
         discoveryHelpTask = nil
+        discoveryHelpGeneration = nil
         eventTask?.cancel()
         eventTask = nil
-        await client.stop()
         discoveryHelpVisible = false
-        isStarted = false
         setIdleTimer(connected: false)
+        let id = UUID()
+        let task = Task { [client] in await client.stop() }
+        stopOperation = (id, task)
+        await task.value
+        if stopOperation?.id == id { stopOperation = nil }
     }
 
     func connect(to host: DiscoveredHost) async {
         discoveryHelpTask?.cancel()
         discoveryHelpTask = nil
+        discoveryHelpGeneration = nil
         discoveryHelpVisible = false
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
@@ -95,18 +115,23 @@ final class ControllerCoordinator {
     func rename() async {
         displayName = DisplayName.sanitized(displayName, fallback: "Player")
         defaults.set(displayName, forKey: "partybox.displayName")
+        savedDisplayName = displayName
         await client.rename(to: displayName)
     }
 
     func returnToPicker() async {
         await client.disconnect()
+        guard isStarted else { return }
         await client.startBrowsing()
+        guard isStarted else { return }
         armDiscoveryHelp(resetVisibility: true)
         setIdleTimer(connected: false)
     }
 
     func retryDiscovery() async {
-        await client.startBrowsing()
+        guard isStarted else { return }
+        await client.restartBrowsing()
+        guard isStarted else { return }
         armDiscoveryHelp(resetVisibility: true)
     }
 
@@ -125,6 +150,7 @@ final class ControllerCoordinator {
     }
 
     private func handle(_ event: ClientEvent) {
+        guard isStarted else { return }
         switch event {
         case let .feedback(feedback):
             guard !configuration.disableEffects else { return }
@@ -144,6 +170,7 @@ final class ControllerCoordinator {
             } else {
                 discoveryHelpTask?.cancel()
                 discoveryHelpTask = nil
+                discoveryHelpGeneration = nil
                 discoveryHelpVisible = false
             }
         }
@@ -153,13 +180,23 @@ final class ControllerCoordinator {
         if resetVisibility {
             discoveryHelpTask?.cancel()
             discoveryHelpTask = nil
+            discoveryHelpGeneration = nil
             discoveryHelpVisible = false
         }
-        guard discoveryHelpTask == nil, !discoveryHelpVisible else { return }
+        guard isStarted,
+              client.hosts.isEmpty,
+              discoveryHelpTask == nil,
+              !discoveryHelpVisible else { return }
+        let generation = UUID()
+        discoveryHelpGeneration = generation
         discoveryHelpTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
-            guard let self else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isStarted,
+                  self.discoveryHelpGeneration == generation else { return }
             self.discoveryHelpTask = nil
+            self.discoveryHelpGeneration = nil
             guard self.client.hosts.isEmpty else { return }
             if case .browsing = self.client.state { self.discoveryHelpVisible = true }
         }

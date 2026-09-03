@@ -21,7 +21,7 @@ public final class PartyHost {
     public private(set) var port: UInt16?
     public private(set) var errorMessage: String?
     public let inputs = InputStore()
-    public nonisolated let events: AsyncStream<HostEvent>
+    public nonisolated var events: AsyncStream<HostEvent> { eventHub.stream() }
 
     private struct PlayerSession {
         let controllerID: ControllerID
@@ -29,32 +29,38 @@ public final class PartyHost {
         var displayName: String
         var connectionID: UUID?
         var sessionToken: UInt64?
+        var isAdmitted: Bool
+        var isWelcomedConnection: Bool
+        var revision: UUID
         var graceTask: Task<Void, Never>?
     }
 
-    private let eventContinuation: AsyncStream<HostEvent>.Continuation
+    private nonisolated let eventHub = EventHub<HostEvent>()
     private let logger = Logger(subsystem: "PartyNet", category: "PartyHost")
     private let reconnectGrace: Duration
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
     private var rosterBroadcastTask: Task<Void, Never>?
     private var rosterBroadcastGeneration = UUID()
-    private var pendingRosterBroadcasts: [[PlayerInfo]] = []
+    private var pendingRosterBroadcast: [PlayerInfo]?
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
+    private var lifecycleGeneration: UInt64 = 0
 
     public init(reconnectGrace: Duration = PartyNetConstants.reconnectGrace) {
         self.reconnectGrace = reconnectGrace
-        var continuation: AsyncStream<HostEvent>.Continuation!
-        events = AsyncStream { continuation = $0 }
-        eventContinuation = continuation
     }
 
     @discardableResult
     public func start(hostName: String, advertise: Bool = true) async throws -> UInt16 {
-        await stop()
+        lifecycleGeneration &+= 1
+        let generation = lifecycleGeneration
+        let previousTransport = prepareToStop()
+        await previousTransport?.stop()
+        guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
         self.hostName = hostName
-        hostInstanceID = UUID()
+        let hostInstanceID = UUID()
+        self.hostInstanceID = hostInstanceID
         errorMessage = nil
         let transport = HostTransport(inputs: inputs)
         self.transport = transport
@@ -62,7 +68,7 @@ public final class PartyHost {
         transportTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
-                await self.handle(event)
+                await self.handle(event, generation: generation)
             }
         }
         do {
@@ -71,22 +77,30 @@ public final class PartyHost {
                 hostInstanceID: hostInstanceID,
                 advertise: advertise
             )
+            guard lifecycleGeneration == generation, self.transport === transport else {
+                await transport.stop()
+                throw PartyNetTransportError.stopped
+            }
             self.port = port
             return port
         } catch {
-            transportTask?.cancel()
-            transportTask = nil
             await transport.stop()
-            self.transport = nil
-            port = nil
-            errorMessage = error.localizedDescription
-            eventContinuation.yield(.failure(error.localizedDescription))
+            if lifecycleGeneration == generation, self.transport === transport {
+                transportTask?.cancel()
+                transportTask = nil
+                self.transport = nil
+                port = nil
+                errorMessage = error.localizedDescription
+                eventHub.yield(.failure(error.localizedDescription))
+            }
             throw error
         }
     }
 
     public func send(_ message: HostMessage, to playerID: PlayerID) async {
-        guard let session = sessions.values.first(where: { $0.playerID == playerID }),
+        guard let session = sessions.values.first(where: {
+                  $0.playerID == playerID && $0.isAdmitted && $0.isWelcomedConnection
+              }),
               let connectionID = session.connectionID else { return }
         do {
             try await transport?.send(message, to: connectionID)
@@ -96,18 +110,35 @@ public final class PartyHost {
     }
 
     public func broadcast(_ message: HostMessage) async {
-        for session in sessions.values where session.connectionID != nil {
-            await send(message, to: session.playerID)
+        let generation = lifecycleGeneration
+        let connectionIDs = sessions.values.compactMap { session in
+            session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
+        }
+        for connectionID in connectionIDs {
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+            do {
+                try await transport?.send(message, to: connectionID)
+            } catch {
+                logger.debug("Broadcast failed: \(error.localizedDescription)")
+            }
         }
     }
 
     public func stop() async {
+        lifecycleGeneration &+= 1
+        let transport = prepareToStop()
+        await transport?.stop()
+    }
+
+    private func prepareToStop() -> HostTransport? {
+        let transport = transport
+        self.transport = nil
         transportTask?.cancel()
         transportTask = nil
         rosterBroadcastTask?.cancel()
         rosterBroadcastTask = nil
         rosterBroadcastGeneration = UUID()
-        pendingRosterBroadcasts.removeAll()
+        pendingRosterBroadcast = nil
         for session in sessions.values {
             session.graceTask?.cancel()
         }
@@ -116,8 +147,7 @@ public final class PartyHost {
         players.removeAll()
         inputs.removeAll()
         port = nil
-        await transport?.stop()
-        transport = nil
+        return transport
     }
 
 #if DEBUG
@@ -127,21 +157,23 @@ public final class PartyHost {
     }
 #endif
 
-    private func handle(_ event: HostTransportEvent) async {
+    private func handle(_ event: HostTransportEvent, generation: UInt64) async {
+        guard lifecycleGeneration == generation else { return }
         switch event {
         case let .hello(connectionID, hello):
-            await handleHello(connectionID: connectionID, hello: hello)
+            await handleHello(connectionID: connectionID, hello: hello, generation: generation)
         case let .message(connectionID, message):
-            await handleMessage(connectionID: connectionID, message: message)
+            await handleMessage(connectionID: connectionID, message: message, generation: generation)
         case let .disconnected(connectionID):
-            await handleDisconnect(connectionID: connectionID)
+            await handleDisconnect(connectionID: connectionID, generation: generation)
         case let .failure(message):
             errorMessage = message
-            eventContinuation.yield(.failure(message))
+            eventHub.yield(.failure(message))
         }
     }
 
-    private func handleHello(connectionID: UUID, hello: Hello) async {
+    private func handleHello(connectionID: UUID, hello: Hello, generation: UInt64) async {
+        guard lifecycleGeneration == generation else { return }
         guard hello.protocolVersion == PartyNetConstants.protocolVersion else {
             await transport?.respond(
                 to: connectionID,
@@ -154,6 +186,7 @@ public final class PartyHost {
             await transport?.respond(to: connectionID, with: .reject(.malformedHello))
             return
         }
+        guard lifecycleGeneration == generation else { return }
 
         let fallbackName: String
         let session: PlayerSession
@@ -163,19 +196,27 @@ public final class PartyHost {
         if var existing = sessions[hello.controllerID] {
             isNewSession = false
             fallbackName = "Player \(existing.playerID.rawValue + 1)"
-            if let oldToken = existing.sessionToken { await transport?.invalidate(token: oldToken) }
-            if let oldConnection = existing.connectionID {
-                connectionOwners.removeValue(forKey: oldConnection)
-                await transport?.replace(connectionID: oldConnection)
-            }
+            let oldToken = existing.sessionToken
+            let oldConnection = existing.connectionID
+            if let oldConnection { connectionOwners.removeValue(forKey: oldConnection) }
             existing.graceTask?.cancel()
             existing.graceTask = nil
+            existing.revision = UUID()
             existing.displayName = DisplayName.sanitized(hello.displayName, fallback: fallbackName)
             existing.connectionID = connectionID
+            existing.isWelcomedConnection = false
             token = UInt64.random(in: UInt64.min...UInt64.max)
             existing.sessionToken = token
             sessions[hello.controllerID] = existing
             connectionOwners[connectionID] = hello.controllerID
+            if let oldToken { await transport?.invalidate(token: oldToken) }
+            guard lifecycleGeneration == generation,
+                  sessions[hello.controllerID]?.connectionID == connectionID else { return }
+            if let oldConnection {
+                await transport?.replace(connectionID: oldConnection)
+            }
+            guard lifecycleGeneration == generation,
+                  sessions[hello.controllerID]?.connectionID == connectionID else { return }
             session = existing
             event = .playerReconnected(info(for: existing, connected: true))
         } else {
@@ -192,7 +233,10 @@ public final class PartyHost {
                 playerID: playerID,
                 displayName: DisplayName.sanitized(hello.displayName, fallback: fallbackName),
                 connectionID: connectionID,
-                sessionToken: token
+                sessionToken: token,
+                isAdmitted: false,
+                isWelcomedConnection: false,
+                revision: UUID()
             )
             sessions[hello.controllerID] = created
             connectionOwners[connectionID] = hello.controllerID
@@ -209,16 +253,25 @@ public final class PartyHost {
             hostInstanceID: hostInstanceID
         )
         let accepted = await transport?.respond(to: connectionID, with: .accept(welcome)) ?? false
+        guard lifecycleGeneration == generation else { return }
         guard accepted else {
             await rollbackFailedHello(
                 controllerID: hello.controllerID,
                 connectionID: connectionID,
-                isNewSession: isNewSession
+                isNewSession: isNewSession,
+                generation: generation
             )
             return
         }
+        guard var admitted = sessions[hello.controllerID], admitted.connectionID == connectionID else {
+            await transport?.disconnect(connectionID: connectionID)
+            return
+        }
+        admitted.isAdmitted = true
+        admitted.isWelcomedConnection = true
+        sessions[hello.controllerID] = admitted
         refreshPlayers()
-        eventContinuation.yield(event)
+        eventHub.yield(event)
         enqueueRosterBroadcast()
     }
 
@@ -229,24 +282,35 @@ public final class PartyHost {
     private func rollbackFailedHello(
         controllerID: ControllerID,
         connectionID: UUID,
-        isNewSession: Bool
+        isNewSession: Bool,
+        generation: UInt64
     ) async {
+        guard lifecycleGeneration == generation else { return }
         guard let session = sessions[controllerID], session.connectionID == connectionID else { return }
         if isNewSession {
             sessions.removeValue(forKey: controllerID)
             connectionOwners.removeValue(forKey: connectionID)
-            if let token = session.sessionToken { await transport?.invalidate(token: token) }
             session.graceTask?.cancel()
             inputs.remove(session.playerID)
+            refreshPlayers()
+            enqueueRosterBroadcast()
+            if let token = session.sessionToken { await transport?.invalidate(token: token) }
             await transport?.disconnect(connectionID: connectionID)
         } else {
-            await handleDisconnect(connectionID: connectionID)
+            await handleDisconnect(connectionID: connectionID, generation: generation)
         }
     }
 
-    private func handleMessage(connectionID: UUID, message: ClientMessage) async {
+    private func handleMessage(
+        connectionID: UUID,
+        message: ClientMessage,
+        generation: UInt64
+    ) async {
+        guard lifecycleGeneration == generation else { return }
         guard let controllerID = connectionOwners[connectionID], var session = sessions[controllerID],
-              session.connectionID == connectionID else { return }
+              session.connectionID == connectionID,
+              session.isAdmitted,
+              session.isWelcomedConnection else { return }
 
         switch message {
         case .hello:
@@ -257,25 +321,28 @@ public final class PartyHost {
             refreshPlayers()
             enqueueRosterBroadcast()
         case let .menu(action):
-            eventContinuation.yield(.menu(playerID: session.playerID, action: action))
+            eventHub.yield(.menu(playerID: session.playerID, action: action))
         case let .input(frame):
             guard frame.token == session.sessionToken else { return }
             _ = inputs.update(frame, for: session.playerID)
         case let .ping(value):
             await send(.pong(value), to: session.playerID)
         case .leave:
-            await expire(controllerID: controllerID)
+            await expire(controllerID: controllerID, generation: generation)
         }
     }
 
-    private func handleDisconnect(connectionID: UUID) async {
+    private func handleDisconnect(connectionID: UUID, generation: UInt64) async {
+        guard lifecycleGeneration == generation else { return }
         guard let controllerID = connectionOwners.removeValue(forKey: connectionID),
               var session = sessions[controllerID], session.connectionID == connectionID else { return }
+        let wasAdmitted = session.isAdmitted
+        let token = session.sessionToken
         session.connectionID = nil
-        if let token = session.sessionToken {
-            await transport?.invalidate(token: token)
-        }
         session.sessionToken = nil
+        session.isWelcomedConnection = false
+        session.revision = UUID()
+        let revision = session.revision
         session.graceTask?.cancel()
         let grace = reconnectGrace
         @Dependency(\.continuousClock) var clock
@@ -283,45 +350,73 @@ public final class PartyHost {
             do {
                 try await clock.sleep(for: grace)
                 guard !Task.isCancelled else { return }
-                await self?.expire(controllerID: controllerID)
+                await self?.expire(
+                    controllerID: controllerID,
+                    generation: generation,
+                    expectedRevision: revision
+                )
             } catch {}
         }
         sessions[controllerID] = session
         refreshPlayers()
-        let player = info(for: session, connected: false)
-        eventContinuation.yield(.playerDisconnected(player))
-        enqueueRosterBroadcast()
+        if wasAdmitted {
+            let player = info(for: session, connected: false)
+            eventHub.yield(.playerDisconnected(player))
+            enqueueRosterBroadcast()
+        }
+        if let token { await transport?.invalidate(token: token) }
     }
 
-    private func expire(controllerID: ControllerID) async {
-        guard let session = sessions.removeValue(forKey: controllerID) else { return }
+    private func expire(
+        controllerID: ControllerID,
+        generation: UInt64,
+        expectedRevision: UUID? = nil
+    ) async {
+        guard lifecycleGeneration == generation,
+              let current = sessions[controllerID],
+              expectedRevision == nil || current.revision == expectedRevision else { return }
+        let session = sessions.removeValue(forKey: controllerID)!
         if let connectionID = session.connectionID {
             connectionOwners.removeValue(forKey: connectionID)
-            await transport?.disconnect(connectionID: connectionID)
         }
-        if let token = session.sessionToken { await transport?.invalidate(token: token) }
         session.graceTask?.cancel()
         inputs.remove(session.playerID)
         refreshPlayers()
-        eventContinuation.yield(.playerExpired(session.playerID))
-        enqueueRosterBroadcast()
+        if session.isAdmitted {
+            eventHub.yield(.playerExpired(session.playerID))
+            enqueueRosterBroadcast()
+        }
+        if let connectionID = session.connectionID {
+            await transport?.disconnect(connectionID: connectionID)
+        }
+        if let token = session.sessionToken { await transport?.invalidate(token: token) }
     }
 
     private func enqueueRosterBroadcast() {
-        pendingRosterBroadcasts.append(players)
+        pendingRosterBroadcast = players
         guard rosterBroadcastTask == nil else { return }
         let generation = rosterBroadcastGeneration
+        let lifecycleGeneration = lifecycleGeneration
         rosterBroadcastTask = Task { [weak self] in
-            await self?.drainRosterBroadcasts(generation: generation)
+            await self?.drainRosterBroadcasts(
+                generation: generation,
+                lifecycleGeneration: lifecycleGeneration
+            )
         }
     }
 
-    private func drainRosterBroadcasts(generation: UUID) async {
-        while !Task.isCancelled, rosterBroadcastGeneration == generation, !pendingRosterBroadcasts.isEmpty {
-            let roster = pendingRosterBroadcasts.removeFirst()
+    private func drainRosterBroadcasts(generation: UUID, lifecycleGeneration: UInt64) async {
+        while !Task.isCancelled,
+              self.lifecycleGeneration == lifecycleGeneration,
+              rosterBroadcastGeneration == generation,
+              let roster = pendingRosterBroadcast {
+            pendingRosterBroadcast = nil
             await broadcast(.roster(roster))
         }
-        if rosterBroadcastGeneration == generation { rosterBroadcastTask = nil }
+        if self.lifecycleGeneration == lifecycleGeneration,
+           rosterBroadcastGeneration == generation {
+            rosterBroadcastTask = nil
+        }
     }
 
     private func lowestAvailablePlayerID() -> PlayerID? {
@@ -342,7 +437,13 @@ public final class PartyHost {
 
     private func refreshPlayers() {
         players = sessions.values
-            .map { info(for: $0, connected: $0.connectionID != nil) }
+            .filter(\.isAdmitted)
+            .map {
+                info(
+                    for: $0,
+                    connected: $0.connectionID != nil && $0.isWelcomedConnection
+                )
+            }
             .sorted { $0.id < $1.id }
     }
 }

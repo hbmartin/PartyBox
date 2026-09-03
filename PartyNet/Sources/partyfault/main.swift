@@ -43,7 +43,13 @@ private actor FaultControlServer {
                 }
             } catch {}
         }
-        return try await waitForPort(listener)
+        do {
+            return try await waitForPort(listener)
+        } catch {
+            listenerTask?.cancel()
+            listenerTask = nil
+            throw error
+        }
     }
 
     func waitUntilStopped() async {
@@ -65,16 +71,22 @@ private actor FaultControlServer {
 
     private func handle(_ connection: NetworkConnection<FaultServerProtocol>) async {
         do {
-            let request = try await connection.receive().content
+            let request = try await withFaultTimeout {
+                try await connection.receive().content
+            }
             let response = await execute(request)
-            try await connection.send(response)
+            try await withFaultTimeout {
+                try await connection.send(response)
+            }
         } catch {
             let metrics = await rig.proxy.currentMetrics()
-            try? await connection.send(FaultControlResponse(
-                succeeded: false,
-                message: error.localizedDescription,
-                metrics: metrics
-            ))
+            try? await withFaultTimeout {
+                try await connection.send(FaultControlResponse(
+                    succeeded: false,
+                    message: error.localizedDescription,
+                    metrics: metrics
+                ))
+            }
         }
     }
 
@@ -180,19 +192,30 @@ enum PartyFaultCommand {
     @MainActor
     private static func serve(_ arguments: [String]) async throws {
         guard let readyPath = option("--ready-file", in: arguments) else { throw usageError() }
-        let seed = UInt64(option("--seed", in: arguments) ?? "1") ?? 1
+        let seed: UInt64
+        if let value = option("--seed", in: arguments) {
+            guard let parsed = UInt64(value) else { throw PartyFaultError.usage("Invalid --seed value: \(value)") }
+            seed = parsed
+        } else {
+            seed = 1
+        }
         let rig = FaultRig(profile: FaultProfile(seed: seed))
         let metadata = try await rig.start()
-        let server = FaultControlServer(
-            rig: rig,
-            readyFile: URL(fileURLWithPath: readyPath),
-            metadata: metadata
-        )
-        let controlPort = try await server.start()
-        try await server.writeReadyFile(controlPort: controlPort)
-        print("partyfault ready tcp=\(metadata.tcpPort) udp=\(metadata.udpPort) control=\(controlPort)")
-        fflush(stdout)
-        await server.waitUntilStopped()
+        do {
+            let server = FaultControlServer(
+                rig: rig,
+                readyFile: URL(fileURLWithPath: readyPath),
+                metadata: metadata
+            )
+            let controlPort = try await server.start()
+            try await server.writeReadyFile(controlPort: controlPort)
+            print("partyfault ready tcp=\(metadata.tcpPort) udp=\(metadata.udpPort) control=\(controlPort)")
+            fflush(stdout)
+            await server.waitUntilStopped()
+        } catch {
+            await rig.stop()
+            throw error
+        }
         await rig.stop()
     }
 
@@ -208,10 +231,10 @@ enum PartyFaultCommand {
             request = .reset
         case "udp":
             request = .udp(
-                dropRate: Double(option("--drop", in: trailing) ?? "0") ?? 0,
-                delayMilliseconds: Int(option("--delay-ms", in: trailing) ?? "0") ?? 0,
-                jitterMilliseconds: Int(option("--jitter-ms", in: trailing) ?? "0") ?? 0,
-                reorderWindow: Int(option("--reorder-window", in: trailing) ?? "1") ?? 1
+                dropRate: try numericOption("--drop", in: trailing, default: 0),
+                delayMilliseconds: try numericOption("--delay-ms", in: trailing, default: 0),
+                jitterMilliseconds: try numericOption("--jitter-ms", in: trailing, default: 0),
+                reorderWindow: try numericOption("--reorder-window", in: trailing, default: 1)
             )
         case "cut-tcp":
             request = .cutTCP
@@ -227,8 +250,10 @@ enum PartyFaultCommand {
             to: .hostPort(host: NWEndpoint.Host(host), port: port),
             using: .parameters { faultClientStack() }.peerToPeerIncluded(false)
         )
-        try await connection.send(request)
-        let response = try await connection.receive().content
+        let response = try await withFaultTimeout {
+            try await connection.send(request)
+            return try await connection.receive().content
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         print(String(decoding: try encoder.encode(response), as: UTF8.self))
@@ -243,6 +268,18 @@ enum PartyFaultCommand {
     private static func firstCommandIndex(in arguments: [String]) -> Int? {
         let commands: Set<String> = ["reset", "udp", "cut-tcp", "restart-host", "metrics"]
         return arguments.firstIndex { commands.contains($0) }
+    }
+
+    private static func numericOption<T: LosslessStringConvertible>(
+        _ name: String,
+        in arguments: [String],
+        default defaultValue: T
+    ) throws -> T {
+        guard let value = option(name, in: arguments) else { return defaultValue }
+        guard let parsed = T(value) else {
+            throw PartyFaultError.usage("Invalid \(name) value: \(value)")
+        }
+        return parsed
     }
 
     private static func parseAddress(_ value: String) throws -> (String, NWEndpoint.Port) {
@@ -262,5 +299,20 @@ enum PartyFaultCommand {
           partyfault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N]
           partyfault control --address HOST:PORT cut-tcp|restart-host|metrics
         """)
+    }
+}
+
+private func withFaultTimeout<T: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(5))
+            throw PartyFaultError.timedOut
+        }
+        guard let result = try await group.next() else { throw PartyFaultError.timedOut }
+        group.cancelAll()
+        return result
     }
 }

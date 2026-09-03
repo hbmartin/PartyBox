@@ -52,6 +52,9 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("\u{202E}Admin\u{0007}", fallback: "Player") == "Admin")
         #expect(DisplayName.sanitized("", fallback: "\u{202E}Player") == "Player")
         #expect(DisplayName.sanitized("   ", fallback: "Player 1") == "Player 1")
+        #expect(DisplayName.sanitized("\u{200B}\u{2060}", fallback: "Player 1") == "Player 1")
+        #expect(DisplayName.sanitized("A\u{200B}da", fallback: "Player") == "Ada")
+        #expect(DisplayName.sanitized("👩‍💻", fallback: "Player") == "👩‍💻")
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }
 
@@ -64,6 +67,8 @@ struct MessagesTests {
         #expect(PlayerPalette.colors[1] == ArcadePalette.magenta)
         #expect(PlayerPalette.colors[3] == ArcadePalette.lime)
         #expect(ArcadePalette.rgb("not-a-color") == nil)
+        #expect(ArcadePalette.rgb("(#32E6FF)") == nil)
+        #expect(ArcadePalette.rgb("##32E6FF") == nil)
     }
 
     private func assertRoundTrips<T: Codable & Equatable>(_ values: [T]) throws {

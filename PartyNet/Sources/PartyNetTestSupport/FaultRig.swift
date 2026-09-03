@@ -16,12 +16,18 @@ public final class FaultRig {
     @discardableResult
     public func start() async throws -> FaultRigMetadata {
         let upstreamPort = try await host.start(hostName: hostName, advertise: false)
-        let ports = try await proxy.start(upstreamTCPPort: upstreamPort)
-        return FaultRigMetadata(
-            tcpPort: ports.tcp,
-            udpPort: ports.udp,
-            hostInstanceID: host.hostInstanceID
-        )
+        do {
+            let ports = try await proxy.start(upstreamTCPPort: upstreamPort)
+            return FaultRigMetadata(
+                tcpPort: ports.tcp,
+                udpPort: ports.udp,
+                hostInstanceID: host.hostInstanceID
+            )
+        } catch {
+            await proxy.stop()
+            await host.stop()
+            throw error
+        }
     }
 
     @discardableResult
@@ -32,8 +38,13 @@ public final class FaultRig {
         await proxy.cutTCP()
         await host.stop()
         host = PartyHost()
-        let upstreamPort = try await host.start(hostName: hostName, advertise: false)
-        try await proxy.updateUpstream(tcpPort: upstreamPort)
+        do {
+            let upstreamPort = try await host.start(hostName: hostName, advertise: false)
+            try await proxy.updateUpstream(tcpPort: upstreamPort)
+        } catch {
+            await host.stop()
+            throw error
+        }
         await proxy.noteHostRestart()
         guard let tcpPort = await proxy.tcpPort, let udpPort = await proxy.udpPort else {
             throw PartyNetTransportError.stopped

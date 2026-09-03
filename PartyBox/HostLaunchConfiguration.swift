@@ -1,11 +1,12 @@
 import Foundation
+import PartyNet
 
 struct HostLaunchConfiguration {
     let isUITesting: Bool
     let scenario: String?
     let disableAnimations: Bool
     let disableEffects: Bool
-    let seed: UInt64
+    let seed: UInt64?
     let hostName: String?
     let botCount: Int
 
@@ -17,15 +18,18 @@ struct HostLaunchConfiguration {
         scenario = Self.option("--scenario", in: arguments)
         disableAnimations = arguments.contains("--disable-animations")
         disableEffects = arguments.contains("--disable-effects")
-        seed = UInt64(Self.option("--seed", in: arguments) ?? "5782994480227372888") ?? 5782994480227372888
+        seed = Self.option("--seed", in: arguments).flatMap(UInt64.init)
         hostName = Self.option("--host-name", in: arguments)
-        botCount = min(max(Int(Self.option("--bot-count", in: arguments) ?? "0") ?? 0, 0), 8)
+        botCount = min(
+            max(Int(Self.option("--bot-count", in: arguments) ?? "0") ?? 0, 0),
+            PartyNetConstants.maximumControllers
+        )
 #else
         isUITesting = false
         scenario = nil
         disableAnimations = false
         disableEffects = false
-        seed = 5782994480227372888
+        seed = nil
         hostName = nil
         botCount = 0
 #endif

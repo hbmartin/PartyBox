@@ -31,6 +31,7 @@ final class HostCoordinator {
     private var bots: [PartyClient] = []
     private var hostEventsTask: Task<Void, Never>?
     private var isStarted = false
+    private var lifecycleGeneration = UUID()
     private var currentMatchPlayerCount = 0
     private var currentMatchAssignments: [SeatAssignment] = []
 
@@ -55,7 +56,12 @@ final class HostCoordinator {
     func start() async {
         guard !isStarted else { return }
         isStarted = true
+        let generation = UUID()
+        lifecycleGeneration = generation
         if configuration.scenario != nil {
+#if DEBUG
+            if let scenario = configuration.scenario { applyFixture(scenario: scenario) }
+#endif
             statusMessage = "UI test fixture"
             return
         }
@@ -63,20 +69,30 @@ final class HostCoordinator {
         hostEventsTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
-                await self.handle(event)
+                await self.handle(event, generation: generation)
             }
         }
         do {
-            let name = ProcessInfo.processInfo.hostName
-                .replacingOccurrences(of: ".local", with: "")
-            _ = try await host.start(hostName: configuration.hostName ?? "\(name)'s PartyBox")
+            let name: String
+            if let configuredName = configuration.hostName {
+                name = configuredName
+            } else {
+                name = await Task.detached(priority: .utility) {
+                    ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: "")
+                }.value + "'s PartyBox"
+            }
+            guard isStarted, lifecycleGeneration == generation else { return }
+            _ = try await host.start(hostName: name)
+            guard isStarted, lifecycleGeneration == generation else { return }
             statusMessage = "Ready for controllers"
             for index in 0..<configuration.botCount {
+                guard isStarted, lifecycleGeneration == generation else { return }
                 let bot = PartyClient(displayName: "Bot \(index + 1)")
                 bots.append(bot)
                 if let port = host.port { await bot.connect(host: "127.0.0.1", port: port) }
             }
         } catch {
+            guard lifecycleGeneration == generation else { return }
             hostEventsTask?.cancel()
             hostEventsTask = nil
             await host.stop()
@@ -88,12 +104,21 @@ final class HostCoordinator {
     }
 
     func stop() async {
+        isStarted = false
+        lifecycleGeneration = UUID()
         hostEventsTask?.cancel()
         hostEventsTask = nil
-        for bot in bots { await bot.stop() }
+        let botsToStop = bots
         bots.removeAll()
+        phase = .lobby
+        seatQueue = SeatQueue()
+        pongScene = nil
+        statusMessage = "Starting local party…"
+        menuSelection = 0
+        currentMatchPlayerCount = 0
+        currentMatchAssignments = []
         await host.stop()
-        isStarted = false
+        for bot in botsToStop { await bot.stop() }
     }
 
     func perform(_ action: MenuAction) {
@@ -133,7 +158,8 @@ final class HostCoordinator {
         }
     }
 
-    private func handle(_ event: HostEvent) async {
+    private func handle(_ event: HostEvent, generation: UUID) async {
+        guard isStarted, lifecycleGeneration == generation else { return }
         switch event {
         case let .playerJoined(player):
             seatQueue.joined(player.id, allowActive: phase != .playing)
@@ -147,6 +173,7 @@ final class HostCoordinator {
         case let .playerExpired(playerID):
             if phase == .playing {
                 seatQueue.left(playerID, fillVacancy: false)
+                currentMatchAssignments.removeAll { $0.playerID == playerID }
                 pongScene?.forfeit(playerID)
             } else {
                 seatQueue.left(playerID)
@@ -172,7 +199,7 @@ final class HostCoordinator {
             assignments: assignments,
             players: host.players,
             inputs: host.inputs,
-            seed: configuration.seed
+            seed: configuration.seed ?? UInt64.random(in: UInt64.min...UInt64.max)
         ) { [weak self] events in
             Task { @MainActor [weak self] in self?.handlePong(events) }
         }
@@ -258,6 +285,12 @@ final class HostCoordinator {
 
 #if DEBUG
     private func applyFixture(scenario: String) {
+        phase = .lobby
+        seatQueue = SeatQueue()
+        pongScene = nil
+        menuSelection = 0
+        currentMatchPlayerCount = 0
+        currentMatchAssignments = []
         let names = ["Ada", "Grace", "Katherine", "Margaret"]
         let players = names.indices.map { index in
             let id = PlayerID(UInt8(index))
@@ -280,7 +313,7 @@ final class HostCoordinator {
                 assignments: currentMatchAssignments,
                 players: fixturePlayers,
                 inputs: host.inputs,
-                seed: configuration.seed,
+                seed: configuration.seed ?? UInt64.random(in: UInt64.min...UInt64.max),
                 onEvents: { _ in }
             )
             phase = .playing

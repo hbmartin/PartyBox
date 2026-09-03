@@ -73,6 +73,7 @@ private struct HostPickerView: View {
                             Task { await coordinator.rename() }
                         }
                         .accessibilityIdentifier("controller.name.save")
+                        .accessibilityValue("Saved \(coordinator.savedDisplayName)")
                         .font(.caption.monospaced().weight(.black))
                     }
                     .padding(16)
@@ -327,6 +328,7 @@ private struct PaddleControllerView: View {
                     coordinator.client.setInput(axisX: axis)
                 })
                 .accessibilityIdentifier("controller.paddle.track")
+                .accessibilityValue(String(format: "%.3f", localAxis))
             }
             .frame(height: 170)
             .padding(.horizontal, 4)
@@ -334,10 +336,6 @@ private struct PaddleControllerView: View {
             Text("DRAG ANYWHERE ON THE TRACK")
                 .font(.caption.monospaced().weight(.black))
                 .foregroundStyle(.white.opacity(0.45))
-            Text(String(format: "%.3f", localAxis))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.45))
-                .accessibilityIdentifier("controller.paddle.value")
             Spacer()
         }
         .padding(.horizontal, 16)

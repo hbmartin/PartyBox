@@ -29,8 +29,6 @@ done
 
 cleanup() {
     local status=$?
-    pkill -x PartyBox >/dev/null 2>&1 || true
-    pkill -x PartyBoxUITests-Runner >/dev/null 2>&1 || true
     if [[ -n "$FAULT_PID" ]] && kill -0 "$FAULT_PID" 2>/dev/null; then
         kill "$FAULT_PID" 2>/dev/null || true
         wait "$FAULT_PID" 2>/dev/null || true
@@ -83,7 +81,7 @@ latest_runtime() {
     local platform=$1
     xcrun simctl list runtimes --json | jq -r --arg platform "$platform" '
         [.runtimes[] | select(.isAvailable and (.identifier | contains($platform)))]
-        | sort_by(.version) | last | .identifier // empty
+        | sort_by(.version | split(".") | map(tonumber)) | last | .identifier // empty
     '
 }
 
@@ -130,6 +128,7 @@ start_fault_rig() {
     run_logged partyfault-build swift build --package-path "$ROOT_DIR/PartyNet" --product partyfault
     run_logged partyload-build swift build --package-path "$ROOT_DIR/PartyNet" --product partyload
     FAULT_READY="$ARTIFACT_DIR/partyfault-ready.json"
+    rm -f "$FAULT_READY"
     "$ROOT_DIR/PartyNet/.build/debug/partyfault" serve \
         --ready-file "$FAULT_READY" --seed 42 >"$ARTIFACT_DIR/partyfault.log" 2>&1 &
     FAULT_PID=$!
@@ -157,7 +156,6 @@ normal() {
     ensure_tvos_destination
     start_fault_rig
 
-    pkill -x PartyBox >/dev/null 2>&1 || true
     run_xcode macos-normal -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-Normal \
         -destination "${PARTYBOX_MACOS_DESTINATION:-platform=macOS}" \
         -resultBundlePath "$ARTIFACT_DIR/macos-normal.xcresult" test
@@ -183,7 +181,6 @@ normal() {
 asan() {
     ensure_ios_destination
     run_logged partynet-asan swift test --package-path "$ROOT_DIR/PartyNet" --sanitize address
-    pkill -x PartyBox >/dev/null 2>&1 || true
     run_xcode macos-asan -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-ASan \
         -destination "${PARTYBOX_MACOS_DESTINATION:-platform=macOS}" \
         -resultBundlePath "$ARTIFACT_DIR/macos-asan.xcresult" test
@@ -195,7 +192,6 @@ asan() {
 tsan() {
     ensure_ios_destination
     run_logged partynet-tsan swift test --package-path "$ROOT_DIR/PartyNet" --sanitize thread
-    pkill -x PartyBox >/dev/null 2>&1 || true
     run_xcode macos-tsan -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-TSan \
         -destination "${PARTYBOX_MACOS_DESTINATION:-platform=macOS}" \
         -resultBundlePath "$ARTIFACT_DIR/macos-tsan.xcresult" test
@@ -211,7 +207,6 @@ soak() {
     ensure_ios_destination
     start_fault_rig
 
-    pkill -x PartyBox >/dev/null 2>&1 || true
     run_xcode macos-soak -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-Soak \
         -destination "${PARTYBOX_MACOS_DESTINATION:-platform=macOS}" \
         -resultBundlePath "$ARTIFACT_DIR/macos-soak.xcresult" test

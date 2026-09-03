@@ -18,6 +18,9 @@ public enum UDPDropPolicy: Codable, Equatable, Sendable {
 }
 
 public struct FaultProfile: Codable, Equatable, Sendable {
+    public static let maximumDelayMilliseconds = 60_000
+    public static let maximumReorderWindow = 1_024
+
     public var seed: UInt64
     public var udpDropPolicy: UDPDropPolicy
     public var delayMilliseconds: Int
@@ -33,9 +36,9 @@ public struct FaultProfile: Codable, Equatable, Sendable {
     ) {
         self.seed = seed == 0 ? 1 : seed
         self.udpDropPolicy = udpDropPolicy.validated()
-        self.delayMilliseconds = max(delayMilliseconds, 0)
-        self.jitterMilliseconds = max(jitterMilliseconds, 0)
-        self.reorderWindow = max(reorderWindow, 1)
+        self.delayMilliseconds = min(max(delayMilliseconds, 0), Self.maximumDelayMilliseconds)
+        self.jitterMilliseconds = min(max(jitterMilliseconds, 0), Self.maximumDelayMilliseconds)
+        self.reorderWindow = min(max(reorderWindow, 1), Self.maximumReorderWindow)
     }
 
     public static let stable = FaultProfile()

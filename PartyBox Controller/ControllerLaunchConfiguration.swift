@@ -48,8 +48,23 @@ struct ControllerLaunchConfiguration {
     }
 
     nonisolated private static func parseHost(_ value: String) -> HostAddress? {
-        guard let separator = value.lastIndex(of: ":"),
-              let port = UInt16(value[value.index(after: separator)...]), port != 0 else { return nil }
+        if value.hasPrefix("[") {
+            guard let closingBracket = value.firstIndex(of: "]"),
+                  value.index(after: closingBracket) < value.endIndex,
+                  value[value.index(after: closingBracket)] == ":",
+                  closingBracket > value.startIndex else { return nil }
+            let portStart = value.index(closingBracket, offsetBy: 2)
+            guard let port = UInt16(value[portStart...]), port != 0 else { return nil }
+            return HostAddress(
+                host: String(value[value.index(after: value.startIndex)..<closingBracket]),
+                port: port
+            )
+        }
+        guard value.filter({ $0 == ":" }).count == 1,
+              let separator = value.lastIndex(of: ":"),
+              separator > value.startIndex,
+              let port = UInt16(value[value.index(after: separator)...]),
+              port != 0 else { return nil }
         return HostAddress(host: String(value[..<separator]), port: port)
     }
 }
