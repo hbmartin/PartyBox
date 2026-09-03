@@ -98,12 +98,12 @@ private struct PartyLoad {
         }
 
         if let address = configuration.address {
-            let (host, port) = try split(address: address)
+            guard let endpoint = HostAddress(parsing: address) else { throw LoadError.invalidAddress }
             for (index, client) in clients.enumerated() {
-                await client.connect(host: host, port: port)
+                await client.connect(host: endpoint.host, port: endpoint.port)
                 try requireConnected(client, index: index + 1)
             }
-            print("Connected \(clients.count) controllers to \(host):\(port)")
+            print("Connected \(clients.count) controllers to \(endpoint.host):\(endpoint.port)")
         } else if let requestedName = configuration.hostName {
             let probe = clients[0]
             await probe.startBrowsing()
@@ -189,19 +189,6 @@ private struct PartyLoad {
             if duringRun { throw LoadError.unexpectedDisconnect(index, reason) }
             throw LoadError.connectionFailed(index, reason)
         }
-    }
-
-    private static func split(address: String) throws -> (String, UInt16) {
-        if address.hasPrefix("["), let closing = address.firstIndex(of: "]") {
-            let host = String(address[address.index(after: address.startIndex)..<closing])
-            let suffix = address[address.index(after: closing)...]
-            guard suffix.first == ":", let port = UInt16(suffix.dropFirst()) else { throw LoadError.invalidAddress }
-            return (host, port)
-        }
-        guard let colon = address.lastIndex(of: ":"), let port = UInt16(address[address.index(after: colon)...]) else {
-            throw LoadError.invalidAddress
-        }
-        return (String(address[..<colon]), port)
     }
 
     private static func loadControllerID(index: Int) -> ControllerID {

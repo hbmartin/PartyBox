@@ -28,6 +28,28 @@ public enum PartyClientError: Error, LocalizedError, Sendable {
   }
 }
 
+struct PingWatchdog: Sendable {
+  private(set) var oldestUnansweredAt: AnyClock<Duration>.Instant?
+  private(set) var outstandingNonces: Set<UInt64> = []
+
+  mutating func record(nonce: UInt64, sentAt: AnyClock<Duration>.Instant) {
+    if outstandingNonces.isEmpty { oldestUnansweredAt = sentAt }
+    outstandingNonces.insert(nonce)
+  }
+
+  @discardableResult
+  mutating func acknowledge(nonce: UInt64) -> Bool {
+    guard outstandingNonces.contains(nonce) else { return false }
+    outstandingNonces.removeAll()
+    oldestUnansweredAt = nil
+    return true
+  }
+
+  func hasTimedOut(at now: AnyClock<Duration>.Instant, after timeout: Duration) -> Bool {
+    oldestUnansweredAt.map { $0.duration(to: now) >= timeout } ?? false
+  }
+}
+
 actor ClientTransport {
   nonisolated var events: AsyncStream<ClientTransportEvent> { eventHub.stream() }
 
@@ -51,8 +73,7 @@ actor ClientTransport {
     var lastAcknowledgedAt: AnyClock<Duration>.Instant?
     var usesTCPFallback = false
     var fallbackProbeSequenceFloor: UInt32?
-    var pingSentAt: AnyClock<Duration>.Instant?
-    var pingNonce: UInt64?
+    var pingWatchdog = PingWatchdog()
     var sequence: UInt32 = 0
     var inputTask: Task<Void, Never>?
     var pingTask: Task<Void, Never>?
@@ -67,6 +88,7 @@ actor ClientTransport {
   private let logger = Logger(subsystem: "PartyNet", category: "ClientTransport")
   private let clock: AnyClock<Duration>
   private let inputSendInterval: Duration
+  private let handshakeResponseHook: (@Sendable (HostMessage) async -> Void)?
   private var browser: NetworkBrowser<Bonjour>?
   private var browserTask: Task<Void, Never>?
   private var browserGeneration: UUID?
@@ -74,10 +96,14 @@ actor ClientTransport {
   private var sessions: [UUID: Session] = [:]
   private var pendingHandshakes: [UUID: PendingHandshake] = [:]
 
-  init(inputSendInterval: Duration = .milliseconds(16)) {
+  init(
+    inputSendInterval: Duration = .milliseconds(16),
+    handshakeResponseHook: (@Sendable (HostMessage) async -> Void)? = nil
+  ) {
     @Dependency(\.continuousClock) var continuousClock
     clock = AnyClock(continuousClock)
     self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
+    self.handshakeResponseHook = handshakeResponseHook
   }
 
   func startBrowsing() {
@@ -130,11 +156,16 @@ actor ClientTransport {
 
     let connectionID = UUID()
     let handshakeTask = Task { [connection] in
-      try await withTimeout(PartyNetConstants.helloTimeout, operationName: "connecting to the host") {
+      try await withTimeout(
+        PartyNetConstants.helloTimeout,
+        clock: clock,
+        operationName: "connecting to the host"
+      ) {
         try await connection.send(.hello(hello))
       }
       return try await withTimeout(
         PartyNetConstants.helloTimeout,
+        clock: clock,
         operationName: "waiting for host welcome"
       ) {
         try await connection.receive().content
@@ -144,12 +175,13 @@ actor ClientTransport {
     var receivedWelcome = false
     do {
       let response = try await handshakeTask.value
+      if case .welcome = response { receivedWelcome = true }
+      if let handshakeResponseHook { await handshakeResponseHook(response) }
       guard pendingHandshakes[attemptID] != nil else { throw CancellationError() }
       let welcome: Welcome
       switch response {
       case .welcome(let value):
         welcome = value
-        receivedWelcome = true
       case .rejected(let reason): throw PartyClientError.rejected(reason)
       default: throw PartyClientError.unexpectedHandshake
       }
@@ -278,10 +310,8 @@ actor ClientTransport {
           continue
         }
         if case .pong(let nonce) = message.content,
-          var session = sessions[connectionID], session.pingNonce == nonce
+          var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
         {
-          session.pingSentAt = nil
-          session.pingNonce = nil
           sessions[connectionID] = session
         }
         eventHub.yield(.message(connectionID: connectionID, message.content))
@@ -415,16 +445,14 @@ actor ClientTransport {
     while !Task.isCancelled {
       do { try await clock.sleep(for: PartyNetConstants.pingInterval) } catch { return }
       guard let session = sessions[connectionID] else { return }
-      if let sentAt = session.pingSentAt,
-        sentAt.duration(to: clock.now) >= PartyNetConstants.pingTimeout
-      {
+      let now = clock.now
+      if session.pingWatchdog.hasTimedOut(at: now, after: PartyNetConstants.pingTimeout) {
         endSession(connectionID, reason: "The host stopped responding.")
         return
       }
       let value = DispatchTime.now().uptimeNanoseconds
       if var latest = sessions[connectionID] {
-        latest.pingSentAt = clock.now
-        latest.pingNonce = value
+        latest.pingWatchdog.record(nonce: value, sentAt: now)
         sessions[connectionID] = latest
       }
       do {

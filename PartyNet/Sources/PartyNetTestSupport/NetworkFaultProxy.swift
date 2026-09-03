@@ -21,6 +21,7 @@ public actor NetworkFaultProxy {
     private var listenerTasks: [Task<Void, Never>] = []
     private var controlHandlerTasks: [UUID: Task<Void, Never>] = [:]
     private var udpHandlerTasks: [UUID: Task<Void, Never>] = [:]
+    private var udpForwardTasks: [UUID: Task<Void, Never>] = [:]
     private var bridgeTasks: [UUID: [Task<Void, Never>]] = [:]
     private var bridgeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var bridgeControllerIDs: [UUID: ControllerID] = [:]
@@ -70,10 +71,11 @@ public actor NetworkFaultProxy {
                     await proxy.listenerFailed(generation: generation)
                 }
             })
-            let boundUDP = try await waitForPort(
+            let boundUDP = try await waitForBoundPort(
                 of: udpListener,
+                clock: clock,
                 operation: "starting fault-proxy UDP",
-                generation: generation
+                validate: { try await proxy.requireCurrentLifecycle(generation) }
             )
             guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
             udpPort = boundUDP
@@ -94,10 +96,11 @@ public actor NetworkFaultProxy {
                     await proxy.listenerFailed(generation: generation)
                 }
             })
-            let boundTCP = try await waitForPort(
+            let boundTCP = try await waitForBoundPort(
                 of: tcpListener,
+                clock: clock,
                 operation: "starting fault-proxy TCP",
-                generation: generation
+                validate: { try await proxy.requireCurrentLifecycle(generation) }
             )
             guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
             self.tcpPort = boundTCP
@@ -174,6 +177,8 @@ public actor NetworkFaultProxy {
         controlHandlerTasks.removeAll()
         udpHandlerTasks.values.forEach { $0.cancel() }
         udpHandlerTasks.removeAll()
+        udpForwardTasks.values.forEach { $0.cancel() }
+        udpForwardTasks.removeAll()
         for bridgeID in Array(downstreamConnections.keys) { removeBridge(bridgeID) }
         downstreamTCPListener = nil
         downstreamUDPListener = nil
@@ -234,7 +239,9 @@ public actor NetworkFaultProxy {
         metrics.activeTCPBridges = downstreamConnections.count
 
         do {
-            let first = try await withProxyTimeout(
+            let first = try await withTimeout(
+                PartyNetConstants.helloTimeout,
+                clock: clock,
                 operationName: "waiting for fault-proxy downstream hello"
             ) {
                 try await downstream.receive().content
@@ -245,7 +252,9 @@ public actor NetworkFaultProxy {
             }
             bridgeControllerIDs[bridgeID] = hello.controllerID
             try await upstream.send(.hello(hello))
-            let response = try await withProxyTimeout(
+            let response = try await withTimeout(
+                PartyNetConstants.helloTimeout,
+                clock: clock,
                 operationName: "waiting for fault-proxy upstream welcome"
             ) {
                 try await upstream.receive().content
@@ -359,14 +368,14 @@ public actor NetworkFaultProxy {
             while !Task.isCancelled {
                 guard lifecycleGeneration == generation else { return }
                 let data = try await connection.receive().content
-                await acceptDatagram(data)
+                acceptDatagram(data)
             }
         } catch {
             // Datagram flows are intentionally short-lived and lossy.
         }
     }
 
-    private func acceptDatagram(_ data: Data) async {
+    private func acceptDatagram(_ data: Data) {
         metrics.udpReceived += 1
         guard let frame = InputFrame(data: data), upstreamUDPPorts[frame.token] != nil else {
             metrics.udpRejected += 1
@@ -380,7 +389,7 @@ public actor NetworkFaultProxy {
 
         let packet = BufferedDatagram(data: data, token: frame.token)
         guard profile.reorderWindow > 1 else {
-            await forward(packet)
+            scheduleForward(packet)
             return
         }
         reorderQueues[frame.token, default: []].append(packet)
@@ -388,15 +397,40 @@ public actor NetworkFaultProxy {
         let batch = Array(reorderQueues[frame.token, default: []].prefix(profile.reorderWindow))
         reorderQueues[frame.token]?.removeFirst(profile.reorderWindow)
         metrics.udpReordered += batch.count
-        for item in batch.reversed() { await forward(item) }
+        for item in batch.reversed() { scheduleForward(item) }
     }
 
-    private func forward(_ packet: BufferedDatagram) async {
+    private func scheduleForward(_ packet: BufferedDatagram) {
         let delay = nextDelayMilliseconds()
-        if delay > 0 {
-            metrics.udpDelayed += 1
-            do { try await clock.sleep(for: .milliseconds(delay)) } catch { return }
+        if delay > 0 { metrics.udpDelayed += 1 }
+        let taskID = UUID()
+        let generation = lifecycleGeneration
+        let clock = clock
+        let proxy = self
+        udpForwardTasks[taskID] = Task { [clock, proxy] in
+            if delay > 0 {
+                do {
+                    try await clock.sleep(for: .milliseconds(delay))
+                } catch {
+                    await proxy.finishForward(taskID: taskID)
+                    return
+                }
+            }
+            guard !Task.isCancelled else {
+                await proxy.finishForward(taskID: taskID)
+                return
+            }
+            await proxy.forward(packet, taskID: taskID, generation: generation)
         }
+    }
+
+    private func finishForward(taskID: UUID) {
+        udpForwardTasks.removeValue(forKey: taskID)
+    }
+
+    private func forward(_ packet: BufferedDatagram, taskID: UUID, generation: UInt64) async {
+        defer { udpForwardTasks.removeValue(forKey: taskID) }
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
         guard let upstreamHost, let port = upstreamUDPPorts[packet.token] else {
             metrics.udpRejected += 1
             return
@@ -413,8 +447,10 @@ public actor NetworkFaultProxy {
         }
         do {
             try await connection.send(packet.data)
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
             metrics.udpForwarded += 1
         } catch {
+            guard lifecycleGeneration == generation else { return }
             upstreamUDPConnections.removeValue(forKey: packet.token)
             metrics.udpRejected += 1
         }
@@ -454,37 +490,8 @@ public actor NetworkFaultProxy {
         return port
     }
 
-    private func waitForPort<ApplicationProtocol: NetworkProtocolOptions>(
-        of listener: NetworkListener<ApplicationProtocol>,
-        operation: String,
-        generation: UInt64
-    ) async throws -> UInt16 {
-        for _ in 0..<500 {
-            guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
-            if let port = listener.port, port.rawValue != 0 { return port.rawValue }
-            try Task.checkCancellation()
-            try await clock.sleep(for: .milliseconds(10))
-        }
-        throw PartyNetTransportError.timedOut(operation)
+    private func requireCurrentLifecycle(_ generation: UInt64) throws {
+        guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
     }
 
-    private func withProxyTimeout<T: Sendable>(
-        _ duration: Duration = PartyNetConstants.helloTimeout,
-        operationName: String,
-        operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        let clock = clock
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await clock.sleep(for: duration)
-                throw PartyNetTransportError.timedOut(operationName)
-            }
-            guard let result = try await group.next() else {
-                throw PartyNetTransportError.stopped
-            }
-            group.cancelAll()
-            return result
-        }
-    }
 }

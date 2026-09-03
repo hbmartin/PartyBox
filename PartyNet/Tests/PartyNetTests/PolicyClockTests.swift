@@ -9,6 +9,57 @@ extension NetworkIntegrationTests {
   @Suite("Controllable policy clocks", .serialized)
   @MainActor
   struct PolicyClockTests {
+    private enum ExpectedTimeout: Error, Sendable {
+      case elapsed
+    }
+
+    @Test func sharedTimeoutUsesTheProvidedClockAndError() async {
+      let clock = TestClock()
+      let task = Task {
+        try await withTimeout(
+          .seconds(5),
+          clock: AnyClock(clock),
+          timeoutError: { ExpectedTimeout.elapsed }
+        ) {
+          try await clock.sleep(for: .seconds(30))
+          return 1
+        }
+      }
+      await settle()
+
+      await clock.advance(by: .seconds(5))
+      await #expect(throws: ExpectedTimeout.self) {
+        try await task.value
+      }
+    }
+
+    @Test func pingDeadlineTracksOldestUnansweredPing() async {
+      let clock = TestClock()
+      let erasedClock = AnyClock(clock)
+      var watchdog = PingWatchdog()
+
+      watchdog.record(nonce: 1, sentAt: erasedClock.now)
+      await clock.advance(by: .seconds(2))
+      watchdog.record(nonce: 2, sentAt: erasedClock.now)
+      await clock.advance(by: .seconds(2))
+      watchdog.record(nonce: 3, sentAt: erasedClock.now)
+
+      #expect(!watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
+      await clock.advance(by: .seconds(2))
+      #expect(watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
+
+      let acknowledgedOutstandingPing = watchdog.acknowledge(nonce: 2)
+      #expect(acknowledgedOutstandingPing)
+      #expect(watchdog.outstandingNonces.isEmpty)
+      #expect(watchdog.oldestUnansweredAt == nil)
+
+      watchdog.record(nonce: 4, sentAt: erasedClock.now)
+      let acknowledgedStalePing = watchdog.acknowledge(nonce: 3)
+      #expect(!acknowledgedStalePing)
+      await clock.advance(by: .seconds(6))
+      #expect(watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
+    }
+
     @Test func reconnectWindowExpiresAtExactlyThirtySeconds() async throws {
       let clock = TestClock()
       try await withDependencies {

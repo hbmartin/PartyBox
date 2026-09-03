@@ -89,6 +89,26 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
+    @Test func UDPDelayAddsLatencyWithoutThrottlingIngress() async throws {
+      let rig = FaultRig(profile: FaultProfile(delayMilliseconds: 50))
+      let metadata = try await rig.start()
+      let client = PartyClient(displayName: "Delayed", inputSendInterval: .milliseconds(8))
+      await client.connect(host: metadata.host, port: metadata.tcpPort)
+
+      for index in 0..<60 {
+        client.setInput(axisX: Float(index % 20) / 10 - 1)
+        try await Task.sleep(for: .milliseconds(8))
+      }
+      try await Task.sleep(for: .milliseconds(150))
+
+      let metrics = await rig.proxy.currentMetrics()
+      #expect(metrics.udpReceived >= 30)
+      #expect(metrics.udpForwarded >= 25)
+      #expect(metrics.udpDelayed >= metrics.udpForwarded)
+      await client.disconnect()
+      await rig.stop()
+    }
+
     @Test func TCPCutReconnectsToSameHostInstance() async throws {
       let rig = FaultRig()
       let metadata = try await rig.start()

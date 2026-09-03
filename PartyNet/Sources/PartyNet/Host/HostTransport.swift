@@ -76,10 +76,11 @@ actor HostTransport {
         }
       }
       listenerTasks.append(udpTask)
-      let udpPort = try await waitForPort(
+      let udpPort = try await waitForBoundPort(
         of: udp,
+        clock: clock,
         operation: "starting the UDP listener",
-        generation: generation
+        validate: { try await transport.requireCurrentLifecycle(generation) }
       )
       guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
       boundUDPPort = udpPort
@@ -115,10 +116,11 @@ actor HostTransport {
         }
       }
       listenerTasks.append(tcpTask)
-      let tcpPort = try await waitForPort(
+      let tcpPort = try await waitForBoundPort(
         of: tcp,
+        clock: clock,
         operation: "starting the control listener",
-        generation: generation
+        validate: { try await transport.requireCurrentLifecycle(generation) }
       )
       guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
       logger.info("PartyBox host ready on TCP \(tcpPort), UDP \(udpPort)")
@@ -213,18 +215,8 @@ actor HostTransport {
     boundUDPPort = nil
   }
 
-  private func waitForPort<ApplicationProtocol: NetworkProtocolOptions>(
-    of listener: NetworkListener<ApplicationProtocol>,
-    operation: String,
-    generation: UInt64
-  ) async throws -> UInt16 {
-    for _ in 0..<500 {
-      guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
-      if let port = listener.port, port.rawValue != 0 { return port.rawValue }
-      try Task.checkCancellation()
-      try await clock.sleep(for: .milliseconds(10))
-    }
-    throw PartyNetTransportError.timedOut(operation)
+  private func requireCurrentLifecycle(_ generation: UInt64) throws {
+    guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
   }
 
   private func acceptControlConnection(
@@ -266,7 +258,9 @@ actor HostTransport {
 
     do {
       let first = try await withTimeout(
-        PartyNetConstants.helloTimeout, operationName: "waiting for controller hello"
+        PartyNetConstants.helloTimeout,
+        clock: clock,
+        operationName: "waiting for controller hello"
       ) {
         try await connection.receive().content
       }
@@ -329,6 +323,7 @@ actor HostTransport {
         guard lifecycleGeneration == generation else { return }
         let packet = try await withTimeout(
           PartyNetConstants.udpIdleTimeout,
+          clock: clock,
           operationName: "waiting for controller input"
         ) {
           try await connection.receive().content
