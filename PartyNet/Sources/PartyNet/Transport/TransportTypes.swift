@@ -67,6 +67,33 @@ package func clientControlStack() -> ClientControlProtocol {
     }
 }
 
+package func waitForBoundPort<ApplicationProtocol: NetworkProtocolOptions>(
+    of listener: NetworkListener<ApplicationProtocol>,
+    clock: AnyClock<Duration>,
+    operation: String,
+    validate: @escaping @Sendable () async throws -> Void = {}
+) async throws -> UInt16 {
+    for _ in 0..<500 {
+        try await validate()
+        if let port = listener.port, port.rawValue != 0 { return port.rawValue }
+        try Task.checkCancellation()
+        try await clock.sleep(for: .milliseconds(10))
+    }
+    throw PartyNetTransportError.timedOut(operation)
+}
+
+package func waitForBoundPort<ApplicationProtocol: NetworkProtocolOptions>(
+    of listener: NetworkListener<ApplicationProtocol>,
+    operation: String
+) async throws -> UInt16 {
+    @Dependency(\.continuousClock) var continuousClock
+    return try await waitForBoundPort(
+        of: listener,
+        clock: AnyClock(continuousClock),
+        operation: operation
+    )
+}
+
 func withTimeout<T: Sendable>(
     _ duration: Duration,
     operationName: String,

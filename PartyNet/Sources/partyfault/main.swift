@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import PartyNet
 import PartyNetTestSupport
 
 private typealias FaultServerProtocol = Coder<FaultControlResponse, FaultControlRequest, NetworkJSONCoder>
@@ -44,7 +45,10 @@ private actor FaultControlServer {
             } catch {}
         }
         do {
-            return try await waitForPort(listener)
+            return try await waitForBoundPort(
+                of: listener,
+                operation: "starting the fault-control listener"
+            )
         } catch {
             listenerTask?.cancel()
             listenerTask = nil
@@ -143,14 +147,6 @@ private actor FaultControlServer {
         }
     }
 
-    private func waitForPort(_ listener: NetworkListener<FaultServerProtocol>) async throws -> UInt16 {
-        for _ in 0..<500 {
-            if let port = listener.port, port.rawValue != 0 { return port.rawValue }
-            try Task.checkCancellation()
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        throw PartyFaultError.timedOut
-    }
 }
 
 private enum PartyFaultError: Error, LocalizedError {
@@ -222,7 +218,10 @@ enum PartyFaultCommand {
     private static func control(_ arguments: [String]) async throws {
         guard let address = option("--address", in: arguments),
               let commandIndex = firstCommandIndex(in: arguments) else { throw usageError() }
-        let (host, port) = try parseAddress(address)
+        guard let endpoint = HostAddress(parsing: address),
+              let port = NWEndpoint.Port(rawValue: endpoint.port) else {
+            throw PartyFaultError.invalidAddress
+        }
         let command = arguments[commandIndex]
         let trailing = Array(arguments.dropFirst(commandIndex + 1))
         let request: FaultControlRequest
@@ -247,7 +246,7 @@ enum PartyFaultCommand {
         }
 
         let connection = NetworkConnection<FaultClientProtocol>(
-            to: .hostPort(host: NWEndpoint.Host(host), port: port),
+            to: .hostPort(host: NWEndpoint.Host(endpoint.host), port: port),
             using: .parameters { faultClientStack() }.peerToPeerIncluded(false)
         )
         let response = try await withFaultTimeout {
@@ -280,15 +279,6 @@ enum PartyFaultCommand {
             throw PartyFaultError.usage("Invalid \(name) value: \(value)")
         }
         return parsed
-    }
-
-    private static func parseAddress(_ value: String) throws -> (String, NWEndpoint.Port) {
-        guard let separator = value.lastIndex(of: ":"),
-              let port = UInt16(value[value.index(after: separator)...]),
-              let networkPort = NWEndpoint.Port(rawValue: port) else {
-            throw PartyFaultError.invalidAddress
-        }
-        return (String(value[..<separator]), networkPort)
     }
 
     private static func usageError() -> PartyFaultError {

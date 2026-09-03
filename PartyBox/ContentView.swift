@@ -27,10 +27,6 @@ struct ContentView: View {
                         VStack {
                             Text("Pong match in progress")
                                 .accessibilityIdentifier("host.phase.playing")
-                            ForEach(1...4, id: \.self) { number in
-                                Text("Player \(number) lives")
-                                    .accessibilityIdentifier("host.lives.\(number)")
-                            }
                         }
                         .font(.system(size: 1))
                         .foregroundStyle(.white.opacity(0.01))

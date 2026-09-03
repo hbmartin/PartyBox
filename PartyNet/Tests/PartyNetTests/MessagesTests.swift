@@ -58,6 +58,22 @@ struct MessagesTests {
         #expect(DisplayName.sanitized(String(repeating: "x", count: 40), fallback: "Player").count == 24)
     }
 
+    @Test func hostAddressParsingRequiresAnExplicitValidPortAndBracketedIPv6() throws {
+        let named = try #require(HostAddress(parsing: "partybox.local:49999"))
+        #expect(named.host == "partybox.local")
+        #expect(named.port == 49_999)
+
+        let ipv6 = try #require(HostAddress(parsing: "[fe80::1%en0]:65535"))
+        #expect(ipv6.host == "fe80::1%en0")
+        #expect(ipv6.port == 65_535)
+
+        #expect(HostAddress(parsing: "fe80::1:49999") == nil)
+        #expect(HostAddress(parsing: ":49999") == nil)
+        #expect(HostAddress(parsing: "partybox.local:0") == nil)
+        #expect(HostAddress(parsing: "partybox.local:65536") == nil)
+        #expect(HostAddress(parsing: "partybox.local") == nil)
+    }
+
     @Test func arcadePaletteParsesSharedHexColors() throws {
         let cyan = try #require(ArcadePalette.rgb(ArcadePalette.cyan))
         #expect(cyan.red == Double(0x32) / 255)

@@ -28,6 +28,28 @@ public enum PartyClientError: Error, LocalizedError, Sendable {
   }
 }
 
+struct PingWatchdog: Sendable {
+  private(set) var oldestUnansweredAt: AnyClock<Duration>.Instant?
+  private(set) var outstandingNonces: Set<UInt64> = []
+
+  mutating func record(nonce: UInt64, sentAt: AnyClock<Duration>.Instant) {
+    if outstandingNonces.isEmpty { oldestUnansweredAt = sentAt }
+    outstandingNonces.insert(nonce)
+  }
+
+  @discardableResult
+  mutating func acknowledge(nonce: UInt64) -> Bool {
+    guard outstandingNonces.contains(nonce) else { return false }
+    outstandingNonces.removeAll()
+    oldestUnansweredAt = nil
+    return true
+  }
+
+  func hasTimedOut(at now: AnyClock<Duration>.Instant, after timeout: Duration) -> Bool {
+    oldestUnansweredAt.map { $0.duration(to: now) >= timeout } ?? false
+  }
+}
+
 actor ClientTransport {
   nonisolated var events: AsyncStream<ClientTransportEvent> { eventHub.stream() }
 
@@ -51,8 +73,7 @@ actor ClientTransport {
     var lastAcknowledgedAt: AnyClock<Duration>.Instant?
     var usesTCPFallback = false
     var fallbackProbeSequenceFloor: UInt32?
-    var pingSentAt: AnyClock<Duration>.Instant?
-    var pingNonce: UInt64?
+    var pingWatchdog = PingWatchdog()
     var sequence: UInt32 = 0
     var inputTask: Task<Void, Never>?
     var pingTask: Task<Void, Never>?
@@ -278,10 +299,8 @@ actor ClientTransport {
           continue
         }
         if case .pong(let nonce) = message.content,
-          var session = sessions[connectionID], session.pingNonce == nonce
+          var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
         {
-          session.pingSentAt = nil
-          session.pingNonce = nil
           sessions[connectionID] = session
         }
         eventHub.yield(.message(connectionID: connectionID, message.content))
@@ -415,16 +434,14 @@ actor ClientTransport {
     while !Task.isCancelled {
       do { try await clock.sleep(for: PartyNetConstants.pingInterval) } catch { return }
       guard let session = sessions[connectionID] else { return }
-      if let sentAt = session.pingSentAt,
-        sentAt.duration(to: clock.now) >= PartyNetConstants.pingTimeout
-      {
+      let now = clock.now
+      if session.pingWatchdog.hasTimedOut(at: now, after: PartyNetConstants.pingTimeout) {
         endSession(connectionID, reason: "The host stopped responding.")
         return
       }
       let value = DispatchTime.now().uptimeNanoseconds
       if var latest = sessions[connectionID] {
-        latest.pingSentAt = clock.now
-        latest.pingNonce = value
+        latest.pingWatchdog.record(nonce: value, sentAt: now)
         sessions[connectionID] = latest
       }
       do {
