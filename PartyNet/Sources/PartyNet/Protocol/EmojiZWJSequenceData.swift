@@ -2,15 +2,22 @@
 // https://www.unicode.org/Public/17.0.0/emoji/emoji-zwj-sequences.txt
 // Source data is provided under the Unicode License v3.
 extension UnicodeSequenceData {
-    static func isRegisteredEmojiZWJSequence(_ sequence: String) -> Bool {
-        let key = sequence.unicodeScalars
-            .map { String($0.value, radix: 16, uppercase: true) }
-            .joined(separator: " ")
-        return registeredEmojiZWJSequenceKeys.contains(key[...])
+    static func registeredEmojiZWJDefaultIgnorableIndices(
+        in scalars: [Unicode.Scalar]
+    ) -> Set<Int> {
+        emojiZWJSequenceMatcher.defaultIgnorableIndices(in: scalars)
     }
 
-    private static let registeredEmojiZWJSequenceKeys = Set(
-        emojiZWJSequenceData.split(whereSeparator: \.isNewline)
+    static func emojiZWJVariationSequencesAreRegistered() -> Bool {
+        emojiZWJSequenceMatcher.variationSequences.allSatisfy { variation in
+            guard let base = Unicode.Scalar(variation.base),
+                  let selector = Unicode.Scalar(variation.selector) else { return false }
+            return isRegisteredVariationSequence(base: base, selector: selector)
+        }
+    }
+
+    private static let emojiZWJSequenceMatcher = EmojiZWJSequenceMatcher(
+        sequenceData: emojiZWJSequenceData
     )
 
     private static let emojiZWJSequenceData = """
@@ -1629,4 +1636,73 @@ extension UnicodeSequenceData {
         2764 FE0F 200D 1F525
         2764 FE0F 200D 1FA79
         """
+}
+
+private struct EmojiZWJSequenceMatcher: Sendable {
+    struct VariationSequence: Sendable {
+        let base: UInt32
+        let selector: UInt32
+    }
+
+    private struct Node: Sendable {
+        var transitions: [UInt32: Int] = [:]
+        var isTerminal = false
+    }
+
+    private let nodes: [Node]
+    let variationSequences: [VariationSequence]
+
+    init(sequenceData: String) {
+        var nodes = [Node()]
+        var variationSequences: [VariationSequence] = []
+        for line in sequenceData.split(whereSeparator: \.isNewline) {
+            let sequence = line.split(whereSeparator: \.isWhitespace).compactMap {
+                UInt32($0, radix: 16)
+            }
+            var nodeIndex = nodes.startIndex
+            for scalar in sequence {
+                if let existing = nodes[nodeIndex].transitions[scalar] {
+                    nodeIndex = existing
+                } else {
+                    let next = nodes.count
+                    nodes.append(Node())
+                    nodes[nodeIndex].transitions[scalar] = next
+                    nodeIndex = next
+                }
+            }
+            nodes[nodeIndex].isTerminal = true
+
+            for index in sequence.indices where (0xFE00...0xFE0F).contains(sequence[index]) {
+                guard index > sequence.startIndex else { continue }
+                variationSequences.append(VariationSequence(
+                    base: sequence[index - 1],
+                    selector: sequence[index]
+                ))
+            }
+        }
+        self.nodes = nodes
+        self.variationSequences = variationSequences
+    }
+
+    func defaultIgnorableIndices(in scalars: [Unicode.Scalar]) -> Set<Int> {
+        var matchedIndices: Set<Int> = []
+        for sequenceStart in scalars.indices {
+            var nodeIndex = nodes.startIndex
+            var cursor = sequenceStart
+            while cursor < scalars.endIndex,
+                  let next = nodes[nodeIndex].transitions[scalars[cursor].value] {
+                nodeIndex = next
+                if nodes[nodeIndex].isTerminal {
+                    for index in sequenceStart...cursor {
+                        let value = scalars[index].value
+                        if value == 0x200D || (0xFE00...0xFE0F).contains(value) {
+                            matchedIndices.insert(index)
+                        }
+                    }
+                }
+                cursor += 1
+            }
+        }
+        return matchedIndices
+    }
 }

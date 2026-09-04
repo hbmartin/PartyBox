@@ -35,14 +35,27 @@ public final class PartyHost {
         var graceTask: Task<Void, Never>?
     }
 
+    private struct PendingRename: Sendable {
+        let connectionID: UUID
+        let boundedName: String
+    }
+
+    private struct RenameWorker: Sendable {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
     private nonisolated let eventHub = EventHub<HostEvent>()
     private let logger = Logger(subsystem: "PartyNet", category: "PartyHost")
     private let reconnectGrace: Duration
+    private static let renameProcessingInterval: Duration = .milliseconds(100)
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
     private var rosterBroadcastTask: Task<Void, Never>?
     private var rosterBroadcastGeneration = UUID()
     private var pendingRosterBroadcast: [PlayerInfo]?
+    private var pendingRenames: [ControllerID: PendingRename] = [:]
+    private var renameWorkers: [ControllerID: RenameWorker] = [:]
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
     private var lifecycleGeneration: UInt64 = 0
@@ -139,6 +152,9 @@ public final class PartyHost {
         rosterBroadcastTask = nil
         rosterBroadcastGeneration = UUID()
         pendingRosterBroadcast = nil
+        renameWorkers.values.forEach { $0.task.cancel() }
+        renameWorkers.removeAll()
+        pendingRenames.removeAll()
         for session in sessions.values {
             session.graceTask?.cancel()
         }
@@ -194,6 +210,7 @@ public final class PartyHost {
         let isNewSession: Bool
         let token: UInt64
         if var existing = sessions[hello.controllerID] {
+            pendingRenames.removeValue(forKey: hello.controllerID)
             isNewSession = false
             fallbackName = "Player \(existing.playerID.rawValue + 1)"
             let oldToken = existing.sessionToken
@@ -307,7 +324,7 @@ public final class PartyHost {
         generation: UInt64
     ) async {
         guard lifecycleGeneration == generation else { return }
-        guard let controllerID = connectionOwners[connectionID], var session = sessions[controllerID],
+        guard let controllerID = connectionOwners[connectionID], let session = sessions[controllerID],
               session.connectionID == connectionID,
               session.isAdmitted,
               session.isWelcomedConnection else { return }
@@ -316,10 +333,12 @@ public final class PartyHost {
         case .hello:
             break
         case let .rename(name):
-            session.displayName = DisplayName.sanitized(name, fallback: "Player \(session.playerID.rawValue + 1)")
-            sessions[controllerID] = session
-            refreshPlayers()
-            enqueueRosterBroadcast()
+            enqueueRename(
+                name,
+                controllerID: controllerID,
+                connectionID: connectionID,
+                generation: generation
+            )
         case let .menu(action):
             eventHub.yield(.menu(playerID: session.playerID, action: action))
         case let .input(frame):
@@ -336,6 +355,7 @@ public final class PartyHost {
         guard lifecycleGeneration == generation else { return }
         guard let controllerID = connectionOwners.removeValue(forKey: connectionID),
               var session = sessions[controllerID], session.connectionID == connectionID else { return }
+        pendingRenames.removeValue(forKey: controllerID)
         let wasAdmitted = session.isAdmitted
         let token = session.sessionToken
         session.connectionID = nil
@@ -375,6 +395,7 @@ public final class PartyHost {
         guard lifecycleGeneration == generation,
               let current = sessions[controllerID],
               expectedRevision == nil || current.revision == expectedRevision else { return }
+        cancelPendingRename(for: controllerID)
         let session = sessions.removeValue(forKey: controllerID)!
         if let connectionID = session.connectionID {
             connectionOwners.removeValue(forKey: connectionID)
@@ -390,6 +411,98 @@ public final class PartyHost {
             await transport?.disconnect(connectionID: connectionID)
         }
         if let token = session.sessionToken { await transport?.invalidate(token: token) }
+    }
+
+    private func enqueueRename(
+        _ name: String,
+        controllerID: ControllerID,
+        connectionID: UUID,
+        generation: UInt64
+    ) {
+        let pending = PendingRename(
+            connectionID: connectionID,
+            boundedName: DisplayName.boundedForAnalysis(name)
+        )
+        if renameWorkers[controllerID] != nil {
+            pendingRenames[controllerID] = pending
+            return
+        }
+
+        cancelPendingRename(for: controllerID)
+        applyRename(pending, controllerID: controllerID)
+        startRenameWorker(
+            controllerID: controllerID,
+            generation: generation
+        )
+    }
+
+    private func applyRename(_ pending: PendingRename, controllerID: ControllerID) {
+        guard var session = sessions[controllerID],
+              session.connectionID == pending.connectionID,
+              session.isAdmitted,
+              session.isWelcomedConnection else { return }
+        let sanitized = DisplayName.sanitized(
+            pending.boundedName,
+            fallback: "Player \(session.playerID.rawValue + 1)"
+        )
+        guard sanitized != session.displayName else { return }
+        session.displayName = sanitized
+        sessions[controllerID] = session
+        refreshPlayers()
+        enqueueRosterBroadcast()
+    }
+
+    private func startRenameWorker(
+        controllerID: ControllerID,
+        generation: UInt64
+    ) {
+        @Dependency(\.continuousClock) var continuousClock
+        let clock = AnyClock(continuousClock)
+        let workerID = UUID()
+        let task = Task { [weak self, clock] in
+            guard let self else { return }
+            await self.runRenameWorker(
+                controllerID: controllerID,
+                workerID: workerID,
+                generation: generation,
+                clock: clock
+            )
+        }
+        renameWorkers[controllerID] = RenameWorker(
+            id: workerID,
+            task: task
+        )
+    }
+
+    private func runRenameWorker(
+        controllerID: ControllerID,
+        workerID: UUID,
+        generation: UInt64,
+        clock: AnyClock<Duration>
+    ) async {
+        defer { finishRenameWorker(controllerID: controllerID, workerID: workerID) }
+        while !Task.isCancelled, lifecycleGeneration == generation {
+            do {
+                try await clock.sleep(for: Self.renameProcessingInterval)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  lifecycleGeneration == generation,
+                  renameWorkers[controllerID]?.id == workerID,
+                  let pending = pendingRenames.removeValue(forKey: controllerID) else { return }
+            applyRename(pending, controllerID: controllerID)
+        }
+    }
+
+    private func finishRenameWorker(controllerID: ControllerID, workerID: UUID) {
+        guard renameWorkers[controllerID]?.id == workerID else { return }
+        renameWorkers.removeValue(forKey: controllerID)
+    }
+
+    private func cancelPendingRename(for controllerID: ControllerID) {
+        renameWorkers.removeValue(forKey: controllerID)?.task.cancel()
+        pendingRenames.removeValue(forKey: controllerID)
     }
 
     private func enqueueRosterBroadcast() {

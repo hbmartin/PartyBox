@@ -1,5 +1,6 @@
 import DependenciesTestSupport
 import Foundation
+import Network
 import PartyNetTestSupport
 import Testing
 
@@ -11,6 +12,57 @@ extension NetworkIntegrationTests {
     .dependency(\.continuousClock, ContinuousClock()))
   @MainActor
   struct NetworkFaultProxyTests {
+    private enum DatagramSendError: Error, Sendable {
+      case failed
+    }
+
+    private enum DatagramSendOutcome: Equatable, Sendable {
+      case cancelledFailure
+      case cancelledSuccess
+      case activeCancellation
+      case failure
+    }
+
+    private actor DatagramSendGate {
+      private let outcome: DatagramSendOutcome
+      private(set) var isStarted = false
+      private(set) var isFinished = false
+      private(set) var sendCount = 0
+      private(set) var usedFreshConnection = false
+      private var firstConnection: ObjectIdentifier?
+      private var continuation: CheckedContinuation<Void, Never>?
+
+      init(outcome: DatagramSendOutcome) {
+        self.outcome = outcome
+      }
+
+      func send(on connection: NetworkConnection<UDP>) async throws {
+        sendCount += 1
+        let connectionID = ObjectIdentifier(connection)
+        if let firstConnection {
+          usedFreshConnection = usedFreshConnection || firstConnection != connectionID
+        } else {
+          firstConnection = connectionID
+        }
+        isStarted = true
+        defer { isFinished = true }
+        switch outcome {
+        case .cancelledFailure, .cancelledSuccess:
+          await withCheckedContinuation { continuation = $0 }
+          if outcome == .cancelledFailure { try Task.checkCancellation() }
+        case .activeCancellation:
+          if sendCount == 1 { throw CancellationError() }
+        case .failure:
+          throw DatagramSendError.failed
+        }
+      }
+
+      func resume() {
+        continuation?.resume()
+        continuation = nil
+      }
+    }
+
     @Test func stableUDPIsAcknowledgedAndNeverFallsBack() async throws {
       let rig = FaultRig()
       let metadata = try await rig.start()
@@ -130,6 +182,34 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
+    @Test func cancelledUDPFailureDoesNotCountAsRejected() async throws {
+      let metrics = try await metricsAfterControlledSend(outcome: .cancelledFailure)
+      #expect(metrics.after.udpForwarded == metrics.before.udpForwarded)
+      #expect(metrics.after.udpRejected == metrics.before.udpRejected)
+    }
+
+    @Test func successfulUDPCompletionIsCountedAfterWorkerCancellation() async throws {
+      let metrics = try await metricsAfterControlledSend(outcome: .cancelledSuccess)
+      #expect(metrics.after.udpForwarded == metrics.before.udpForwarded + 1)
+      #expect(metrics.after.udpRejected == metrics.before.udpRejected)
+    }
+
+    @Test func activeUDPFailureStillCountsAsRejected() async throws {
+      let metrics = try await metricsAfterControlledSend(outcome: .failure)
+      #expect(metrics.after.udpForwarded == metrics.before.udpForwarded)
+      #expect(metrics.after.udpRejected == metrics.before.udpRejected + 1)
+    }
+
+    @Test func activeUDPCancellationErrorStillCountsAsRejected() async throws {
+      let metrics = try await metricsAfterControlledSend(
+        outcome: .activeCancellation,
+        retryAfterFailure: true
+      )
+      #expect(metrics.after.udpForwarded == metrics.before.udpForwarded + 1)
+      #expect(metrics.after.udpRejected == metrics.before.udpRejected + 1)
+      #expect(metrics.usedFreshConnection)
+    }
+
     @Test func TCPCutReconnectsToSameHostInstance() async throws {
       let rig = FaultRig()
       let metadata = try await rig.start()
@@ -247,6 +327,74 @@ extension NetworkIntegrationTests {
             jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
             reorderWindow: FaultProfile.maximumReorderWindow
           ))
+    }
+
+    private func metricsAfterControlledSend(
+      outcome: DatagramSendOutcome,
+      retryAfterFailure: Bool = false
+    ) async throws -> (before: FaultMetrics, after: FaultMetrics, usedFreshConnection: Bool) {
+      let gate = DatagramSendGate(outcome: outcome)
+      let host = PartyHost()
+      let proxy = NetworkFaultProxy(udpSender: { connection, _ in
+        try await gate.send(on: connection)
+      })
+      do {
+        let upstreamPort = try await host.start(hostName: "Cancellation Host", advertise: false)
+        let proxyPorts = try await proxy.start(upstreamTCPPort: upstreamPort)
+        let proxyTCPPort = try #require(NWEndpoint.Port(rawValue: proxyPorts.tcp))
+        let control = ClientControlConnection(
+          to: .hostPort(host: "127.0.0.1", port: proxyTCPPort),
+          using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+        )
+        try await control.send(.hello(Hello(controllerID: ControllerID(), displayName: "Gate")))
+        guard case let .welcome(welcome) = try await control.receive().content else {
+          throw PartyClientError.unexpectedHandshake
+        }
+
+        let proxyUDPPort = try #require(NWEndpoint.Port(rawValue: proxyPorts.udp))
+        let udp = NetworkConnection<UDP>(
+          to: .hostPort(host: "127.0.0.1", port: proxyUDPPort),
+          using: .parameters { UDP() }.peerToPeerIncluded(false)
+        )
+        let before = await proxy.currentMetrics()
+        try await udp.send(InputFrame(
+          token: welcome.sessionToken,
+          sequence: 1,
+          clientTimeMs: 0,
+          axisX: 0,
+          axisY: 0
+        ).encode())
+        try await waitUntil { await gate.isStarted }
+
+        if outcome == .cancelledFailure || outcome == .cancelledSuccess {
+          try await proxy.updateUpstream(tcpPort: upstreamPort)
+          await gate.resume()
+        }
+        try await waitUntil { await gate.isFinished }
+        try await waitUntil { await proxy.activeUDPForwardCount() == 0 }
+        if retryAfterFailure {
+          try await udp.send(InputFrame(
+            token: welcome.sessionToken,
+            sequence: 2,
+            clientTimeMs: 1,
+            axisX: 0,
+            axisY: 0
+          ).encode())
+          try await waitUntil { await gate.sendCount == 2 }
+          try await waitUntil { await proxy.activeUDPForwardCount() == 0 }
+        }
+        let after = await proxy.currentMetrics()
+        let usedFreshConnection = await gate.usedFreshConnection
+
+        await proxy.stop()
+        await host.stop()
+        return (before, after, usedFreshConnection)
+      } catch {
+        await gate.resume()
+        await proxy.stop()
+        await host.stop()
+        throw error
+      }
     }
 
     private func waitUntil(

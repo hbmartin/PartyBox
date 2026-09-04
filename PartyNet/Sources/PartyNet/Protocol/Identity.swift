@@ -109,6 +109,12 @@ public enum DisplayName {
         #"^\p{Indic_Syllabic_Category=Vowel_Dependent}$"#
     )
 
+    static func boundedForAnalysis(_ value: String) -> String {
+        String(String.UnicodeScalarView(
+            value.unicodeScalars.prefix(maximumAnalyzedScalars)
+        ))
+    }
+
     public static func sanitized(_ candidate: String, fallback: String) -> String {
         let compactCandidate = compact(candidate)
         let compactFallback = compact(fallback)
@@ -117,9 +123,7 @@ public enum DisplayName {
     }
 
     private static func compact(_ value: String) -> String {
-        let bounded = String(String.UnicodeScalarView(
-            value.unicodeScalars.prefix(maximumAnalyzedScalars)
-        ))
+        let bounded = boundedForAnalysis(value)
         let normalized = bounded.precomposedStringWithCanonicalMapping
         let scalars = Array(normalized.unicodeScalars.prefix(maximumAnalyzedScalars))
         let permittedIgnorables = permittedDefaultIgnorables(in: scalars)
@@ -147,6 +151,8 @@ public enum DisplayName {
         in scalars: [Unicode.Scalar]
     ) -> Set<Int> {
         var permitted: Set<Int> = []
+        let registeredEmojiIgnorables = UnicodeSequenceData
+            .registeredEmojiZWJDefaultIgnorableIndices(in: scalars)
         var index = scalars.startIndex
         while index < scalars.endIndex {
             switch scalars[index].value {
@@ -156,16 +162,17 @@ public enum DisplayName {
                     permitted.insert(index)
                 }
             case 0x200D:
-                if hasEmojiZWJContext(at: index, in: scalars)
+                if registeredEmojiIgnorables.contains(index)
                     || hasViramaContext(before: index, in: scalars, requiresFollowingLetter: false) {
                     permitted.insert(index)
                 }
             case 0xFE00...0xFE0F:
-                if index > scalars.startIndex,
-                   UnicodeSequenceData.isRegisteredVariationSequence(
-                    base: scalars[index - 1],
-                    selector: scalars[index]
-                   ) {
+                if registeredEmojiIgnorables.contains(index)
+                    || (index > scalars.startIndex
+                        && UnicodeSequenceData.isRegisteredVariationSequence(
+                            base: scalars[index - 1],
+                            selector: scalars[index]
+                        )) {
                     permitted.insert(index)
                 }
             case 0x1F3F4:
@@ -215,22 +222,6 @@ public enum DisplayName {
             cursor += 1
         }
         return nil
-    }
-
-    private static func hasEmojiZWJContext(
-        at index: Int,
-        in scalars: [Unicode.Scalar]
-    ) -> Bool {
-        let value = String(String.UnicodeScalarView(scalars))
-        var lowerBound = scalars.startIndex
-        for character in value {
-            let upperBound = lowerBound + character.unicodeScalars.count
-            if index < upperBound {
-                return UnicodeSequenceData.isRegisteredEmojiZWJSequence(String(character))
-            }
-            lowerBound = upperBound
-        }
-        return false
     }
 
     private static func hasViramaContext(
