@@ -2,6 +2,10 @@
 // https://www.unicode.org/Public/17.0.0/emoji/emoji-zwj-sequences.txt
 // Source data is provided under the Unicode License v3.
 extension UnicodeSequenceData {
+    static let maximumEmojiZWJSequenceScalarCount = registeredEmojiZWJSequenceKeys.lazy
+        .map { $0.split(separator: " ").count }
+        .max() ?? 0
+
     static func isRegisteredEmojiZWJSequence(_ sequence: String) -> Bool {
         let key = sequence.unicodeScalars
             .map { String($0.value, radix: 16, uppercase: true) }

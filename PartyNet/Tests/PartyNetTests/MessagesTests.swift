@@ -66,12 +66,19 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("\u{FE0F}Ada", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized("A\u{FE0F}", fallback: "Player") == "A")
         #expect(DisplayName.sanitized("🐶‍🐱", fallback: "Player") == "🐶🐱")
+        let validThenInvalidZWJ = "👩\u{200D}💻\u{200D}🐶"
+        #expect(DisplayName.sanitized(validThenInvalidZWJ, fallback: "Player") == "👩\u{200D}💻🐶")
+        let invalidThenValidZWJ = "🐶\u{200D}👩\u{200D}💻"
+        #expect(DisplayName.sanitized(invalidThenValidZWJ, fallback: "Player") == "🐶👩\u{200D}💻")
         let standardizedVariant = "\u{2268}\u{FE00}"
         #expect(DisplayName.sanitized(standardizedVariant, fallback: "Player") == standardizedVariant)
         let tonedEmoji = "👩🏽‍💻"
         #expect(DisplayName.sanitized(tonedEmoji, fallback: "Player") == tonedEmoji)
         let familyEmoji = "👨‍👩‍👧‍👦"
         #expect(DisplayName.sanitized(familyEmoji, fallback: "Player") == familyEmoji)
+        let longestZWJSequence = "👨🏻‍❤️‍💋‍👨🏻"
+        #expect(longestZWJSequence.unicodeScalars.count == 10)
+        #expect(DisplayName.sanitized(longestZWJSequence, fallback: "Player") == longestZWJSequence)
         let california = emojiTagSequence("usca")
         #expect(DisplayName.sanitized(california, fallback: "Player") == california)
         #expect(DisplayName.sanitized(emojiTagSequence("ushuh"), fallback: "Player") == "🏴")
@@ -90,6 +97,9 @@ struct MessagesTests {
         let ipv6 = try #require(HostAddress(parsing: "[fe80::1%en0]:65535"))
         #expect(ipv6.host == "fe80::1%en0")
         #expect(ipv6.port == 65_535)
+
+        let maximumNumericScope = try #require(HostAddress(parsing: "[fe80::1%4294967295]:49999"))
+        #expect(maximumNumericScope.host == "fe80::1%4294967295")
 
         #expect(HostAddress(parsing: "fe80::1:49999") == nil)
         #expect(HostAddress(parsing: ":49999") == nil)

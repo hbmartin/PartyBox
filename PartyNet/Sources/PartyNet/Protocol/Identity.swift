@@ -147,6 +147,7 @@ public enum DisplayName {
         in scalars: [Unicode.Scalar]
     ) -> Set<Int> {
         var permitted: Set<Int> = []
+        let registeredEmojiZWJIndices = registeredEmojiZWJIndices(in: scalars)
         var index = scalars.startIndex
         while index < scalars.endIndex {
             switch scalars[index].value {
@@ -156,7 +157,7 @@ public enum DisplayName {
                     permitted.insert(index)
                 }
             case 0x200D:
-                if hasEmojiZWJContext(at: index, in: scalars)
+                if registeredEmojiZWJIndices.contains(index)
                     || hasViramaContext(before: index, in: scalars, requiresFollowingLetter: false) {
                     permitted.insert(index)
                 }
@@ -217,20 +218,41 @@ public enum DisplayName {
         return nil
     }
 
-    private static func hasEmojiZWJContext(
-        at index: Int,
+    private static func registeredEmojiZWJIndices(
         in scalars: [Unicode.Scalar]
-    ) -> Bool {
+    ) -> Set<Int> {
+        var registeredIndices: Set<Int> = []
         let value = String(String.UnicodeScalarView(scalars))
         var lowerBound = scalars.startIndex
         for character in value {
             let upperBound = lowerBound + character.unicodeScalars.count
-            if index < upperBound {
-                return UnicodeSequenceData.isRegisteredEmojiZWJSequence(String(character))
+            let joinerIndices = (lowerBound..<upperBound).filter {
+                scalars[$0].value == 0x200D
+            }
+            for sequenceStart in lowerBound..<upperBound {
+                guard let firstJoiner = joinerIndices.first(where: { $0 >= sequenceStart }),
+                      firstJoiner + 1 < upperBound else { break }
+                // A malformed adjacent joiner can merge multiple spans into one Character.
+                let firstSequenceEnd = firstJoiner + 2
+                let lastSequenceEnd = min(
+                    upperBound,
+                    sequenceStart + UnicodeSequenceData.maximumEmojiZWJSequenceScalarCount
+                )
+                guard firstSequenceEnd <= lastSequenceEnd else { continue }
+                for sequenceEnd in firstSequenceEnd...lastSequenceEnd {
+                    let sequence = String(String.UnicodeScalarView(
+                        scalars[sequenceStart..<sequenceEnd]
+                    ))
+                    if UnicodeSequenceData.isRegisteredEmojiZWJSequence(sequence) {
+                        registeredIndices.formUnion(
+                            joinerIndices.filter { (sequenceStart..<sequenceEnd).contains($0) }
+                        )
+                    }
+                }
             }
             lowerBound = upperBound
         }
-        return false
+        return registeredIndices
     }
 
     private static func hasViramaContext(
