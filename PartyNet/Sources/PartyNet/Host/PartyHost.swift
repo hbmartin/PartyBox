@@ -48,7 +48,7 @@ public final class PartyHost {
     private nonisolated let eventHub = EventHub<HostEvent>()
     private let logger = Logger(subsystem: "PartyNet", category: "PartyHost")
     private let reconnectGrace: Duration
-    private static let renameProcessingInterval: Duration = .milliseconds(100)
+    private let renameProcessingInterval: Duration
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
     private var rosterBroadcastTask: Task<Void, Never>?
@@ -60,8 +60,12 @@ public final class PartyHost {
     private var connectionOwners: [UUID: ControllerID] = [:]
     private var lifecycleGeneration: UInt64 = 0
 
-    public init(reconnectGrace: Duration = PartyNetConstants.reconnectGrace) {
+    public init(
+        reconnectGrace: Duration = PartyNetConstants.reconnectGrace,
+        renameProcessingInterval: Duration = PartyNetConstants.renameProcessingInterval
+    ) {
         self.reconnectGrace = reconnectGrace
+        self.renameProcessingInterval = renameProcessingInterval
     }
 
     @discardableResult
@@ -428,7 +432,6 @@ public final class PartyHost {
             return
         }
 
-        cancelPendingRename(for: controllerID)
         applyRename(pending, controllerID: controllerID)
         startRenameWorker(
             controllerID: controllerID,
@@ -483,7 +486,7 @@ public final class PartyHost {
         defer { finishRenameWorker(controllerID: controllerID, workerID: workerID) }
         while !Task.isCancelled, lifecycleGeneration == generation {
             do {
-                try await clock.sleep(for: Self.renameProcessingInterval)
+                try await clock.sleep(for: renameProcessingInterval)
             } catch {
                 return
             }

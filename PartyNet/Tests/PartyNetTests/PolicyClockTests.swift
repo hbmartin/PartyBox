@@ -93,12 +93,9 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let host = PartyHost()
-        let startTask = Task { try await host.start(hostName: "Clock Host", advertise: false) }
-        for _ in 0..<20 where host.port == nil {
-          await clock.advance(by: .milliseconds(10))
-          await settle()
+        let port = try await runWhileAdvancingTestClock(clock) {
+          try await host.start(hostName: "Clock Host", advertise: false)
         }
-        let port = try await startTask.value
         let client = PartyClient(displayName: "Grace Clock")
         await client.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.isConnected == true }
@@ -123,14 +120,9 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let host = PartyHost()
-        let startTask = Task {
+        let port = try await runWhileAdvancingTestClock(clock) {
           try await host.start(hostName: "Reconnect Clock Host", advertise: false)
         }
-        for _ in 0..<20 where host.port == nil {
-          await clock.advance(by: .milliseconds(10))
-          await settle()
-        }
-        let port = try await startTask.value
         let controllerID = ControllerID(
           rawValue: UUID(uuidString: "66666666-7777-8888-9999-AAAAAAAAAAAA")!
         )
@@ -162,14 +154,9 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let host = PartyHost(reconnectGrace: .seconds(1))
-        let startTask = Task {
+        let port = try await runWhileAdvancingTestClock(clock) {
           try await host.start(hostName: "Rename Reconnect Host", advertise: false)
         }
-        for _ in 0..<20 where host.port == nil {
-          await clock.advance(by: .milliseconds(10))
-          await settle()
-        }
-        let port = try await startTask.value
         let client = PartyClient(displayName: "Original")
         await client.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.isConnected == true }
@@ -197,14 +184,9 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let host = PartyHost(reconnectGrace: .seconds(1))
-        let startTask = Task {
+        let port = try await runWhileAdvancingTestClock(clock) {
           try await host.start(hostName: "Rename Replacement Host", advertise: false)
         }
-        for _ in 0..<20 where host.port == nil {
-          await clock.advance(by: .milliseconds(10))
-          await settle()
-        }
-        let port = try await startTask.value
         let controllerID = ControllerID(
           rawValue: UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!)
         let first = PartyClient(controllerID: controllerID, displayName: "Original")
@@ -329,11 +311,9 @@ extension NetworkIntegrationTests {
       _ rig: FaultRig,
       advancing clock: TestClock<Duration>
     ) async throws -> FaultRigMetadata {
-      let startTask = Task { try await rig.start() }
-      await settle()
-      await clock.advance(by: .milliseconds(100))
-      await settle()
-      return try await startTask.value
+      try await runWhileAdvancingTestClock(clock) {
+        try await rig.start()
+      }
     }
 
     private func waitUntil(

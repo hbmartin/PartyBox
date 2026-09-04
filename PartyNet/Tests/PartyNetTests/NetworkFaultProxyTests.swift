@@ -29,7 +29,7 @@ extension NetworkIntegrationTests {
       private(set) var isFinished = false
       private(set) var sendCount = 0
       private(set) var usedFreshConnection = false
-      private var firstConnection: ObjectIdentifier?
+      private var firstConnection: NetworkConnection<UDP>?
       private var continuation: CheckedContinuation<Void, Never>?
 
       init(outcome: DatagramSendOutcome) {
@@ -38,11 +38,10 @@ extension NetworkIntegrationTests {
 
       func send(on connection: NetworkConnection<UDP>) async throws {
         sendCount += 1
-        let connectionID = ObjectIdentifier(connection)
         if let firstConnection {
-          usedFreshConnection = usedFreshConnection || firstConnection != connectionID
+          usedFreshConnection = usedFreshConnection || firstConnection !== connection
         } else {
-          firstConnection = connectionID
+          firstConnection = connection
         }
         isStarted = true
         defer { isFinished = true }
@@ -194,6 +193,15 @@ extension NetworkIntegrationTests {
       #expect(metrics.after.udpRejected == metrics.before.udpRejected)
     }
 
+    @Test func successfulUDPCompletionAfterStopDoesNotCountInResetMetrics() async throws {
+      let metrics = try await metricsAfterControlledSend(
+        outcome: .cancelledSuccess,
+        stopBeforeCompletion: true
+      )
+      #expect(metrics.after.udpForwarded == 0)
+      #expect(metrics.after.udpRejected == 0)
+    }
+
     @Test func activeUDPFailureStillCountsAsRejected() async throws {
       let metrics = try await metricsAfterControlledSend(outcome: .failure)
       #expect(metrics.after.udpForwarded == metrics.before.udpForwarded)
@@ -331,7 +339,8 @@ extension NetworkIntegrationTests {
 
     private func metricsAfterControlledSend(
       outcome: DatagramSendOutcome,
-      retryAfterFailure: Bool = false
+      retryAfterFailure: Bool = false,
+      stopBeforeCompletion: Bool = false
     ) async throws -> (before: FaultMetrics, after: FaultMetrics, usedFreshConnection: Bool) {
       let gate = DatagramSendGate(outcome: outcome)
       let host = PartyHost()
@@ -367,7 +376,12 @@ extension NetworkIntegrationTests {
         try await waitUntil { await gate.isStarted }
 
         if outcome == .cancelledFailure || outcome == .cancelledSuccess {
-          try await proxy.updateUpstream(tcpPort: upstreamPort)
+          if stopBeforeCompletion {
+            await proxy.stop()
+            await proxy.reset()
+          } else {
+            try await proxy.updateUpstream(tcpPort: upstreamPort)
+          }
           await gate.resume()
         }
         try await waitUntil { await gate.isFinished }
