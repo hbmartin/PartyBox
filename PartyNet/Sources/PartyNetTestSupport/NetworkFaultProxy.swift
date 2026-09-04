@@ -512,6 +512,7 @@ public actor NetworkFaultProxy {
         }
         do {
             try await connection.send(packet.data)
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
             metrics.udpForwarded += 1
         } catch {
             guard lifecycleGeneration == generation else { return }

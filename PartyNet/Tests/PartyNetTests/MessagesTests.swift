@@ -65,10 +65,13 @@ struct MessagesTests {
         #expect(DisplayName.sanitized("A\u{E0067}da", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized("\u{FE0F}Ada", fallback: "Player") == "Ada")
         #expect(DisplayName.sanitized("A\u{FE0F}", fallback: "Player") == "A")
+        #expect(DisplayName.sanitized("🐶‍🐱", fallback: "Player") == "🐶🐱")
         let standardizedVariant = "\u{2268}\u{FE00}"
         #expect(DisplayName.sanitized(standardizedVariant, fallback: "Player") == standardizedVariant)
         let tonedEmoji = "👩🏽‍💻"
         #expect(DisplayName.sanitized(tonedEmoji, fallback: "Player") == tonedEmoji)
+        let familyEmoji = "👨‍👩‍👧‍👦"
+        #expect(DisplayName.sanitized(familyEmoji, fallback: "Player") == familyEmoji)
         let california = emojiTagSequence("usca")
         #expect(DisplayName.sanitized(california, fallback: "Player") == california)
         #expect(DisplayName.sanitized(emojiTagSequence("ushuh"), fallback: "Player") == "🏴")
@@ -98,6 +101,9 @@ struct MessagesTests {
         #expect(HostAddress(parsing: "[fe80::1%]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%lo0%en0]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%not-an-interface]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%0]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%+1]:49999") == nil)
+        #expect(HostAddress(parsing: "[fe80::1%١]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%4294967296]:49999") == nil)
     }
 

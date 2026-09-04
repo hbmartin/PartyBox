@@ -221,59 +221,16 @@ public enum DisplayName {
         at index: Int,
         in scalars: [Unicode.Scalar]
     ) -> Bool {
-        guard let left = emojiComponent(endingBefore: index, in: scalars),
-              let right = emojiComponent(startingAfter: index, in: scalars) else { return false }
-        let sequence = String(String.UnicodeScalarView(
-            scalars[left.lowerBound...right.upperBound]
-        ))
-        return sequence.count == 1
-    }
-
-    private static func emojiComponent(
-        endingBefore index: Int,
-        in scalars: [Unicode.Scalar]
-    ) -> ClosedRange<Int>? {
-        let end = index - 1
-        guard end >= scalars.startIndex else { return nil }
-        if scalars[end].properties.isEmojiModifier {
-            let base = end - 1
-            guard base >= scalars.startIndex,
-                  scalars[base].properties.isEmojiModifierBase else { return nil }
-            return base...end
+        let value = String(String.UnicodeScalarView(scalars))
+        var lowerBound = scalars.startIndex
+        for character in value {
+            let upperBound = lowerBound + character.unicodeScalars.count
+            if index < upperBound {
+                return UnicodeSequenceData.isRegisteredEmojiZWJSequence(String(character))
+            }
+            lowerBound = upperBound
         }
-        if scalars[end].value == 0xFE0F {
-            let base = end - 1
-            guard base >= scalars.startIndex,
-                  UnicodeSequenceData.isRegisteredVariationSequence(
-                    base: scalars[base], selector: scalars[end]
-                  ) else { return nil }
-            return base...end
-        }
-        guard scalars[end].properties.isEmojiPresentation,
-              !scalars[end].properties.isEmojiModifier else { return nil }
-        return end...end
-    }
-
-    private static func emojiComponent(
-        startingAfter index: Int,
-        in scalars: [Unicode.Scalar]
-    ) -> ClosedRange<Int>? {
-        let base = index + 1
-        guard base < scalars.endIndex,
-              !scalars[base].properties.isEmojiModifier else { return nil }
-        if base + 1 < scalars.endIndex,
-           scalars[base + 1].properties.isEmojiModifier {
-            guard scalars[base].properties.isEmojiModifierBase else { return nil }
-            return base...(base + 1)
-        }
-        if base + 1 < scalars.endIndex, scalars[base + 1].value == 0xFE0F {
-            guard UnicodeSequenceData.isRegisteredVariationSequence(
-                base: scalars[base], selector: scalars[base + 1]
-            ) else { return nil }
-            return base...(base + 1)
-        }
-        guard scalars[base].properties.isEmojiPresentation else { return nil }
-        return base...base
+        return false
     }
 
     private static func hasViramaContext(
