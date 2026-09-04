@@ -55,11 +55,10 @@ public actor NetworkFaultProxy {
     public private(set) var udpPort: UInt16?
 
     public init(profile: FaultProfile = .stable) {
-        @Dependency(\.continuousClock) var continuousClock
-        clock = AnyClock(continuousClock)
-        udpSender = { connection, data in try await connection.send(data) }
-        self.profile = profile
-        randomState = profile.seed == 0 ? 1 : profile.seed
+        self.init(
+            profile: profile,
+            udpSender: { connection, data in try await connection.send(data) }
+        )
     }
 
     package init(profile: FaultProfile = .stable, udpSender: @escaping UDPSender) {
@@ -529,6 +528,7 @@ public actor NetworkFaultProxy {
         defer { inFlightUDPForwardCount -= 1 }
         do {
             try await udpSender(connection, packet.data)
+            guard lifecycleGeneration == generation else { return }
             metrics.udpForwarded += 1
         } catch {
             guard !Task.isCancelled, lifecycleGeneration == generation else { return }

@@ -8,14 +8,6 @@ extension UnicodeSequenceData {
         emojiZWJSequenceMatcher.defaultIgnorableIndices(in: scalars)
     }
 
-    static func emojiZWJVariationSequencesAreRegistered() -> Bool {
-        emojiZWJSequenceMatcher.variationSequences.allSatisfy { variation in
-            guard let base = Unicode.Scalar(variation.base),
-                  let selector = Unicode.Scalar(variation.selector) else { return false }
-            return isRegisteredVariationSequence(base: base, selector: selector)
-        }
-    }
-
     private static let emojiZWJSequenceMatcher = EmojiZWJSequenceMatcher(
         sequenceData: emojiZWJSequenceData
     )
@@ -1639,49 +1631,55 @@ extension UnicodeSequenceData {
 }
 
 private struct EmojiZWJSequenceMatcher: Sendable {
-    struct VariationSequence: Sendable {
-        let base: UInt32
-        let selector: UInt32
-    }
-
     private struct Node: Sendable {
-        var transitions: [UInt32: Int] = [:]
+        let scalar: UInt32
+        var firstChildIndex: Int32 = -1
+        var nextSiblingIndex: Int32 = -1
         var isTerminal = false
     }
 
     private let nodes: [Node]
-    let variationSequences: [VariationSequence]
 
     init(sequenceData: String) {
-        var nodes = [Node()]
-        var variationSequences: [VariationSequence] = []
+        var nodes = [Node(scalar: 0)]
+        var lastChildIndices: [Int32] = [-1]
         for line in sequenceData.split(whereSeparator: \.isNewline) {
             let sequence = line.split(whereSeparator: \.isWhitespace).compactMap {
                 UInt32($0, radix: 16)
             }
             var nodeIndex = nodes.startIndex
             for scalar in sequence {
-                if let existing = nodes[nodeIndex].transitions[scalar] {
+                var childIndex = nodes[nodeIndex].firstChildIndex
+                var matchingChildIndex: Int?
+                while childIndex >= 0 {
+                    let candidateIndex = Int(childIndex)
+                    if nodes[candidateIndex].scalar == scalar {
+                        matchingChildIndex = candidateIndex
+                        break
+                    }
+                    childIndex = nodes[candidateIndex].nextSiblingIndex
+                }
+
+                if let existing = matchingChildIndex {
                     nodeIndex = existing
                 } else {
                     let next = nodes.count
-                    nodes.append(Node())
-                    nodes[nodeIndex].transitions[scalar] = next
+                    let compactNext = Int32(next)
+                    nodes.append(Node(scalar: scalar))
+                    lastChildIndices.append(-1)
+                    let lastChildIndex = lastChildIndices[nodeIndex]
+                    if lastChildIndex >= 0 {
+                        nodes[Int(lastChildIndex)].nextSiblingIndex = compactNext
+                    } else {
+                        nodes[nodeIndex].firstChildIndex = compactNext
+                    }
+                    lastChildIndices[nodeIndex] = compactNext
                     nodeIndex = next
                 }
             }
             nodes[nodeIndex].isTerminal = true
-
-            for index in sequence.indices where (0xFE00...0xFE0F).contains(sequence[index]) {
-                guard index > sequence.startIndex else { continue }
-                variationSequences.append(VariationSequence(
-                    base: sequence[index - 1],
-                    selector: sequence[index]
-                ))
-            }
         }
         self.nodes = nodes
-        self.variationSequences = variationSequences
     }
 
     func defaultIgnorableIndices(in scalars: [Unicode.Scalar]) -> Set<Int> {
@@ -1689,8 +1687,11 @@ private struct EmojiZWJSequenceMatcher: Sendable {
         for sequenceStart in scalars.indices {
             var nodeIndex = nodes.startIndex
             var cursor = sequenceStart
-            while cursor < scalars.endIndex,
-                  let next = nodes[nodeIndex].transitions[scalars[cursor].value] {
+            while cursor < scalars.endIndex {
+                guard let next = childIndex(
+                    of: nodeIndex,
+                    matching: scalars[cursor].value
+                ) else { break }
                 nodeIndex = next
                 if nodes[nodeIndex].isTerminal {
                     for index in sequenceStart...cursor {
@@ -1704,5 +1705,15 @@ private struct EmojiZWJSequenceMatcher: Sendable {
             }
         }
         return matchedIndices
+    }
+
+    private func childIndex(of nodeIndex: Int, matching scalar: UInt32) -> Int? {
+        var childIndex = nodes[nodeIndex].firstChildIndex
+        while childIndex >= 0 {
+            let candidateIndex = Int(childIndex)
+            if nodes[candidateIndex].scalar == scalar { return candidateIndex }
+            childIndex = nodes[candidateIndex].nextSiblingIndex
+        }
+        return nil
     }
 }

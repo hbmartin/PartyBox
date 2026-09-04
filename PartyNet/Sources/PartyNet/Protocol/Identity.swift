@@ -167,12 +167,11 @@ public enum DisplayName {
                     permitted.insert(index)
                 }
             case 0xFE00...0xFE0F:
-                if registeredEmojiIgnorables.contains(index)
-                    || (index > scalars.startIndex
-                        && UnicodeSequenceData.isRegisteredVariationSequence(
-                            base: scalars[index - 1],
-                            selector: scalars[index]
-                        )) {
+                if index > scalars.startIndex,
+                   UnicodeSequenceData.isRegisteredVariationSequence(
+                    base: scalars[index - 1],
+                    selector: scalars[index]
+                   ) {
                     permitted.insert(index)
                 }
             case 0x1F3F4:

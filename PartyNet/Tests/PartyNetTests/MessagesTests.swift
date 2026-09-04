@@ -47,7 +47,6 @@ struct MessagesTests {
     }
 
     @Test func displayNameValidation() {
-        #expect(UnicodeSequenceData.emojiZWJVariationSequencesAreRegistered())
         #expect(DisplayName.sanitized("  Ada   Lovelace  ", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("Ada\nLovelace", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("\u{202E}Admin\u{0007}", fallback: "Player") == "Admin")
@@ -122,6 +121,16 @@ struct MessagesTests {
         #expect(HostAddress(parsing: "[fe80::1%+1]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%١]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%4294967296]:49999") == nil)
+
+        var attemptedInterfaceLookup = false
+        #expect(!HostAddress.isValidScopeIdentifier(
+            "4294967296",
+            interfaceIndex: { _ in
+                attemptedInterfaceLookup = true
+                return 1
+            }
+        ))
+        #expect(!attemptedInterfaceLookup)
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

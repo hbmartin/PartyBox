@@ -117,10 +117,9 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let host = PartyHost(reconnectGrace: .milliseconds(100))
-        let startTask = Task { try await host.start(hostName: "Rename Host", advertise: false) }
-        await settle()
-        await clock.advance(by: .milliseconds(100))
-        let port = try await startTask.value
+        let port = try await runWhileAdvancingTestClock(clock) {
+          try await host.start(hostName: "Rename Host", advertise: false)
+        }
         let client = PartyClient(displayName: "Original")
         await client.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.displayName == "Original" }
