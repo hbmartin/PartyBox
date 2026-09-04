@@ -47,6 +47,7 @@ struct MessagesTests {
     }
 
     @Test func displayNameValidation() {
+        #expect(UnicodeSequenceData.emojiZWJVariationSequencesAreRegistered())
         #expect(DisplayName.sanitized("  Ada   Lovelace  ", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("Ada\nLovelace", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("\u{202E}Admin\u{0007}", fallback: "Player") == "Admin")
@@ -79,6 +80,12 @@ struct MessagesTests {
         let longestZWJSequence = "👨🏻‍❤️‍💋‍👨🏻"
         #expect(longestZWJSequence.unicodeScalars.count == 10)
         #expect(DisplayName.sanitized(longestZWJSequence, fallback: "Player") == longestZWJSequence)
+        let maximumMalformedZWJCluster = "👩" + String(repeating: "\u{200D}👩", count: 63)
+        #expect(maximumMalformedZWJCluster.unicodeScalars.count == 127)
+        #expect(
+            DisplayName.sanitized(maximumMalformedZWJCluster, fallback: "Player")
+                == String(repeating: "👩", count: 24)
+        )
         let california = emojiTagSequence("usca")
         #expect(DisplayName.sanitized(california, fallback: "Player") == california)
         #expect(DisplayName.sanitized(emojiTagSequence("ushuh"), fallback: "Player") == "🏴")

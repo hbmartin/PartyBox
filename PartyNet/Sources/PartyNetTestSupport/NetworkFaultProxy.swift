@@ -4,6 +4,8 @@ import Network
 import PartyNet
 
 public actor NetworkFaultProxy {
+    package typealias UDPSender = @Sendable (NetworkConnection<UDP>, Data) async throws -> Void
+
     private struct BufferedDatagram: Sendable {
         let data: Data
         let token: UInt64
@@ -22,6 +24,7 @@ public actor NetworkFaultProxy {
     package static let maximumQueuedForwardsPerToken = 256
 
     private let clock: AnyClock<Duration>
+    private let udpSender: UDPSender
     private var profile: FaultProfile
     private var randomState: UInt64
     private var metrics = FaultMetrics()
@@ -45,6 +48,7 @@ public actor NetworkFaultProxy {
     private var upstreamUDPPorts: [UInt64: NWEndpoint.Port] = [:]
     private var reorderQueues: [UInt64: [BufferedDatagram]] = [:]
     private var packetOrdinal = 0
+    private var inFlightUDPForwardCount = 0
     private var lifecycleGeneration: UInt64 = 0
 
     public private(set) var tcpPort: UInt16?
@@ -53,6 +57,15 @@ public actor NetworkFaultProxy {
     public init(profile: FaultProfile = .stable) {
         @Dependency(\.continuousClock) var continuousClock
         clock = AnyClock(continuousClock)
+        udpSender = { connection, data in try await connection.send(data) }
+        self.profile = profile
+        randomState = profile.seed == 0 ? 1 : profile.seed
+    }
+
+    package init(profile: FaultProfile = .stable, udpSender: @escaping UDPSender) {
+        @Dependency(\.continuousClock) var continuousClock
+        clock = AnyClock(continuousClock)
+        self.udpSender = udpSender
         self.profile = profile
         randomState = profile.seed == 0 ? 1 : profile.seed
     }
@@ -147,6 +160,8 @@ public actor NetworkFaultProxy {
     package func pendingUDPForwardCount() -> Int {
         udpForwardTasks.count + udpForwardQueues.values.reduce(0) { $0 + $1.count }
     }
+
+    package func activeUDPForwardCount() -> Int { inFlightUDPForwardCount }
 
     public func connectedControllerIDs() -> Set<ControllerID> {
         Set(bridgeControllerIDs.values)
@@ -510,13 +525,16 @@ public actor NetworkFaultProxy {
             )
             upstreamUDPConnections[packet.token] = connection
         }
+        inFlightUDPForwardCount += 1
+        defer { inFlightUDPForwardCount -= 1 }
         do {
-            try await connection.send(packet.data)
-            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+            try await udpSender(connection, packet.data)
             metrics.udpForwarded += 1
         } catch {
-            guard lifecycleGeneration == generation else { return }
-            upstreamUDPConnections.removeValue(forKey: packet.token)
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+            if upstreamUDPConnections[packet.token] === connection {
+                upstreamUDPConnections.removeValue(forKey: packet.token)
+            }
             metrics.udpRejected += 1
         }
     }

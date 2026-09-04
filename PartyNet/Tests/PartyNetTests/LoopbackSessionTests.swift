@@ -1,3 +1,4 @@
+import Dependencies
 import DependenciesTestSupport
 import Foundation
 import Network
@@ -108,6 +109,43 @@ extension NetworkIntegrationTests {
       await client.disconnect()
       try await waitUntil { host.players.isEmpty }
       await host.stop()
+    }
+
+    @Test func rapidRenamesApplyImmediatelyThenCoalesceToTheLatestName() async throws {
+      let clock = TestClock()
+      try await withDependencies {
+        $0.continuousClock = clock
+      } operation: {
+        let host = PartyHost(reconnectGrace: .milliseconds(100))
+        let startTask = Task { try await host.start(hostName: "Rename Host", advertise: false) }
+        await settle()
+        await clock.advance(by: .milliseconds(100))
+        let port = try await startTask.value
+        let client = PartyClient(displayName: "Original")
+        await client.connect(host: "127.0.0.1", port: port)
+        try await waitUntil { host.players.first?.displayName == "Original" }
+
+        await client.rename(to: "First")
+        try await waitUntil { host.players.first?.displayName == "First" }
+        await settle()
+
+        await client.rename(to: "Intermediate")
+        await client.rename(to: "Final")
+        let pingCount = client.rttSampleCount
+        client.reconnectAfterForeground()
+        try await waitUntil { client.rttSampleCount > pingCount }
+        #expect(host.players.first?.displayName == "First")
+
+        await clock.advance(by: .milliseconds(99))
+        await settle()
+        #expect(host.players.first?.displayName == "First")
+
+        await clock.advance(by: .milliseconds(1))
+        try await waitUntil { host.players.first?.displayName == "Final" }
+
+        await client.disconnect()
+        await host.stop()
+      }
     }
 
     @Test func rejectsWrongProtocolVersion() async throws {
@@ -424,6 +462,10 @@ extension NetworkIntegrationTests {
         try await Task.sleep(for: .milliseconds(20))
       }
       try #require(await condition())
+    }
+
+    private func settle() async {
+      for _ in 0..<10 { await Task.yield() }
     }
   }
 }
