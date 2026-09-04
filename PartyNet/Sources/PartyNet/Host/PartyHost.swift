@@ -210,7 +210,7 @@ public final class PartyHost {
         let isNewSession: Bool
         let token: UInt64
         if var existing = sessions[hello.controllerID] {
-            pendingRenames.removeValue(forKey: hello.controllerID)
+            cancelPendingRename(for: hello.controllerID)
             isNewSession = false
             fallbackName = "Player \(existing.playerID.rawValue + 1)"
             let oldToken = existing.sessionToken
@@ -355,7 +355,7 @@ public final class PartyHost {
         guard lifecycleGeneration == generation else { return }
         guard let controllerID = connectionOwners.removeValue(forKey: connectionID),
               var session = sessions[controllerID], session.connectionID == connectionID else { return }
-        pendingRenames.removeValue(forKey: controllerID)
+        cancelPendingRename(for: controllerID)
         let wasAdmitted = session.isAdmitted
         let token = session.sessionToken
         session.connectionID = nil
