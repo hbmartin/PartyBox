@@ -185,7 +185,9 @@ actor HostTransport {
   }
 
   func replace(connectionID: UUID) async {
-    if let connection = connections[connectionID] {
+    if decisions[connectionID] != nil {
+      _ = await respond(to: connectionID, with: .reject(.replaced))
+    } else if let connection = connections[connectionID] {
       try? await connection.send(.rejected(.replaced))
     }
     disconnect(connectionID: connectionID)

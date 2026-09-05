@@ -42,12 +42,15 @@ struct ContentView: View {
     }
 
     private func friendly(_ message: String) -> String {
-        let lower = message.lowercased()
-        if lower.contains("denied") || lower.contains("policy") {
-            return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
-        }
+        if let help = localNetworkPermissionHelp(for: message) { return help }
         return message.isEmpty ? "The host is no longer reachable." : message
     }
+}
+
+private func localNetworkPermissionHelp(for message: String) -> String? {
+    let lower = message.lowercased()
+    guard lower.contains("denied") || lower.contains("policy") else { return nil }
+    return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
 }
 
 private struct HostPickerView: View {
@@ -161,10 +164,7 @@ private struct HostPickerView: View {
         guard let message = coordinator.client.discoveryErrorMessage else {
             return "Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can change that permission in Settings."
         }
-        let lower = message.lowercased()
-        if lower.contains("denied") || lower.contains("policy") {
-            return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
-        }
+        if let help = localNetworkPermissionHelp(for: message) { return help }
         return message
     }
 }
@@ -298,7 +298,6 @@ private struct MenuPadButton: View {
 private struct PaddleControllerView: View {
     let layout: PaddleLayout
     @Bindable var coordinator: ControllerCoordinator
-    @State private var localAxis: Float = 0
 
     var body: some View {
         VStack(spacing: 24) {
@@ -319,16 +318,15 @@ private struct PaddleControllerView: View {
                         .fill(Color.controllerHex(layout.colorHex))
                         .frame(width: 72, height: 150)
                         .shadow(color: Color.controllerHex(layout.colorHex), radius: 22)
-                        .offset(x: ((CGFloat(localAxis) + 1) * 0.5 * (width - 72)))
+                        .offset(x: ((CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * (width - 72)))
                 }
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0).onChanged { value in
                     let axis = Float(min(max((value.location.x / width) * 2 - 1, -1), 1))
-                    localAxis = axis
                     coordinator.client.setInput(axisX: axis)
                 })
                 .accessibilityIdentifier("controller.paddle.track")
-                .accessibilityValue(String(format: "%.3f", localAxis))
+                .accessibilityValue(String(format: "%.3f", coordinator.client.inputAxisX))
             }
             .frame(height: 170)
             .padding(.horizontal, 4)
@@ -339,7 +337,7 @@ private struct PaddleControllerView: View {
             Spacer()
         }
         .padding(.horizontal, 16)
-        .onAppear { coordinator.client.setInput(axisX: localAxis) }
+        .onAppear { coordinator.client.setInput(axisX: coordinator.client.inputAxisX) }
     }
 
     private var edgeInstruction: String {

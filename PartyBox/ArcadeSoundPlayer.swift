@@ -3,15 +3,37 @@ import OSLog
 
 @MainActor
 final class ArcadeSoundPlayer {
+    private enum Tone: Hashable {
+        case paddleHit
+        case lostLife
+        case eliminated
+        case gameOver
+    }
+
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let logger = Logger(subsystem: "PartyBox", category: "ArcadeSoundPlayer")
     private var notificationTokens: [NSObjectProtocol] = []
+    private var toneBuffers: [Tone: AVAudioPCMBuffer] = [:]
 
     init() {
         engine.attach(player)
         let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
         engine.connect(player, to: engine.mainMixerNode, format: format)
+        let specifications: [(Tone, Double, Double, Double)] = [
+            (.paddleHit, 620, 0.055, 1.8),
+            (.lostLife, 180, 0.18, 0.5),
+            (.eliminated, 105, 0.42, 0.25),
+            (.gameOver, 880, 0.5, 1.5),
+        ]
+        for (tone, frequency, duration, overtone) in specifications {
+            toneBuffers[tone] = Self.makeToneBuffer(
+                format: format,
+                frequency: frequency,
+                duration: duration,
+                overtone: overtone
+            )
+        }
 #if os(tvOS)
         do {
             try AVAudioSession.sharedInstance().setCategory(.ambient)
@@ -30,21 +52,28 @@ final class ArcadeSoundPlayer {
 
     func play(_ event: PongEvent) {
         guard ensureEngineRunning() else { return }
-        switch event {
-        case .paddleHit: tone(frequency: 620, duration: 0.055, overtone: 1.8)
-        case .lostLife: tone(frequency: 180, duration: 0.18, overtone: 0.5)
-        case .eliminated, .forfeited: tone(frequency: 105, duration: 0.42, overtone: 0.25)
-        case .gameOver: tone(frequency: 880, duration: 0.5, overtone: 1.5)
+        let tone = switch event {
+        case .paddleHit: Tone.paddleHit
+        case .lostLife: Tone.lostLife
+        case .eliminated, .forfeited: Tone.eliminated
+        case .gameOver: Tone.gameOver
         }
+        guard let buffer = toneBuffers[tone] else { return }
+        player.scheduleBuffer(buffer)
+        if !player.isPlaying { player.play() }
     }
 
-    private func tone(frequency: Double, duration: Double, overtone: Double) {
-        let sampleRate = 44_100.0
+    private static func makeToneBuffer(
+        format: AVAudioFormat,
+        frequency: Double,
+        duration: Double,
+        overtone: Double
+    ) -> AVAudioPCMBuffer? {
+        let sampleRate = format.sampleRate
         let frameCount = AVAudioFrameCount(sampleRate * duration)
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
               let samples = buffer.floatChannelData?[0]
-        else { return }
+        else { return nil }
         buffer.frameLength = frameCount
         for frame in 0..<Int(frameCount) {
             let time = Double(frame) / sampleRate
@@ -53,8 +82,7 @@ final class ArcadeSoundPlayer {
             let harmonic = sin(2 * Double.pi * frequency * overtone * time) * 0.24
             samples[frame] = Float(base + harmonic) * envelope * 0.18
         }
-        player.scheduleBuffer(buffer)
-        if !player.isPlaying { player.play() }
+        return buffer
     }
 
     @discardableResult

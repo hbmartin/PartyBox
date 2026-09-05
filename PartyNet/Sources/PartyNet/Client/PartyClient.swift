@@ -29,6 +29,7 @@ public final class PartyClient {
     public private(set) var rttSampleCount: UInt64 = 0
     public private(set) var inputFramesSent: UInt64 = 0
     public private(set) var usesTCPFallback = false
+    public private(set) var inputAxisX: Float = 0
     public nonisolated var events: AsyncStream<ClientEvent> { eventHub.stream() }
 
     public let controllerID: ControllerID
@@ -124,6 +125,8 @@ public final class PartyClient {
     }
 
     public func setInput(axisX: Float, axisY: Float = 0, buttons: Buttons = []) {
+        let axisX = axisX.isFinite ? min(max(axisX, -1), 1) : 0
+        inputAxisX = axisX
         guard let connectionID else { return }
         pendingInput = PendingInput(
             connectionID: connectionID,
@@ -158,6 +161,7 @@ public final class PartyClient {
         player = nil
         roster = []
         layout = .lobby
+        inputAxisX = 0
         usesTCPFallback = false
         discoveryErrorMessage = nil
         state = .browsing
@@ -168,6 +172,7 @@ public final class PartyClient {
         transportTask?.cancel()
         transportTask = nil
         await transport.stop()
+        eventHub.finish()
     }
 
     public func reconnectAfterForeground() {
@@ -309,6 +314,7 @@ public final class PartyClient {
             cancelForegroundProbe()
             cancelInputFlush()
             connectionID = nil
+            inputAxisX = 0
             usesTCPFallback = false
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)

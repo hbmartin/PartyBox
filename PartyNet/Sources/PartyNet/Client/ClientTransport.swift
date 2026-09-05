@@ -273,6 +273,7 @@ actor ClientTransport {
       session.pingTask?.cancel()
     }
     sessions.removeAll()
+    eventHub.finish()
   }
 
   private func publish(_ endpoints: [Bonjour.Endpoint]) {
@@ -437,7 +438,7 @@ actor ClientTransport {
     else { return }
     if let floor = session.fallbackProbeSequenceFloor {
       let distanceFromFloor = sequence &- floor
-      guard sequence == floor || distanceFromFloor < (UInt32.max / 2) + 1 else { return }
+      guard distanceFromFloor < (UInt32.max / 2) + 1 else { return }
     }
     session.lastAcknowledgedAt = clock.now
     let wasUsingFallback = session.usesTCPFallback

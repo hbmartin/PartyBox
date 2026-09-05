@@ -8,6 +8,22 @@ extension UnicodeSequenceData {
         emojiZWJSequenceMatcher.defaultIgnorableIndices(in: scalars)
     }
 
+    static func emojiZWJVariationSequencesAreRegistered() -> Bool {
+        emojiZWJSequenceData.split(whereSeparator: \.isNewline).allSatisfy { line in
+            let sequence = line.split(whereSeparator: \.isWhitespace).compactMap {
+                UInt32($0, radix: 16)
+            }
+            return sequence.indices.allSatisfy { index in
+                let selector = sequence[index]
+                guard (0xFE00...0xFE0F).contains(selector) else { return true }
+                guard index > sequence.startIndex,
+                      let baseScalar = Unicode.Scalar(sequence[index - 1]),
+                      let selectorScalar = Unicode.Scalar(selector) else { return false }
+                return isRegisteredVariationSequence(base: baseScalar, selector: selectorScalar)
+            }
+        }
+    }
+
     private static let emojiZWJSequenceMatcher = EmojiZWJSequenceMatcher(
         sequenceData: emojiZWJSequenceData
     )

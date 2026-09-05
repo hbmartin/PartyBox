@@ -71,18 +71,30 @@ extension NetworkIntegrationTests {
     private actor EventRecorder {
       private(set) var feedback: [Feedback] = []
       private(set) var menuActions: [MenuAction] = []
+      private(set) var expiredPlayers: [PlayerInfo] = []
 
       func record(_ event: ClientEvent) {
         if case .feedback(let value) = event { feedback.append(value) }
       }
 
       func record(_ event: HostEvent) {
-        if case .menu(_, let action) = event { menuActions.append(action) }
+        switch event {
+        case .menu(_, let action):
+          menuActions.append(action)
+        case .playerExpired(let player):
+          expiredPlayers.append(player)
+        default:
+          break
+        }
       }
 
       func contains(feedback expectedFeedback: [Feedback], menu expectedMenu: [MenuAction]) -> Bool
       {
         feedback == expectedFeedback && menuActions == expectedMenu
+      }
+
+      func containsExpiredPlayer(named name: String) -> Bool {
+        expiredPlayers.contains { $0.displayName == name && !$0.isConnected }
       }
     }
 
@@ -338,6 +350,50 @@ extension NetworkIntegrationTests {
       }
 
       await client.disconnect()
+      await host.stop()
+    }
+
+    @Test func repeatedPaddleLayoutNeutralizesTheObservableControllerAxis() async throws {
+      let host = PartyHost()
+      let port = try await host.start(hostName: "Paddle Reset Host", advertise: false)
+      let client = PartyClient(displayName: "Paddle")
+      await client.connect(host: "127.0.0.1", port: port)
+      let layout = ControllerLayout.paddle(PaddleLayout(
+        edge: .bottom,
+        colorHex: "#32E6FF",
+        label: "P1 Paddle"
+      ))
+
+      await host.send(.layout(layout), to: PlayerID(0))
+      try await waitUntil { client.layout == layout }
+      client.setInput(axisX: 0.75)
+      #expect(client.inputAxisX == 0.75)
+
+      await host.send(.layout(layout), to: PlayerID(0))
+      try await waitUntil { client.inputAxisX == 0 }
+
+      await client.disconnect()
+      await host.stop()
+    }
+
+    @Test func expirationEventPreservesThePlayersDisplayName() async throws {
+      let host = PartyHost()
+      let recorder = EventRecorder()
+      let stream = host.events
+      let eventTask = Task {
+        for await event in stream { await recorder.record(event) }
+      }
+      defer { eventTask.cancel() }
+      let port = try await host.start(hostName: "Expiry Event Host", advertise: false)
+      let client = PartyClient(displayName: "Named Departure")
+
+      await client.connect(host: "127.0.0.1", port: port)
+      try await waitUntil { host.players.count == 1 }
+      await client.disconnect()
+      try await waitUntilAsync {
+        await recorder.containsExpiredPlayer(named: "Named Departure")
+      }
+
       await host.stop()
     }
 

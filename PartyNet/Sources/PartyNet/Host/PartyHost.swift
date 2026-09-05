@@ -7,7 +7,7 @@ public enum HostEvent: Sendable {
     case playerJoined(PlayerInfo)
     case playerReconnected(PlayerInfo)
     case playerDisconnected(PlayerInfo)
-    case playerExpired(PlayerID)
+    case playerExpired(PlayerInfo)
     case menu(playerID: PlayerID, action: MenuAction)
     case failure(String)
 }
@@ -145,6 +145,7 @@ public final class PartyHost {
         lifecycleGeneration &+= 1
         let transport = prepareToStop()
         await transport?.stop()
+        eventHub.finish()
     }
 
     private func prepareToStop() -> HostTransport? {
@@ -193,17 +194,17 @@ public final class PartyHost {
     }
 
     private func handleHello(connectionID: UUID, hello: Hello, generation: UInt64) async {
-        guard lifecycleGeneration == generation else { return }
+        guard lifecycleGeneration == generation, let transport else { return }
         guard hello.protocolVersion == PartyNetConstants.protocolVersion else {
-            await transport?.respond(
+            await transport.respond(
                 to: connectionID,
                 with: .reject(.versionMismatch(hostVersion: PartyNetConstants.protocolVersion))
             )
             return
         }
 
-        guard let udpPort = await transportUDPPort() else {
-            await transport?.respond(to: connectionID, with: .reject(.malformedHello))
+        guard let udpPort = await transport.udpPort else {
+            await transport.respond(to: connectionID, with: .reject(.malformedHello))
             return
         }
         guard lifecycleGeneration == generation else { return }
@@ -230,21 +231,31 @@ public final class PartyHost {
             existing.sessionToken = token
             sessions[hello.controllerID] = existing
             connectionOwners[connectionID] = hello.controllerID
-            if let oldToken { await transport?.invalidate(token: oldToken) }
+            if let oldToken { await transport.invalidate(token: oldToken) }
             guard lifecycleGeneration == generation,
-                  sessions[hello.controllerID]?.connectionID == connectionID else { return }
+                  sessions[hello.controllerID]?.connectionID == connectionID else {
+                await abandonReconnectHandshake(
+                    on: transport,
+                    connectionID: connectionID,
+                    replacedConnectionID: oldConnection
+                )
+                return
+            }
             if let oldConnection {
-                await transport?.replace(connectionID: oldConnection)
+                await transport.replace(connectionID: oldConnection)
             }
             guard lifecycleGeneration == generation,
-                  sessions[hello.controllerID]?.connectionID == connectionID else { return }
+                  sessions[hello.controllerID]?.connectionID == connectionID else {
+                await abandonReconnectHandshake(on: transport, connectionID: connectionID)
+                return
+            }
             session = existing
             event = .playerReconnected(info(for: existing, connected: true))
         } else {
             isNewSession = true
             guard sessions.count < PartyNetConstants.maximumControllers,
                   let playerID = lowestAvailablePlayerID() else {
-                await transport?.respond(to: connectionID, with: .reject(.full))
+                await transport.respond(to: connectionID, with: .reject(.full))
                 return
             }
             fallbackName = "Player \(playerID.rawValue + 1)"
@@ -273,7 +284,7 @@ public final class PartyHost {
             hostName: hostName,
             hostInstanceID: hostInstanceID
         )
-        let accepted = await transport?.respond(to: connectionID, with: .accept(welcome)) ?? false
+        let accepted = await transport.respond(to: connectionID, with: .accept(welcome))
         guard lifecycleGeneration == generation else { return }
         guard accepted else {
             await rollbackFailedHello(
@@ -285,7 +296,7 @@ public final class PartyHost {
             return
         }
         guard var admitted = sessions[hello.controllerID], admitted.connectionID == connectionID else {
-            await transport?.disconnect(connectionID: connectionID)
+            await transport.disconnect(connectionID: connectionID)
             return
         }
         admitted.isAdmitted = true
@@ -296,8 +307,15 @@ public final class PartyHost {
         enqueueRosterBroadcast()
     }
 
-    private func transportUDPPort() async -> UInt16? {
-        await transport?.udpPort
+    private func abandonReconnectHandshake(
+        on transport: HostTransport,
+        connectionID: UUID,
+        replacedConnectionID: UUID? = nil
+    ) async {
+        _ = await transport.respond(to: connectionID, with: .reject(.replaced))
+        if let replacedConnectionID {
+            await transport.replace(connectionID: replacedConnectionID)
+        }
     }
 
     private func rollbackFailedHello(
@@ -400,7 +418,8 @@ public final class PartyHost {
               let current = sessions[controllerID],
               expectedRevision == nil || current.revision == expectedRevision else { return }
         cancelPendingRename(for: controllerID)
-        let session = sessions.removeValue(forKey: controllerID)!
+        _ = sessions.removeValue(forKey: controllerID)
+        let session = current
         if let connectionID = session.connectionID {
             connectionOwners.removeValue(forKey: connectionID)
         }
@@ -408,7 +427,7 @@ public final class PartyHost {
         inputs.remove(session.playerID)
         refreshPlayers()
         if session.isAdmitted {
-            eventHub.yield(.playerExpired(session.playerID))
+            eventHub.yield(.playerExpired(info(for: session, connected: false)))
             enqueueRosterBroadcast()
         }
         if let connectionID = session.connectionID {

@@ -53,6 +53,20 @@ struct PartyBoxTests {
         #expect(game.rallyCount == 1)
     }
 
+    @Test func ballUsesTimeRemainingAfterRespawnCountdownExpires() {
+        var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
+
+        for _ in 0..<19 { _ = game.step(deltaTime: 0.05) }
+        _ = game.step(deltaTime: 0.02)
+        #expect(game.ballPosition == .zero)
+        #expect(game.ballVelocity == .zero)
+
+        _ = game.step(deltaTime: 0.05)
+
+        #expect(game.ballVelocity.length > 0)
+        #expect(game.ballPosition.length > 0)
+    }
+
     @Test func soloEndsAfterThreeMissesAndReportsRally() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setPaddle(for: bottom, normalizedPosition: -1)

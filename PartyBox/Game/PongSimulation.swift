@@ -104,13 +104,16 @@ struct PongSimulation: Sendable {
 
     mutating func step(deltaTime rawDelta: Double) -> [PongEvent] {
         guard !isFinished else { return [] }
-        let delta = min(max(rawDelta, 0), 1.0 / 20.0)
+        var delta = min(max(rawDelta, 0), 1.0 / 20.0)
         guard delta > 0 else { return [] }
 
         if respawnRemaining > 0 {
-            respawnRemaining -= delta
-            if respawnRemaining <= 0 { launchBall() }
-            return []
+            let countdownTime = min(respawnRemaining, delta)
+            respawnRemaining -= countdownTime
+            delta -= countdownTime
+            guard respawnRemaining <= 0 else { return [] }
+            launchBall()
+            guard delta > 0.000_001 else { return [] }
         }
 
         var events: [PongEvent] = []
