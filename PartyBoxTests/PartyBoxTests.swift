@@ -30,6 +30,29 @@ struct PartyBoxTests {
         #expect(configuration.seed == nil)
     }
 
+    @Test func uiFixtureIsAppliedOnStartAndRestoredAfterRestart() async {
+        let configuration = HostLaunchConfiguration(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "menu", "--disable-effects",
+        ])
+        let coordinator = HostCoordinator(configuration: configuration)
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.host.players.isEmpty)
+
+        await coordinator.start()
+        #expect(coordinator.phase == .gameMenu)
+        #expect(coordinator.host.players.count == 4)
+
+        await coordinator.stop()
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.host.players.isEmpty)
+
+        await coordinator.start()
+        #expect(coordinator.phase == .gameMenu)
+        #expect(coordinator.host.players.count == 4)
+        await coordinator.stop()
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))

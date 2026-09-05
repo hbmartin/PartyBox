@@ -21,11 +21,11 @@ public struct FaultProfile: Codable, Equatable, Sendable {
     public static let maximumDelayMilliseconds = 60_000
     public static let maximumReorderWindow = 1_024
 
-    public var seed: UInt64
-    public var udpDropPolicy: UDPDropPolicy
-    public var delayMilliseconds: Int
-    public var jitterMilliseconds: Int
-    public var reorderWindow: Int
+    public let seed: UInt64
+    public let udpDropPolicy: UDPDropPolicy
+    public let delayMilliseconds: Int
+    public let jitterMilliseconds: Int
+    public let reorderWindow: Int
 
     public init(
         seed: UInt64 = 1,
@@ -41,6 +41,26 @@ public struct FaultProfile: Codable, Equatable, Sendable {
         self.reorderWindow = min(max(reorderWindow, 1), Self.maximumReorderWindow)
     }
 
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            seed: try container.decode(UInt64.self, forKey: .seed),
+            udpDropPolicy: try container.decode(UDPDropPolicy.self, forKey: .udpDropPolicy),
+            delayMilliseconds: try container.decode(Int.self, forKey: .delayMilliseconds),
+            jitterMilliseconds: try container.decode(Int.self, forKey: .jitterMilliseconds),
+            reorderWindow: try container.decode(Int.self, forKey: .reorderWindow)
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(seed, forKey: .seed)
+        try container.encode(udpDropPolicy, forKey: .udpDropPolicy)
+        try container.encode(delayMilliseconds, forKey: .delayMilliseconds)
+        try container.encode(jitterMilliseconds, forKey: .jitterMilliseconds)
+        try container.encode(reorderWindow, forKey: .reorderWindow)
+    }
+
     public func validated() -> Self {
         Self(
             seed: seed,
@@ -52,6 +72,14 @@ public struct FaultProfile: Codable, Equatable, Sendable {
     }
 
     public static let stable = FaultProfile()
+
+    private enum CodingKeys: String, CodingKey {
+        case seed
+        case udpDropPolicy
+        case delayMilliseconds
+        case jitterMilliseconds
+        case reorderWindow
+    }
 }
 
 public struct FaultMetrics: Codable, Equatable, Sendable {

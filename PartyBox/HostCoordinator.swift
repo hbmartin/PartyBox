@@ -46,11 +46,6 @@ final class HostCoordinator {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
         sounds = configuration.disableEffects ? nil : ArcadeSoundPlayer()
-#if DEBUG
-        if let scenario = configuration.scenario {
-            applyFixture(scenario: scenario)
-        }
-#endif
     }
 
     func start() async {
@@ -58,13 +53,13 @@ final class HostCoordinator {
         isStarted = true
         let generation = UUID()
         lifecycleGeneration = generation
-        if configuration.scenario != nil {
 #if DEBUG
-            if let scenario = configuration.scenario { applyFixture(scenario: scenario) }
-#endif
+        if let scenario = configuration.scenario {
+            applyFixture(scenario: scenario)
             statusMessage = "UI test fixture"
             return
         }
+#endif
         let stream = host.events
         hostEventsTask = Task { [weak self] in
             for await event in stream {
