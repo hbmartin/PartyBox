@@ -154,17 +154,20 @@ struct MessagesTests {
         #expect(secondFinishedValue == nil)
     }
 
-    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async {
-        let hub = EventHub<Int>(bufferLimit: 2)
+    @Test func eventHubPreservesMoreThanTheFormerBufferLimit() async {
+        let hub = EventHub<Int>()
         let stream = hub.stream()
+        let eventCount = 4_097
 
-        hub.yield(1)
-        hub.yield(2)
-        hub.yield(3)
+        for value in 0..<eventCount { hub.yield(value) }
 
         var iterator = stream.makeAsyncIterator()
-        #expect(await iterator.next() == 1)
-        #expect(await iterator.next() == 2)
+        var received: [Int] = []
+        for _ in 0..<eventCount {
+            if let value = await iterator.next() { received.append(value) }
+        }
+        #expect(received == Array(0..<eventCount))
+        hub.finish()
         #expect(await iterator.next() == nil)
     }
 
