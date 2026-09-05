@@ -11,7 +11,7 @@ public struct HostAddress: Equatable, Hashable, Sendable {
                   value.index(after: closingBracket) < value.endIndex,
                   value[value.index(after: closingBracket)] == ":" else { return nil }
             let portStart = value.index(closingBracket, offsetBy: 2)
-            guard let port = UInt16(value[portStart...]), port != 0 else { return nil }
+            guard let port = Self.parsePort(value[portStart...]) else { return nil }
             let literal = String(value[value.index(after: value.startIndex)..<closingBracket])
             guard Self.isValidIPv6Literal(literal) else { return nil }
             host = literal
@@ -22,10 +22,17 @@ public struct HostAddress: Equatable, Hashable, Sendable {
         guard value.filter({ $0 == ":" }).count == 1,
               let separator = value.lastIndex(of: ":"),
               separator > value.startIndex,
-              let port = UInt16(value[value.index(after: separator)...]),
-              port != 0 else { return nil }
+              let port = Self.parsePort(value[value.index(after: separator)...]) else { return nil }
         host = String(value[..<separator])
         self.port = port
+    }
+
+    private static func parsePort(_ value: Substring) -> UInt16? {
+        guard !value.isEmpty,
+              value.utf8.allSatisfy({ (0x30...0x39).contains($0) }),
+              let port = UInt16(value),
+              port != 0 else { return nil }
+        return port
     }
 
     private static func isValidIPv6Literal(_ literal: String) -> Bool {

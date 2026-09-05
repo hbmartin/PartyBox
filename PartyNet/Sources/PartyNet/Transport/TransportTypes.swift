@@ -23,6 +23,20 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
         for continuation in current { continuation.yield(event) }
     }
 
+    /// Finishes the streams that are currently subscribed. New calls to `stream()` create
+    /// fresh subscriptions so a transport can still be restarted after it has stopped.
+    func finish() {
+        lock.lock()
+        let current = Array(continuations.values)
+        continuations.removeAll()
+        lock.unlock()
+        for continuation in current { continuation.finish() }
+    }
+
+    deinit {
+        finish()
+    }
+
     private func remove(_ id: UUID) {
         lock.lock()
         continuations.removeValue(forKey: id)

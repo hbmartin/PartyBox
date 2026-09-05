@@ -47,6 +47,7 @@ struct MessagesTests {
     }
 
     @Test func displayNameValidation() {
+        #expect(UnicodeSequenceData.emojiZWJVariationSequencesAreRegistered())
         #expect(DisplayName.sanitized("  Ada   Lovelace  ", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("Ada\nLovelace", fallback: "Player") == "Ada Lovelace")
         #expect(DisplayName.sanitized("\u{202E}Admin\u{0007}", fallback: "Player") == "Admin")
@@ -110,6 +111,7 @@ struct MessagesTests {
         #expect(HostAddress(parsing: "fe80::1:49999") == nil)
         #expect(HostAddress(parsing: ":49999") == nil)
         #expect(HostAddress(parsing: "partybox.local:0") == nil)
+        #expect(HostAddress(parsing: "partybox.local:+49999") == nil)
         #expect(HostAddress(parsing: "partybox.local:65536") == nil)
         #expect(HostAddress(parsing: "partybox.local") == nil)
         #expect(HostAddress(parsing: "[not-an-ipv6]:49999") == nil)
@@ -121,6 +123,7 @@ struct MessagesTests {
         #expect(HostAddress(parsing: "[fe80::1%+1]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%١]:49999") == nil)
         #expect(HostAddress(parsing: "[fe80::1%4294967296]:49999") == nil)
+        #expect(HostAddress(parsing: "[::1]:+49999") == nil)
 
         var attemptedInterfaceLookup = false
         #expect(!HostAddress.isValidScopeIdentifier(
@@ -131,6 +134,24 @@ struct MessagesTests {
             }
         ))
         #expect(!attemptedInterfaceLookup)
+    }
+
+    @Test func eventHubFinishEndsCurrentStreamsAndAllowsFreshSubscriptions() async {
+        let hub = EventHub<Int>()
+        let firstStream = hub.stream()
+        hub.finish()
+        var firstIterator = firstStream.makeAsyncIterator()
+        let finishedValue = await firstIterator.next()
+        #expect(finishedValue == nil)
+
+        let secondStream = hub.stream()
+        hub.yield(42)
+        var secondIterator = secondStream.makeAsyncIterator()
+        let yieldedValue = await secondIterator.next()
+        #expect(yieldedValue == 42)
+        hub.finish()
+        let secondFinishedValue = await secondIterator.next()
+        #expect(secondFinishedValue == nil)
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

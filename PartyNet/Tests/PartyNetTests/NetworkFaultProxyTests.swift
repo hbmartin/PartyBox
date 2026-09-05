@@ -322,7 +322,7 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
-    @Test func profileValidationAndSeededLossAreDeterministic() {
+    @Test func profileValidationAndSeededLossAreDeterministic() async {
       #expect(FaultProfile(udpDropPolicy: .rate(-1)).udpDropPolicy == .rate(0))
       #expect(FaultProfile(udpDropPolicy: .rate(2)).udpDropPolicy == .rate(1))
       #expect(
@@ -334,6 +334,37 @@ extension NetworkIntegrationTests {
             delayMilliseconds: FaultProfile.maximumDelayMilliseconds,
             jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
             reorderWindow: FaultProfile.maximumReorderWindow
+          ))
+
+      var mutated = FaultProfile()
+      mutated.seed = 0
+      mutated.udpDropPolicy = .every(0)
+      mutated.delayMilliseconds = -1
+      mutated.jitterMilliseconds = .max
+      mutated.reorderWindow = .max
+      let proxy = NetworkFaultProxy(profile: mutated)
+      #expect(
+        await proxy.currentProfile()
+          == FaultProfile(
+            seed: 1,
+            udpDropPolicy: .none,
+            delayMilliseconds: 0,
+            jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
+            reorderWindow: FaultProfile.maximumReorderWindow
+          ))
+
+      mutated.delayMilliseconds = .max
+      mutated.jitterMilliseconds = -1
+      mutated.reorderWindow = 0
+      await proxy.setProfile(mutated)
+      #expect(
+        await proxy.currentProfile()
+          == FaultProfile(
+            seed: 1,
+            udpDropPolicy: .none,
+            delayMilliseconds: FaultProfile.maximumDelayMilliseconds,
+            jitterMilliseconds: 0,
+            reorderWindow: 1
           ))
     }
 

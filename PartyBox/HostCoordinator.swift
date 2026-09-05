@@ -170,17 +170,17 @@ final class HostCoordinator {
             await sendLayout(to: player.id)
         case let .playerDisconnected(player):
             statusMessage = "Waiting 15 seconds for \(player.displayName)…"
-        case let .playerExpired(playerID):
+        case let .playerExpired(player):
             if phase == .playing {
-                seatQueue.left(playerID, fillVacancy: false)
-                currentMatchAssignments.removeAll { $0.playerID == playerID }
-                pongScene?.forfeit(playerID)
+                seatQueue.left(player.id, fillVacancy: false)
+                currentMatchAssignments.removeAll { $0.playerID == player.id }
+                pongScene?.forfeit(player.id)
             } else {
-                seatQueue.left(playerID)
+                seatQueue.left(player.id)
             }
             statusMessage = host.players.isEmpty
                 ? "Ready for controllers"
-                : "Player \(Int(playerID.rawValue) + 1) left the party"
+                : "\(player.displayName) left the party"
             await sendLayouts()
         case let .menu(_, action):
             perform(action)
@@ -254,33 +254,46 @@ final class HostCoordinator {
     }
 
     private func sendLayouts() async {
-        for player in host.players where player.isConnected {
-            await sendLayout(to: player.id)
+        let pending = host.players.compactMap { player -> (PlayerID, ControllerLayout)? in
+            guard player.isConnected else { return nil }
+            return (player.id, layout(for: player.id))
+        }
+        let host = host
+        await withTaskGroup(of: Void.self) { group in
+            for (playerID, layout) in pending {
+                group.addTask {
+                    await host.send(.layout(layout), to: playerID)
+                }
+            }
         }
     }
 
     private func sendLayout(to playerID: PlayerID) async {
-        let layout: ControllerLayout
+        await host.send(.layout(layout(for: playerID)), to: playerID)
+    }
+
+    private func layout(for playerID: PlayerID) -> ControllerLayout {
         switch phase {
         case .lobby:
-            layout = .lobby
+            return .lobby
         case .gameMenu:
-            layout = .menu(items: menuItems, selected: menuSelection)
+            return .menu(items: menuItems, selected: menuSelection)
         case .playing:
             if let assignment = currentMatchAssignments.first(where: { $0.playerID == playerID }),
                let info = host.players.first(where: { $0.id == playerID }) {
-                layout = .paddle(PaddleLayout(
+                return .paddle(PaddleLayout(
                     edge: assignment.edge,
                     colorHex: info.colorHex,
                     label: "P\(info.number) \(info.displayName)"
                 ))
             } else {
-                layout = .spectator(SpectatorLayout(queuePosition: seatQueue.waitingPosition(of: playerID) ?? 1))
+                return .spectator(SpectatorLayout(
+                    queuePosition: seatQueue.waitingPosition(of: playerID) ?? 1
+                ))
             }
         case let .gameOver(result):
-            layout = .gameOver(title: result.title, subtitle: result.subtitle)
+            return .gameOver(title: result.title, subtitle: result.subtitle)
         }
-        await host.send(.layout(layout), to: playerID)
     }
 
 #if DEBUG

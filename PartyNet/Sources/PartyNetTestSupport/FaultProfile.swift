@@ -41,6 +41,16 @@ public struct FaultProfile: Codable, Equatable, Sendable {
         self.reorderWindow = min(max(reorderWindow, 1), Self.maximumReorderWindow)
     }
 
+    public func validated() -> Self {
+        Self(
+            seed: seed,
+            udpDropPolicy: udpDropPolicy,
+            delayMilliseconds: delayMilliseconds,
+            jitterMilliseconds: jitterMilliseconds,
+            reorderWindow: reorderWindow
+        )
+    }
+
     public static let stable = FaultProfile()
 }
 
