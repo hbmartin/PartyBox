@@ -148,7 +148,7 @@ extension NetworkIntegrationTests {
       }
     }
 
-    @Test func reconnectDuringRenameIntervalAppliesNextRenameImmediately() async throws {
+    @Test func reconnectDuringRenameIntervalClearsPendingAndAppliesNextRenameImmediately() async throws {
       let clock = TestClock()
       try await withDependencies {
         $0.continuousClock = clock
@@ -163,22 +163,34 @@ extension NetworkIntegrationTests {
 
         await client.rename(to: "Before Interruption")
         try await waitUntil { host.players.first?.displayName == "Before Interruption" }
+        await client.rename(to: "Stale Pending Rename")
+        let pingCount = client.rttSampleCount
+        client.reconnectAfterForeground()
+        try await waitUntil { client.rttSampleCount > pingCount }
+        #expect(host.players.first?.displayName == "Before Interruption")
         await client.interruptForTesting()
         try await waitUntil { host.players.first?.isConnected == false }
 
+        await client.rename(to: "Reconnect Hello")
         await client.connect(host: "127.0.0.1", port: port)
-        try await waitUntil { host.players.first?.isConnected == true }
+        try await waitUntil {
+          host.players.first?.isConnected == true
+            && host.players.first?.displayName == "Reconnect Hello"
+        }
         await client.rename(to: "Reconnected Rename")
         try await waitUntil {
           host.players.first?.displayName == "Reconnected Rename"
         }
+        await clock.advance(by: PartyNetConstants.renameProcessingInterval)
+        await settle()
+        #expect(host.players.first?.displayName == "Reconnected Rename")
 
         await client.disconnect()
         await host.stop()
       }
     }
 
-    @Test func replacementDuringRenameIntervalAppliesNextRenameImmediately() async throws {
+    @Test func replacementDuringRenameIntervalClearsPendingAndAppliesNextRenameImmediately() async throws {
       let clock = TestClock()
       try await withDependencies {
         $0.continuousClock = clock
@@ -196,6 +208,11 @@ extension NetworkIntegrationTests {
 
         await first.rename(to: "Before Replacement")
         try await waitUntil { host.players.first?.displayName == "Before Replacement" }
+        await first.rename(to: "Stale Pending Rename")
+        let pingCount = first.rttSampleCount
+        first.reconnectAfterForeground()
+        try await waitUntil { first.rttSampleCount > pingCount }
+        #expect(host.players.first?.displayName == "Before Replacement")
         await replacement.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.displayName == "Replacement" }
 
@@ -203,6 +220,9 @@ extension NetworkIntegrationTests {
         try await waitUntil {
           host.players.first?.displayName == "Replacement Rename"
         }
+        await clock.advance(by: PartyNetConstants.renameProcessingInterval)
+        await settle()
+        #expect(host.players.first?.displayName == "Replacement Rename")
 
         await first.stop()
         await replacement.disconnect()

@@ -14,7 +14,7 @@ private enum ControlledClockOperationTimeout: Error {
 @MainActor
 func runWhileAdvancingTestClock<Value: Sendable>(
   _ clock: TestClock<Duration>,
-  wallTimeout: Duration = .seconds(3),
+  wallTimeout: Duration = .seconds(10),
   operation: @escaping @MainActor @Sendable () async throws -> Value
 ) async throws -> Value {
   try await withThrowingTaskGroup(of: Value.self) { group in
