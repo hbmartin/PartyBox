@@ -4,11 +4,17 @@ import Dependencies
 
 final class EventHub<Event: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
+    private let bufferLimit: Int
     private var continuations: [UUID: AsyncStream<Event>.Continuation] = [:]
+
+    init(bufferLimit: Int = 4_096) {
+        precondition(bufferLimit > 0)
+        self.bufferLimit = bufferLimit
+    }
 
     func stream() -> AsyncStream<Event> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingOldest(bufferLimit)) { continuation in
             lock.lock()
             continuations[id] = continuation
             lock.unlock()
@@ -18,9 +24,24 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
 
     func yield(_ event: Event) {
         lock.lock()
-        let current = Array(continuations.values)
+        let current = Array(continuations)
         lock.unlock()
-        for continuation in current { continuation.yield(event) }
+        for (id, continuation) in current {
+            switch continuation.yield(event) {
+            case .enqueued:
+                break
+            case .dropped:
+                // Protocol events must not be silently skipped. End an overwhelmed
+                // subscription so its owner can fail closed instead of diverging.
+                remove(id)
+                continuation.finish()
+            case .terminated:
+                remove(id)
+            @unknown default:
+                remove(id)
+                continuation.finish()
+            }
+        }
     }
 
     /// Finishes the streams that are currently subscribed. New calls to `stream()` create

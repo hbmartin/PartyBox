@@ -72,6 +72,15 @@ public final class PartyClient {
         transport = ClientTransport(inputSendInterval: inputSendInterval)
     }
 
+    isolated deinit {
+        transportTask?.cancel()
+        reconnectTask?.cancel()
+        foregroundProbeTask?.cancel()
+        inputFlushTask?.cancel()
+        let transport = transport
+        Task { await transport.stop() }
+    }
+
     public func startBrowsing() async {
         ensureEventTask()
         discoveryErrorMessage = nil
@@ -91,6 +100,7 @@ public final class PartyClient {
         cancelReconnect()
         cancelForegroundProbe()
         cancelInputFlush()
+        resetSessionPresentation()
         let attemptID = UUID()
         connectionAttemptID = attemptID
         selectedHost = host
@@ -347,7 +357,7 @@ public final class PartyClient {
         case let .layout(value):
             let wasPaddleLayout = if case .paddle = layout { true } else { false }
             let isPaddleLayout = if case .paddle = value { true } else { false }
-            if wasPaddleLayout || isPaddleLayout {
+            if layout != value, wasPaddleLayout || isPaddleLayout {
                 setInput(axisX: 0)
             }
             layout = value
@@ -444,6 +454,16 @@ public final class PartyClient {
         inputFlushTask = nil
         inputFlushID = nil
         pendingInput = nil
+    }
+
+    private func resetSessionPresentation() {
+        player = nil
+        roster = []
+        layout = .lobby
+        inputAxisX = 0
+        rttMilliseconds = nil
+        rttSampleCount = 0
+        usesTCPFallback = false
     }
 
     private func startForegroundProbe(connectionID: UUID) {

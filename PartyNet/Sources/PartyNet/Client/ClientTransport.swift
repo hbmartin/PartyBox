@@ -114,6 +114,16 @@ actor ClientTransport {
     self.handshakeResponseHook = handshakeResponseHook
   }
 
+  deinit {
+    browserTask?.cancel()
+    pendingHandshakes.values.forEach { $0.task.cancel() }
+    receiveTasks.values.forEach { $0.cancel() }
+    for session in sessions.values {
+      session.inputTask?.cancel()
+      session.pingTask?.cancel()
+    }
+  }
+
   func startBrowsing() {
     guard browserTask == nil else { return }
     let parameters = NWParameters.tcp
@@ -124,18 +134,18 @@ actor ClientTransport {
     let generation = UUID()
     browserGeneration = generation
     let transport = self
-    browserTask = Task { [browser, transport] in
+    browserTask = Task { [browser, weak transport] in
       do {
-        try await browser.run { endpoints in
-          await transport.publish(endpoints)
+        try await browser.run { [weak transport] endpoints in
+          await transport?.publish(endpoints)
         }
       } catch is CancellationError {
         // Expected on shutdown.
       } catch {
-        transport.eventHub.yield(
+        transport?.eventHub.yield(
           .discoveryFailed("Discovery failed: \(error.localizedDescription)"))
       }
-      await transport.browserDidFinish(generation: generation)
+      await transport?.browserDidFinish(generation: generation)
     }
   }
 
@@ -163,6 +173,7 @@ actor ClientTransport {
     }
 
     let connectionID = UUID()
+    let clock = clock
     let handshakeTask = Task { [connection] in
       try await withTimeout(
         PartyNetConstants.helloTimeout,
@@ -215,15 +226,40 @@ actor ClientTransport {
         startedAt: clock.now
       )
       let transport = self
-      session.inputTask = Task { [transport] in
-        await transport.runInputLoop(connectionID: connectionID)
+      let inputSendInterval = inputSendInterval
+      session.inputTask = Task { [clock, weak transport] in
+        while !Task.isCancelled {
+          do { try await clock.sleep(for: inputSendInterval) } catch { return }
+          guard await transport?.runInputIteration(
+            connectionID: connectionID,
+            now: clock.now
+          ) == true else { return }
+        }
       }
-      session.pingTask = Task { [transport] in
-        await transport.runPingLoop(connectionID: connectionID)
+      session.pingTask = Task { [clock, weak transport] in
+        while !Task.isCancelled {
+          do { try await clock.sleep(for: PartyNetConstants.pingInterval) } catch { return }
+          guard await transport?.runPingIteration(
+            connectionID: connectionID,
+            now: clock.now
+          ) == true else { return }
+        }
       }
       sessions[connectionID] = session
-      receiveTasks[connectionID] = Task { [connection, transport] in
-        await transport.receiveMessages(connectionID: connectionID, connection: connection)
+      receiveTasks[connectionID] = Task { [connection, weak transport] in
+        do {
+          for try await message in connection.messages {
+            await transport?.receiveMessage(message.content, connectionID: connectionID)
+          }
+          await transport?.endSession(
+            connectionID,
+            reason: "The host closed the connection."
+          )
+        } catch is CancellationError {
+          // Explicit disconnect or replacement.
+        } catch {
+          await transport?.endSession(connectionID, reason: error.localizedDescription)
+        }
       }
       pendingHandshakes.removeValue(forKey: attemptID)
       return (connectionID, welcome)
@@ -311,73 +347,64 @@ actor ClientTransport {
     browser = nil
   }
 
-  private func receiveMessages(connectionID: UUID, connection: ClientControlConnection) async {
-    do {
-      for try await message in connection.messages {
-        if case .inputAck(let sequence) = message.content {
-          acknowledgeUDP(sequence: sequence, connectionID: connectionID)
-          continue
-        }
-        if case .pong(let nonce) = message.content,
-          var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
-        {
-          sessions[connectionID] = session
-        }
-        eventHub.yield(.message(connectionID: connectionID, message.content))
-      }
-      endSession(connectionID, reason: "The host closed the connection.")
-    } catch is CancellationError {
-      // Explicit disconnect or replacement.
-    } catch {
-      endSession(connectionID, reason: error.localizedDescription)
+  private func receiveMessage(_ message: HostMessage, connectionID: UUID) {
+    if case .inputAck(let sequence) = message {
+      acknowledgeUDP(sequence: sequence, connectionID: connectionID)
+      return
     }
+    if case .pong(let nonce) = message,
+      var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
+    {
+      sessions[connectionID] = session
+    }
+    eventHub.yield(.message(connectionID: connectionID, message))
   }
 
-  private func runInputLoop(connectionID: UUID) async {
-    while !Task.isCancelled {
-      do { try await clock.sleep(for: inputSendInterval) } catch { return }
-      guard let session = sessions[connectionID] else { return }
-      let now = clock.now
-      let acknowledgmentIsFresh =
-        session.lastAcknowledgedAt.map {
-          $0.duration(to: now) < PartyNetConstants.udpReadyTimeout
-        } ?? false
-      let awaitingInitialAcknowledgment =
-        session.lastAcknowledgedAt == nil
-        && session.startedAt.duration(to: now) < PartyNetConstants.udpReadyTimeout
-      let shouldFallback = !acknowledgmentIsFresh && !awaitingInitialAcknowledgment
+  private func runInputIteration(
+    connectionID: UUID,
+    now: AnyClock<Duration>.Instant
+  ) async -> Bool {
+    guard let session = sessions[connectionID] else { return false }
+    let acknowledgmentIsFresh =
+      session.lastAcknowledgedAt.map {
+        $0.duration(to: now) < PartyNetConstants.udpReadyTimeout
+      } ?? false
+    let awaitingInitialAcknowledgment =
+      session.lastAcknowledgedAt == nil
+      && session.startedAt.duration(to: now) < PartyNetConstants.udpReadyTimeout
+    let shouldFallback = !acknowledgmentIsFresh && !awaitingInitialAcknowledgment
 
-      if shouldFallback != session.usesTCPFallback {
-        if var latest = sessions[connectionID] {
-          latest.usesTCPFallback = shouldFallback
-          latest.fallbackProbeSequenceFloor = shouldFallback ? latest.sequence : nil
-          sessions[connectionID] = latest
-        }
-        eventHub.yield(
-          .transportMode(
-            connectionID: connectionID,
-            usesTCPFallback: shouldFallback
-          ))
+    if shouldFallback != session.usesTCPFallback {
+      if var latest = sessions[connectionID] {
+        latest.usesTCPFallback = shouldFallback
+        latest.fallbackProbeSequenceFloor = shouldFallback ? latest.sequence : nil
+        sessions[connectionID] = latest
       }
-
-      let udpRefreshDue =
-        (shouldFallback ? session.lastUDPAttemptAt : session.lastUDPSentAt).map {
-          $0.duration(to: now) >= PartyNetConstants.inputRefreshInterval
-        } ?? true
-      let udpChanged = session.desired != session.lastUDPSent
-      if (!shouldFallback && (udpChanged || udpRefreshDue)) || (shouldFallback && udpRefreshDue) {
-        await sendUDPInput(connectionID: connectionID, now: now)
-      }
-
-      guard shouldFallback else { continue }
-      let tcpRateReady =
-        session.lastTCPSentAt.map {
-          $0.duration(to: now) >= PartyNetConstants.tcpFallbackInterval
-        } ?? true
-      if tcpRateReady, !(await sendTCPInput(connectionID: connectionID, now: now)) {
-        return
-      }
+      eventHub.yield(
+        .transportMode(
+          connectionID: connectionID,
+          usesTCPFallback: shouldFallback
+        ))
     }
+
+    let udpRefreshDue =
+      (shouldFallback ? session.lastUDPAttemptAt : session.lastUDPSentAt).map {
+        $0.duration(to: now) >= PartyNetConstants.inputRefreshInterval
+      } ?? true
+    let udpChanged = session.desired != session.lastUDPSent
+    if (!shouldFallback && (udpChanged || udpRefreshDue)) || (shouldFallback && udpRefreshDue) {
+      await sendUDPInput(connectionID: connectionID, now: now)
+    }
+
+    guard shouldFallback else { return true }
+    let tcpRateReady =
+      session.lastTCPSentAt.map {
+        $0.duration(to: now) >= PartyNetConstants.tcpFallbackInterval
+      } ?? true
+    if tcpRateReady {
+      return await sendTCPInput(connectionID: connectionID, now: now)
+    }
+    return true
   }
 
   private func sendUDPInput(connectionID: UUID, now: AnyClock<Duration>.Instant) async {
@@ -450,26 +477,26 @@ actor ClientTransport {
     }
   }
 
-  private func runPingLoop(connectionID: UUID) async {
-    while !Task.isCancelled {
-      do { try await clock.sleep(for: PartyNetConstants.pingInterval) } catch { return }
-      guard let session = sessions[connectionID] else { return }
-      let now = clock.now
-      if session.pingWatchdog.hasTimedOut(at: now, after: PartyNetConstants.pingTimeout) {
-        endSession(connectionID, reason: "The host stopped responding.")
-        return
-      }
-      let value = DispatchTime.now().uptimeNanoseconds
-      if var latest = sessions[connectionID] {
-        latest.pingWatchdog.record(nonce: value, sentAt: now)
-        sessions[connectionID] = latest
-      }
-      do {
-        try await session.tcp.send(.ping(value))
-      } catch {
-        endSession(connectionID, reason: error.localizedDescription)
-        return
-      }
+  private func runPingIteration(
+    connectionID: UUID,
+    now: AnyClock<Duration>.Instant
+  ) async -> Bool {
+    guard let session = sessions[connectionID] else { return false }
+    if session.pingWatchdog.hasTimedOut(at: now, after: PartyNetConstants.pingTimeout) {
+      endSession(connectionID, reason: "The host stopped responding.")
+      return false
+    }
+    let value = DispatchTime.now().uptimeNanoseconds
+    if var latest = sessions[connectionID] {
+      latest.pingWatchdog.record(nonce: value, sentAt: now)
+      sessions[connectionID] = latest
+    }
+    do {
+      try await session.tcp.send(.ping(value))
+      return true
+    } catch {
+      endSession(connectionID, reason: error.localizedDescription)
+      return false
     }
   }
 

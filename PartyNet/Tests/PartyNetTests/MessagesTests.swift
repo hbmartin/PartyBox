@@ -154,6 +154,20 @@ struct MessagesTests {
         #expect(secondFinishedValue == nil)
     }
 
+    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async {
+        let hub = EventHub<Int>(bufferLimit: 2)
+        let stream = hub.stream()
+
+        hub.yield(1)
+        hub.yield(2)
+        hub.yield(3)
+
+        var iterator = stream.makeAsyncIterator()
+        #expect(await iterator.next() == 1)
+        #expect(await iterator.next() == 2)
+        #expect(await iterator.next() == nil)
+    }
+
     @Test func arcadePaletteParsesSharedHexColors() throws {
         let cyan = try #require(ArcadePalette.rgb(ArcadePalette.cyan))
         #expect(cyan.red == Double(0x32) / 255)

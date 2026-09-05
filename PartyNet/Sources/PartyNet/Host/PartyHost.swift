@@ -68,6 +68,15 @@ public final class PartyHost {
         self.renameProcessingInterval = renameProcessingInterval
     }
 
+    isolated deinit {
+        transportTask?.cancel()
+        rosterBroadcastTask?.cancel()
+        renameWorkers.values.forEach { $0.task.cancel() }
+        sessions.values.forEach { $0.graceTask?.cancel() }
+        let transport = transport
+        Task { await transport?.stop() }
+    }
+
     @discardableResult
     public func start(hostName: String, advertise: Bool = true) async throws -> UInt16 {
         lifecycleGeneration &+= 1
@@ -127,16 +136,26 @@ public final class PartyHost {
     }
 
     public func broadcast(_ message: HostMessage) async {
-        let generation = lifecycleGeneration
         let connectionIDs = sessions.values.compactMap { session in
             session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
         }
-        for connectionID in connectionIDs {
-            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
-            do {
-                try await transport?.send(message, to: connectionID)
-            } catch {
-                logger.debug("Broadcast failed: \(error.localizedDescription)")
+        guard let transport else { return }
+        await withTaskGroup(of: String?.self) { group in
+            for connectionID in connectionIDs {
+                group.addTask {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        try await transport.send(message, to: connectionID)
+                        return nil
+                    } catch {
+                        return error.localizedDescription
+                    }
+                }
+            }
+            for await failure in group {
+                if let failure {
+                    logger.debug("Broadcast failed: \(failure)")
+                }
             }
         }
     }

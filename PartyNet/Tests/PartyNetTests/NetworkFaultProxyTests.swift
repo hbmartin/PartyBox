@@ -322,7 +322,7 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
-    @Test func profileValidationAndSeededLossAreDeterministic() async {
+    @Test func profileValidationAndSeededLossAreDeterministic() async throws {
       #expect(FaultProfile(udpDropPolicy: .rate(-1)).udpDropPolicy == .rate(0))
       #expect(FaultProfile(udpDropPolicy: .rate(2)).udpDropPolicy == .rate(1))
       #expect(
@@ -336,13 +336,13 @@ extension NetworkIntegrationTests {
             reorderWindow: FaultProfile.maximumReorderWindow
           ))
 
-      var mutated = FaultProfile()
-      mutated.seed = 0
-      mutated.udpDropPolicy = .every(0)
-      mutated.delayMilliseconds = -1
-      mutated.jitterMilliseconds = .max
-      mutated.reorderWindow = .max
-      let proxy = NetworkFaultProxy(profile: mutated)
+      let decoded = try JSONDecoder().decode(
+        FaultProfile.self,
+        from: Data(
+          #"{"seed":0,"udpDropPolicy":{"every":{"_0":0}},"delayMilliseconds":-1,"jitterMilliseconds":70000,"reorderWindow":2000}"#.utf8
+        )
+      )
+      let proxy = NetworkFaultProxy(profile: decoded)
       #expect(
         await proxy.currentProfile()
           == FaultProfile(
@@ -353,10 +353,13 @@ extension NetworkIntegrationTests {
             reorderWindow: FaultProfile.maximumReorderWindow
           ))
 
-      mutated.delayMilliseconds = .max
-      mutated.jitterMilliseconds = -1
-      mutated.reorderWindow = 0
-      await proxy.setProfile(mutated)
+      let decodedReplacement = try JSONDecoder().decode(
+        FaultProfile.self,
+        from: Data(
+          #"{"seed":0,"udpDropPolicy":{"every":{"_0":0}},"delayMilliseconds":70000,"jitterMilliseconds":-1,"reorderWindow":0}"#.utf8
+        )
+      )
+      await proxy.setProfile(decodedReplacement)
       #expect(
         await proxy.currentProfile()
           == FaultProfile(

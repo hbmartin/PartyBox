@@ -353,7 +353,7 @@ extension NetworkIntegrationTests {
       await host.stop()
     }
 
-    @Test func repeatedPaddleLayoutNeutralizesTheObservableControllerAxis() async throws {
+    @Test func repeatedPaddleLayoutPreservesTheObservableControllerAxis() async throws {
       let host = PartyHost()
       let port = try await host.start(hostName: "Paddle Reset Host", advertise: false)
       let client = PartyClient(displayName: "Paddle")
@@ -369,8 +369,11 @@ extension NetworkIntegrationTests {
       client.setInput(axisX: 0.75)
       #expect(client.inputAxisX == 0.75)
 
+      let pingCount = client.rttSampleCount
       await host.send(.layout(layout), to: PlayerID(0))
-      try await waitUntil { client.inputAxisX == 0 }
+      await host.send(.pong(DispatchTime.now().uptimeNanoseconds), to: PlayerID(0))
+      try await waitUntil { client.rttSampleCount > pingCount }
+      #expect(client.inputAxisX == 0.75)
 
       await client.disconnect()
       await host.stop()
@@ -461,13 +464,30 @@ extension NetworkIntegrationTests {
       let firstPort = try await firstHost.start(hostName: "First Host", advertise: false)
       let secondPort = try await secondHost.start(hostName: "Second Host", advertise: false)
       let client = PartyClient(displayName: "Mover")
+      let firstHostPeer = PartyClient(displayName: "Old Host Peer")
 
       await client.connect(host: "127.0.0.1", port: firstPort)
-      try await waitUntil { firstHost.players.count == 1 }
+      await firstHostPeer.connect(host: "127.0.0.1", port: firstPort)
+      try await waitUntil { client.roster.count == 2 }
+      let staleLayout = ControllerLayout.paddle(PaddleLayout(
+        edge: .right,
+        colorHex: "#32E6FF",
+        label: "Old Host Paddle"
+      ))
+      await firstHost.send(.layout(staleLayout), to: PlayerID(0))
+      try await waitUntil { client.layout == staleLayout }
+      client.setInput(axisX: 0.625)
+
       await client.connect(host: "127.0.0.1", port: secondPort)
 
-      try await waitUntil { firstHost.players.isEmpty && secondHost.players.count == 1 }
+      try await waitUntil {
+        firstHost.players.count == 1 && secondHost.players.count == 1
+          && !client.roster.contains { $0.displayName == "Old Host Peer" }
+      }
       #expect(client.player?.id == PlayerID(0))
+      #expect(client.layout == .lobby)
+      #expect(client.inputAxisX == 0)
+      await firstHostPeer.disconnect()
       await client.disconnect()
       await firstHost.stop()
       await secondHost.stop()
@@ -493,6 +513,81 @@ extension NetworkIntegrationTests {
       #expect(client.state == .browsing)
       #expect(host.players.isEmpty)
       await host.stop()
+    }
+
+    @Test func activeNetworkingObjectsReleaseWithoutExplicitStop() async throws {
+      weak var weakHostTransport: HostTransport?
+      do {
+        let transport = HostTransport(inputs: InputStore())
+        weakHostTransport = transport
+        _ = try await transport.start(
+          hostName: "Transport Lifetime Host",
+          hostInstanceID: UUID(),
+          advertise: false
+        )
+      }
+      try await waitUntil { weakHostTransport == nil }
+
+      weak var weakHandshakingTransport: HostTransport?
+      do {
+        let transport = HostTransport(inputs: InputStore())
+        weakHandshakingTransport = transport
+        let stream = transport.events
+        let port = try await transport.start(
+          hostName: "Handshake Lifetime Host",
+          hostInstanceID: UUID(),
+          advertise: false
+        )
+        let connection = ClientControlConnection(
+          to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+          using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+        )
+        try await connection.send(.hello(Hello(
+          controllerID: ControllerID(),
+          displayName: "Pending Handshake"
+        )))
+        var iterator = stream.makeAsyncIterator()
+        guard case .hello = await iterator.next() else {
+          Issue.record("Expected the transport to receive the pending handshake")
+          return
+        }
+      }
+      try await waitUntil { weakHandshakingTransport == nil }
+
+      weak var weakClientTransport: ClientTransport?
+      do {
+        let transport = ClientTransport()
+        weakClientTransport = transport
+        await transport.startBrowsing()
+      }
+      try await waitUntil { weakClientTransport == nil }
+
+      weak var weakHost: PartyHost?
+      do {
+        let host = PartyHost()
+        weakHost = host
+        _ = try await host.start(hostName: "Host Lifetime", advertise: false)
+      }
+      try await waitUntil { weakHost == nil }
+
+      weak var weakClient: PartyClient?
+      do {
+        let client = PartyClient(displayName: "Client Lifetime")
+        weakClient = client
+        await client.startBrowsing()
+      }
+      try await waitUntil { weakClient == nil }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+
+    @Test func stoppingAHostTransportFinishesItsCurrentEventStream() async {
+      let transport = HostTransport(inputs: InputStore())
+      let stream = transport.events
+
+      await transport.stop()
+
+      var iterator = stream.makeAsyncIterator()
+      #expect(await iterator.next() == nil)
     }
 
     private func waitUntil(
