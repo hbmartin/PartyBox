@@ -20,6 +20,8 @@ private final class HandshakeDecisionSignal: @unchecked Sendable {
   private var decision: HandshakeDecision?
   private var continuation: CheckedContinuation<HandshakeDecision, Never>?
 
+  deinit {}
+
   func wait() async -> HandshakeDecision {
     await withCheckedContinuation { continuation in
       lock.lock()
@@ -50,6 +52,12 @@ private final class HandshakeDecisionSignal: @unchecked Sendable {
 
 actor HostTransport {
   nonisolated var events: AsyncStream<HostTransportEvent> { eventHub.stream() }
+
+  nonisolated func eventStream(
+    onOverflow: @escaping @Sendable () -> Void
+  ) -> AsyncStream<HostTransportEvent> {
+    eventHub.stream(onOverflow: onOverflow)
+  }
 
   private nonisolated let eventHub = EventHub<HostTransportEvent>()
   private let inputs: InputStore

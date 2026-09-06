@@ -154,21 +154,26 @@ struct MessagesTests {
         #expect(secondFinishedValue == nil)
     }
 
-    @Test func eventHubPreservesMoreThanTheFormerBufferLimit() async {
-        let hub = EventHub<Int>()
-        let stream = hub.stream()
-        let eventCount = 4_097
+    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async {
+        let hub = EventHub<Int>(bufferLimit: 2)
+        let firstStream = hub.stream()
+        let secondStream = hub.stream()
+        var secondIterator = secondStream.makeAsyncIterator()
+        var secondReceived: [Int] = []
 
-        for value in 0..<eventCount { hub.yield(value) }
+        hub.yield(1)
+        if let value = await secondIterator.next() { secondReceived.append(value) }
+        hub.yield(2)
+        if let value = await secondIterator.next() { secondReceived.append(value) }
+        hub.yield(3)
 
-        var iterator = stream.makeAsyncIterator()
-        var received: [Int] = []
-        for _ in 0..<eventCount {
-            if let value = await iterator.next() { received.append(value) }
-        }
-        #expect(received == Array(0..<eventCount))
-        hub.finish()
-        #expect(await iterator.next() == nil)
+        var firstIterator = firstStream.makeAsyncIterator()
+        #expect(await firstIterator.next() == 1)
+        #expect(await firstIterator.next() == 2)
+        #expect(await firstIterator.next() == nil)
+
+        if let value = await secondIterator.next() { secondReceived.append(value) }
+        #expect(secondReceived == [1, 2, 3])
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

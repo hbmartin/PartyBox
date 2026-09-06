@@ -3,32 +3,61 @@ import Network
 import Dependencies
 
 final class EventHub<Event: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuations: [UUID: AsyncStream<Event>.Continuation] = [:]
+    private struct Subscription {
+        let continuation: AsyncStream<Event>.Continuation
+        let onOverflow: @Sendable () -> Void
+    }
 
-    func stream() -> AsyncStream<Event> {
+    private let lock = NSLock()
+    private let bufferLimit: Int
+    private var subscriptions: [UUID: Subscription] = [:]
+
+    init(bufferLimit: Int = 4_096) {
+        precondition(bufferLimit > 0)
+        self.bufferLimit = bufferLimit
+    }
+
+    func stream(onOverflow: @escaping @Sendable () -> Void = {}) -> AsyncStream<Event> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingOldest(bufferLimit)) { continuation in
             lock.lock()
-            continuations[id] = continuation
+            subscriptions[id] = Subscription(
+                continuation: continuation,
+                onOverflow: onOverflow
+            )
             lock.unlock()
-            continuation.onTermination = { [weak self] _ in self?.remove(id) }
+            continuation.onTermination = { [weak self] _ in _ = self?.remove(id) }
         }
     }
 
     func yield(_ event: Event) {
         lock.lock()
-        let current = Array(continuations.values)
+        let current = Array(subscriptions)
         lock.unlock()
-        for continuation in current { continuation.yield(event) }
+        for (id, subscription) in current {
+            switch subscription.continuation.yield(event) {
+            case .enqueued:
+                break
+            case .dropped:
+                guard remove(id) != nil else { continue }
+                subscription.continuation.finish()
+                subscription.onOverflow()
+            case .terminated:
+                remove(id)
+            @unknown default:
+                guard remove(id) != nil else { continue }
+                subscription.continuation.finish()
+                subscription.onOverflow()
+            }
+        }
     }
 
     /// Finishes the streams that are currently subscribed. New calls to `stream()` create
     /// fresh subscriptions so a transport can still be restarted after it has stopped.
     func finish() {
         lock.lock()
-        let current = Array(continuations.values)
-        continuations.removeAll()
+        let current = subscriptions.values.map(\.continuation)
+        subscriptions.removeAll()
         lock.unlock()
         for continuation in current { continuation.finish() }
     }
@@ -37,10 +66,12 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
         finish()
     }
 
-    private func remove(_ id: UUID) {
+    @discardableResult
+    private func remove(_ id: UUID) -> Subscription? {
         lock.lock()
-        continuations.removeValue(forKey: id)
+        let subscription = subscriptions.removeValue(forKey: id)
         lock.unlock()
+        return subscription
     }
 }
 
