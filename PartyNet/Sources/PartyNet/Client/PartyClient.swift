@@ -77,8 +77,6 @@ public final class PartyClient {
         reconnectTask?.cancel()
         foregroundProbeTask?.cancel()
         inputFlushTask?.cancel()
-        let transport = transport
-        Task { await transport.stop() }
     }
 
     public func startBrowsing() async {
@@ -168,11 +166,7 @@ public final class PartyClient {
             await transport.disconnect(connectionID: establishedConnectionID)
             guard connectionAttemptID == nil, isExplicitlyDisconnected else { return }
         }
-        player = nil
-        roster = []
-        layout = .lobby
-        inputAxisX = 0
-        usesTCPFallback = false
+        resetSessionPresentation()
         discoveryErrorMessage = nil
         state = .browsing
     }
@@ -257,10 +251,7 @@ public final class PartyClient {
                 self.expectedInstanceID = nil
                 connectionAttemptID = nil
                 cancelReconnect()
-                player = nil
-                roster = []
-                layout = .lobby
-                usesTCPFallback = false
+                resetSessionPresentation()
                 state = .browsing
                 return
             }

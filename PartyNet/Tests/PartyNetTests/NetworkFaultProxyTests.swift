@@ -273,11 +273,27 @@ extension NetworkIntegrationTests {
       let client = PartyClient(displayName: "Restart")
       await client.connect(host: initial.host, port: initial.tcpPort)
       try await waitUntil { rig.host.players.count == 1 }
+      client.reconnectAfterForeground()
+      try await waitUntil { client.rttSampleCount > 0 }
+      let staleLayout = ControllerLayout.paddle(PaddleLayout(
+        edge: .left,
+        colorHex: "#32E6FF",
+        label: "Old Host Paddle"
+      ))
+      await rig.host.send(.layout(staleLayout), to: PlayerID(0))
+      try await waitUntil { client.layout == staleLayout }
+      client.setInput(axisX: 0.5)
 
       let restarted = try await rig.restartHost()
       #expect(restarted.hostInstanceID != initial.hostInstanceID)
       try await waitUntil(timeout: .seconds(7)) { client.state == .browsing }
       #expect(client.player == nil)
+      #expect(client.roster.isEmpty)
+      #expect(client.layout == .lobby)
+      #expect(client.inputAxisX == 0)
+      #expect(client.rttMilliseconds == nil)
+      #expect(client.rttSampleCount == 0)
+      #expect(!client.usesTCPFallback)
 
       await client.disconnect()
       await rig.stop()

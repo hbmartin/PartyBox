@@ -65,7 +65,6 @@ public actor NetworkFaultProxy {
         @Dependency(\.continuousClock) var continuousClock
         clock = AnyClock(continuousClock)
         self.udpSender = udpSender
-        let profile = profile.validated()
         self.profile = profile
         randomState = profile.seed
     }
@@ -138,7 +137,6 @@ public actor NetworkFaultProxy {
     }
 
     public func setProfile(_ profile: FaultProfile) {
-        let profile = profile.validated()
         self.profile = profile
         randomState = profile.seed
         packetOrdinal = 0

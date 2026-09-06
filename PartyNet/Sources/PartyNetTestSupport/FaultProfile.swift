@@ -61,15 +61,8 @@ public struct FaultProfile: Codable, Equatable, Sendable {
         try container.encode(reorderWindow, forKey: .reorderWindow)
     }
 
-    public func validated() -> Self {
-        Self(
-            seed: seed,
-            udpDropPolicy: udpDropPolicy,
-            delayMilliseconds: delayMilliseconds,
-            jitterMilliseconds: jitterMilliseconds,
-            reorderWindow: reorderWindow
-        )
-    }
+    @available(*, deprecated, message: "FaultProfile values are validated during initialization.")
+    public func validated() -> Self { self }
 
     public static let stable = FaultProfile()
 

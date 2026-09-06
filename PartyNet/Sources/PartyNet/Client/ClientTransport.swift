@@ -133,19 +133,18 @@ actor ClientTransport {
     self.browser = browser
     let generation = UUID()
     browserGeneration = generation
-    let transport = self
-    browserTask = Task { [browser, weak transport] in
+    browserTask = Task { [browser, weak self] in
       do {
-        try await browser.run { [weak transport] endpoints in
-          await transport?.publish(endpoints)
+        try await browser.run { [weak self] endpoints in
+          await self?.publish(endpoints)
         }
       } catch is CancellationError {
         // Expected on shutdown.
       } catch {
-        transport?.eventHub.yield(
+        self?.eventHub.yield(
           .discoveryFailed("Discovery failed: \(error.localizedDescription)"))
       }
-      await transport?.browserDidFinish(generation: generation)
+      await self?.browserDidFinish(generation: generation)
     }
   }
 
@@ -225,40 +224,33 @@ actor ClientTransport {
         welcome: welcome,
         startedAt: clock.now
       )
-      let transport = self
       let inputSendInterval = inputSendInterval
-      session.inputTask = Task { [clock, weak transport] in
+      session.inputTask = Task { [clock, weak self] in
         while !Task.isCancelled {
           do { try await clock.sleep(for: inputSendInterval) } catch { return }
-          guard await transport?.runInputIteration(
-            connectionID: connectionID,
-            now: clock.now
-          ) == true else { return }
+          guard await self?.runInputIteration(connectionID: connectionID) == true else { return }
         }
       }
-      session.pingTask = Task { [clock, weak transport] in
+      session.pingTask = Task { [clock, weak self] in
         while !Task.isCancelled {
           do { try await clock.sleep(for: PartyNetConstants.pingInterval) } catch { return }
-          guard await transport?.runPingIteration(
-            connectionID: connectionID,
-            now: clock.now
-          ) == true else { return }
+          guard await self?.runPingIteration(connectionID: connectionID) == true else { return }
         }
       }
       sessions[connectionID] = session
-      receiveTasks[connectionID] = Task { [connection, weak transport] in
+      receiveTasks[connectionID] = Task { [connection, weak self] in
         do {
           for try await message in connection.messages {
-            await transport?.receiveMessage(message.content, connectionID: connectionID)
+            await self?.receiveMessage(message.content, connectionID: connectionID)
           }
-          await transport?.endSession(
+          await self?.endSession(
             connectionID,
             reason: "The host closed the connection."
           )
         } catch is CancellationError {
           // Explicit disconnect or replacement.
         } catch {
-          await transport?.endSession(connectionID, reason: error.localizedDescription)
+          await self?.endSession(connectionID, reason: error.localizedDescription)
         }
       }
       pendingHandshakes.removeValue(forKey: attemptID)
@@ -360,11 +352,9 @@ actor ClientTransport {
     eventHub.yield(.message(connectionID: connectionID, message))
   }
 
-  private func runInputIteration(
-    connectionID: UUID,
-    now: AnyClock<Duration>.Instant
-  ) async -> Bool {
+  private func runInputIteration(connectionID: UUID) async -> Bool {
     guard let session = sessions[connectionID] else { return false }
+    let now = clock.now
     let acknowledgmentIsFresh =
       session.lastAcknowledgedAt.map {
         $0.duration(to: now) < PartyNetConstants.udpReadyTimeout
@@ -477,11 +467,9 @@ actor ClientTransport {
     }
   }
 
-  private func runPingIteration(
-    connectionID: UUID,
-    now: AnyClock<Duration>.Instant
-  ) async -> Bool {
+  private func runPingIteration(connectionID: UUID) async -> Bool {
     guard let session = sessions[connectionID] else { return false }
+    let now = clock.now
     if session.pingWatchdog.hasTimedOut(at: now, after: PartyNetConstants.pingTimeout) {
       endSession(connectionID, reason: "The host stopped responding.")
       return false

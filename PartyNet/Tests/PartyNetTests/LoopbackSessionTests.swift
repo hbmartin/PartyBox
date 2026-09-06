@@ -507,15 +507,19 @@ extension NetworkIntegrationTests {
         return
       }
 
+      client.setInput(axisX: 0.5)
       await client.disconnect()
       client.reconnectAfterForeground()
       try await Task.sleep(for: .milliseconds(100))
       #expect(client.state == .browsing)
+      #expect(client.rttMilliseconds == nil)
+      #expect(client.rttSampleCount == 0)
+      #expect(client.inputAxisX == 0)
       #expect(host.players.isEmpty)
       await host.stop()
     }
 
-    @Test func activeNetworkingObjectsReleaseWithoutExplicitStop() async throws {
+    @Test func activeHostTransportReleasesWithoutExplicitStop() async throws {
       weak var weakHostTransport: HostTransport?
       do {
         let transport = HostTransport(inputs: InputStore())
@@ -527,7 +531,9 @@ extension NetworkIntegrationTests {
         )
       }
       try await waitUntil { weakHostTransport == nil }
+    }
 
+    @Test func handshakingHostTransportReleasesWithoutExplicitStop() async throws {
       weak var weakHandshakingTransport: HostTransport?
       do {
         let transport = HostTransport(inputs: InputStore())
@@ -547,13 +553,16 @@ extension NetworkIntegrationTests {
           displayName: "Pending Handshake"
         )))
         var iterator = stream.makeAsyncIterator()
-        guard case .hello = await iterator.next() else {
+        if case .hello = await iterator.next() {
+          // The pending handshake is active when the last strong transport reference is released.
+        } else {
           Issue.record("Expected the transport to receive the pending handshake")
-          return
         }
       }
       try await waitUntil { weakHandshakingTransport == nil }
+    }
 
+    @Test func activeClientTransportReleasesWithoutExplicitStop() async throws {
       weak var weakClientTransport: ClientTransport?
       do {
         let transport = ClientTransport()
@@ -561,7 +570,9 @@ extension NetworkIntegrationTests {
         await transport.startBrowsing()
       }
       try await waitUntil { weakClientTransport == nil }
+    }
 
+    @Test func activePartyHostReleasesWithoutExplicitStop() async throws {
       weak var weakHost: PartyHost?
       do {
         let host = PartyHost()
@@ -569,7 +580,9 @@ extension NetworkIntegrationTests {
         _ = try await host.start(hostName: "Host Lifetime", advertise: false)
       }
       try await waitUntil { weakHost == nil }
+    }
 
+    @Test func activePartyClientReleasesWithoutExplicitStop() async throws {
       weak var weakClient: PartyClient?
       do {
         let client = PartyClient(displayName: "Client Lifetime")
@@ -577,7 +590,6 @@ extension NetworkIntegrationTests {
         await client.startBrowsing()
       }
       try await waitUntil { weakClient == nil }
-      try await Task.sleep(for: .milliseconds(100))
     }
 
     @Test func stoppingAHostTransportFinishesItsCurrentEventStream() async {

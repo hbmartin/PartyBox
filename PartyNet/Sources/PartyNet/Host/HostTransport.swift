@@ -100,16 +100,15 @@ actor HostTransport {
         using: .parameters { UDP() }.peerToPeerIncluded(false)
       )
       udpListener = udp
-      let transport = self
-      let udpTask = Task { [udp, weak transport] in
+      let udpTask = Task { [udp, weak self] in
         do {
-          try await udp.run { [weak transport] connection in
-            await transport?.acceptDatagramConnection(connection, generation: generation)
+          try await udp.run { [weak self] connection in
+            await self?.acceptDatagramConnection(connection, generation: generation)
           }
         } catch is CancellationError {
           // Expected during stop.
         } catch {
-          await transport?.listenerFailed(
+          await self?.listenerFailed(
             "UDP listener failed: \(error.localizedDescription)",
             generation: generation
           )
@@ -120,7 +119,7 @@ actor HostTransport {
         of: udp,
         clock: clock,
         operation: "starting the UDP listener",
-        validate: { try await transport.requireCurrentLifecycle(generation) }
+        validate: { try await self.requireCurrentLifecycle(generation) }
       )
       guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
       boundUDPPort = udpPort
@@ -141,15 +140,15 @@ actor HostTransport {
         using: .parameters { hostControlStack() }.peerToPeerIncluded(false)
       )
       tcpListener = tcp
-      let tcpTask = Task { [tcp, weak transport] in
+      let tcpTask = Task { [tcp, weak self] in
         do {
-          try await tcp.run { [weak transport] connection in
-            await transport?.acceptControlConnection(connection, generation: generation)
+          try await tcp.run { [weak self] connection in
+            await self?.acceptControlConnection(connection, generation: generation)
           }
         } catch is CancellationError {
           // Expected during stop.
         } catch {
-          await transport?.listenerFailed(
+          await self?.listenerFailed(
             "TCP listener failed: \(error.localizedDescription)",
             generation: generation
           )
@@ -160,7 +159,7 @@ actor HostTransport {
         of: tcp,
         clock: clock,
         operation: "starting the control listener",
-        validate: { try await transport.requireCurrentLifecycle(generation) }
+        validate: { try await self.requireCurrentLifecycle(generation) }
       )
       guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
       logger.info("PartyBox host ready on TCP \(tcpPort), UDP \(udpPort)")
@@ -180,20 +179,12 @@ actor HostTransport {
     do {
       switch decision {
       case .reject(let reason):
-        try await sendControl(
-          .rejected(reason),
-          over: connection,
-          operation: "sending a handshake rejection"
-        )
+        try await connection.send(.rejected(reason))
       case .accept(let welcome):
         tokenToPlayer[welcome.sessionToken] = welcome.player.id
         tokenToConnection[welcome.sessionToken] = connectionID
         connectionTokens[connectionID] = welcome.sessionToken
-        try await sendControl(
-          .welcome(welcome),
-          over: connection,
-          operation: "sending a host welcome"
-        )
+        try await connection.send(.welcome(welcome))
       }
       guard lifecycleGeneration == generation, connections[connectionID] != nil else {
         if case .accept(let welcome) = decision { removeToken(welcome.sessionToken) }
@@ -215,7 +206,7 @@ actor HostTransport {
     guard let connection = connections[connectionID] else {
       throw PartyNetTransportError.stopped
     }
-    try await sendControl(message, over: connection, operation: "sending a host message")
+    try await connection.send(message)
   }
 
   func invalidate(token: UInt64) {
@@ -237,11 +228,7 @@ actor HostTransport {
     if decisions[connectionID] != nil {
       _ = await respond(to: connectionID, with: .reject(.replaced))
     } else if let connection = connections[connectionID] {
-      try? await sendControl(
-        .rejected(.replaced),
-        over: connection,
-        operation: "notifying a replaced controller"
-      )
+      try? await connection.send(.rejected(.replaced))
     }
     disconnect(connectionID: connectionID)
   }
@@ -288,9 +275,8 @@ actor HostTransport {
     else { return }
     let connectionID = UUID()
     let clock = clock
-    let transport = self
-    controlTasks[connectionID] = Task { [connection, weak transport] in
-      guard await transport?.registerControlConnection(
+    controlTasks[connectionID] = Task { [connection, weak self] in
+      guard await self?.registerControlConnection(
         connection,
         connectionID: connectionID,
         generation: generation
@@ -305,7 +291,7 @@ actor HostTransport {
         }
         if case .hello(let hello) = first {
           let decisionSignal = HandshakeDecisionSignal()
-          guard await transport?.registerDecision(
+          guard await self?.registerDecision(
             connectionID: connectionID,
             hello: hello,
             generation: generation,
@@ -317,32 +303,26 @@ actor HostTransport {
             decisionSignal.resolve(.reject(.malformedHello))
           }
           if case .accept = decision,
-            await transport?.lifecycleIsCurrent(generation) == true
+            await self?.lifecycleIsCurrent(generation) == true
           {
             for try await message in connection.messages {
-              guard await transport?.lifecycleIsCurrent(generation) == true else { break }
-              await transport?.publishControlMessage(
+              guard await self?.publishControlMessage(
                 message.content,
-                connectionID: connectionID
-              )
+                connectionID: connectionID,
+                generation: generation
+              ) == true else { break }
               if case .leave = message.content { break }
             }
           }
         } else {
-          try? await withTimeout(
-            PartyNetConstants.helloTimeout,
-            clock: clock,
-            operationName: "rejecting a malformed controller hello"
-          ) {
-            try await connection.send(.rejected(.malformedHello))
-          }
+          try? await connection.send(.rejected(.malformedHello))
         }
       } catch is CancellationError {
         // Expected during shutdown.
       } catch {
-        await transport?.controlConnectionFailed(error.localizedDescription)
+        await self?.controlConnectionFailed(error.localizedDescription)
       }
-      await transport?.finishControlConnection(
+      await self?.finishControlConnection(
         connectionID: connectionID,
         generation: generation
       )
@@ -358,12 +338,9 @@ actor HostTransport {
     else { return }
     let handlerID = UUID()
     let clock = clock
-    let transport = self
-    udpTasks[handlerID] = Task { [connection, weak transport] in
+    udpTasks[handlerID] = Task { [connection, weak self] in
       do {
-        while !Task.isCancelled,
-          await transport?.lifecycleIsCurrent(generation) == true
-        {
+        while !Task.isCancelled {
           let packet = try await withTimeout(
             PartyNetConstants.udpIdleTimeout,
             clock: clock,
@@ -371,16 +348,20 @@ actor HostTransport {
           ) {
             try await connection.receive().content
           }
-          guard await transport?.processDatagram(packet, handlerID: handlerID) != false else {
+          guard await self?.processDatagram(
+            packet,
+            handlerID: handlerID,
+            generation: generation
+          ) == true else {
             break
           }
         }
       } catch is CancellationError {
         // Expected during shutdown.
       } catch {
-        await transport?.datagramFlowFailed(error.localizedDescription)
+        await self?.datagramFlowFailed(error.localizedDescription)
       }
-      await transport?.removeUDPHandler(handlerID)
+      await self?.removeUDPHandler(handlerID)
     }
   }
 
@@ -406,9 +387,14 @@ actor HostTransport {
     return true
   }
 
-  private func publishControlMessage(_ message: ClientMessage, connectionID: UUID) {
-    guard connections[connectionID] != nil else { return }
+  private func publishControlMessage(
+    _ message: ClientMessage,
+    connectionID: UUID,
+    generation: UInt64
+  ) -> Bool {
+    guard lifecycleGeneration == generation, connections[connectionID] != nil else { return false }
     eventHub.yield(.message(connectionID: connectionID, message: message))
+    return true
   }
 
   private func finishControlConnection(connectionID: UUID, generation: UInt64) {
@@ -423,7 +409,12 @@ actor HostTransport {
     }
   }
 
-  private func processDatagram(_ packet: Data, handlerID: UUID) async -> Bool {
+  private func processDatagram(
+    _ packet: Data,
+    handlerID: UUID,
+    generation: UInt64
+  ) async -> Bool {
+    guard lifecycleGeneration == generation else { return false }
     guard let frame = InputFrame(data: packet),
       let playerID = tokenToPlayer[frame.token],
       let connectionID = tokenToConnection[frame.token]
@@ -490,28 +481,10 @@ actor HostTransport {
     lastAcknowledgmentAt[frame.token] = now
     do {
       if let connection = connections[connectionID] {
-        try await sendControl(
-          .inputAck(sequence: frame.sequence),
-          over: connection,
-          operation: "acknowledging controller input"
-        )
+        try await connection.send(.inputAck(sequence: frame.sequence))
       }
     } catch {
       logger.debug("Input acknowledgment failed: \(error.localizedDescription)")
-    }
-  }
-
-  private func sendControl(
-    _ message: HostMessage,
-    over connection: HostControlConnection,
-    operation: String
-  ) async throws {
-    try await withTimeout(
-      PartyNetConstants.helloTimeout,
-      clock: clock,
-      operationName: operation
-    ) {
-      try await connection.send(message)
     }
   }
 }
