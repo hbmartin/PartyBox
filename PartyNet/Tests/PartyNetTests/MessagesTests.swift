@@ -1,3 +1,4 @@
+import Dependencies
 import Foundation
 import Testing
 @testable import PartyNet
@@ -154,26 +155,36 @@ struct MessagesTests {
         #expect(secondFinishedValue == nil)
     }
 
-    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async {
-        let hub = EventHub<Int>(bufferLimit: 2)
-        let firstStream = hub.stream()
-        let secondStream = hub.stream()
-        var secondIterator = secondStream.makeAsyncIterator()
-        var secondReceived: [Int] = []
+    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async throws {
+        let received = try await withTimeout(
+            .seconds(1),
+            clock: AnyClock(ContinuousClock()),
+            operationName: "verifying EventHub overflow termination"
+        ) {
+            let hub = EventHub<Int>(bufferLimit: 2)
+            let firstStream = hub.stream()
+            let secondStream = hub.stream()
+            var secondIterator = secondStream.makeAsyncIterator()
+            var secondReceived: [Int] = []
 
-        hub.yield(1)
-        if let value = await secondIterator.next() { secondReceived.append(value) }
-        hub.yield(2)
-        if let value = await secondIterator.next() { secondReceived.append(value) }
-        hub.yield(3)
+            hub.yield(1)
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            hub.yield(2)
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            hub.yield(3)
 
-        var firstIterator = firstStream.makeAsyncIterator()
-        #expect(await firstIterator.next() == 1)
-        #expect(await firstIterator.next() == 2)
-        #expect(await firstIterator.next() == nil)
+            var firstIterator = firstStream.makeAsyncIterator()
+            let firstReceived = [
+                await firstIterator.next(),
+                await firstIterator.next(),
+                await firstIterator.next(),
+            ]
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            return (first: firstReceived, second: secondReceived)
+        }
 
-        if let value = await secondIterator.next() { secondReceived.append(value) }
-        #expect(secondReceived == [1, 2, 3])
+        #expect(received.first == [1, 2, nil])
+        #expect(received.second == [1, 2, 3])
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

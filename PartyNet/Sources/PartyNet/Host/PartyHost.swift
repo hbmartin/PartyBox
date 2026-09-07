@@ -146,14 +146,34 @@ public final class PartyHost {
         let connectionIDs = sessions.values.compactMap { session in
             session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
         }
-        for connectionID in connectionIDs {
-            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
-            do {
-                try await transport?.send(message, to: connectionID)
-            } catch {
-                logger.debug(
-                    "Broadcast to connection \(connectionID) failed: \(error.localizedDescription)"
-                )
+        guard let transport else { return }
+        await withTaskGroup(
+            of: (connectionID: UUID, errorDescription: String)?.self
+        ) { group in
+            for connectionID in connectionIDs {
+                group.addTask {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        try await transport.send(message, to: connectionID)
+                        return nil
+                    } catch {
+                        return (
+                            connectionID: connectionID,
+                            errorDescription: error.localizedDescription
+                        )
+                    }
+                }
+            }
+            for await failure in group {
+                guard !Task.isCancelled, lifecycleGeneration == generation else {
+                    group.cancelAll()
+                    return
+                }
+                if let failure {
+                    logger.debug(
+                        "Broadcast to connection \(failure.connectionID) failed: \(failure.errorDescription)"
+                    )
+                }
             }
         }
     }
