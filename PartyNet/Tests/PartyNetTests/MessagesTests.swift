@@ -1,3 +1,4 @@
+import Dependencies
 import Foundation
 import Testing
 @testable import PartyNet
@@ -154,21 +155,36 @@ struct MessagesTests {
         #expect(secondFinishedValue == nil)
     }
 
-    @Test func eventHubPreservesMoreThanTheFormerBufferLimit() async {
-        let hub = EventHub<Int>()
-        let stream = hub.stream()
-        let eventCount = 4_097
+    @Test func eventHubEndsAnOverwhelmedSubscriptionWithoutDroppingOlderEvents() async throws {
+        let received = try await withTimeout(
+            .seconds(1),
+            clock: AnyClock(ContinuousClock()),
+            operationName: "verifying EventHub overflow termination"
+        ) {
+            let hub = EventHub<Int>(bufferLimit: 2)
+            let firstStream = hub.stream()
+            let secondStream = hub.stream()
+            var secondIterator = secondStream.makeAsyncIterator()
+            var secondReceived: [Int] = []
 
-        for value in 0..<eventCount { hub.yield(value) }
+            hub.yield(1)
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            hub.yield(2)
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            hub.yield(3)
 
-        var iterator = stream.makeAsyncIterator()
-        var received: [Int] = []
-        for _ in 0..<eventCount {
-            if let value = await iterator.next() { received.append(value) }
+            var firstIterator = firstStream.makeAsyncIterator()
+            let firstReceived = [
+                await firstIterator.next(),
+                await firstIterator.next(),
+                await firstIterator.next(),
+            ]
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            return (first: firstReceived, second: secondReceived)
         }
-        #expect(received == Array(0..<eventCount))
-        hub.finish()
-        #expect(await iterator.next() == nil)
+
+        #expect(received.first == [1, 2, nil])
+        #expect(received.second == [1, 2, 3])
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

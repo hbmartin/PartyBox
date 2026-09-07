@@ -88,7 +88,15 @@ public final class PartyHost {
         errorMessage = nil
         let transport = HostTransport(inputs: inputs)
         self.transport = transport
-        let stream = transport.events
+        let stream = transport.eventStream { [weak self, weak transport] in
+            Task { @MainActor [weak self, weak transport] in
+                guard let self, let transport else { return }
+                await self.transportEventStreamOverwhelmed(
+                    transport,
+                    generation: generation
+                )
+            }
+        }
         transportTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
@@ -138,14 +146,49 @@ public final class PartyHost {
         let connectionIDs = sessions.values.compactMap { session in
             session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
         }
-        for connectionID in connectionIDs {
-            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
-            do {
-                try await transport?.send(message, to: connectionID)
-            } catch {
-                logger.debug("Broadcast failed: \(error.localizedDescription)")
+        guard let transport else { return }
+        await withTaskGroup(
+            of: (connectionID: UUID, errorDescription: String)?.self
+        ) { group in
+            for connectionID in connectionIDs {
+                group.addTask {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        try await transport.send(message, to: connectionID)
+                        return nil
+                    } catch {
+                        return (
+                            connectionID: connectionID,
+                            errorDescription: error.localizedDescription
+                        )
+                    }
+                }
+            }
+            for await failure in group {
+                guard !Task.isCancelled, lifecycleGeneration == generation else {
+                    group.cancelAll()
+                    return
+                }
+                if let failure {
+                    logger.debug(
+                        "Broadcast to connection \(failure.connectionID) failed: \(failure.errorDescription)"
+                    )
+                }
             }
         }
+    }
+
+    private func transportEventStreamOverwhelmed(
+        _ transport: HostTransport,
+        generation: UInt64
+    ) async {
+        guard lifecycleGeneration == generation, self.transport === transport else { return }
+        lifecycleGeneration &+= 1
+        let activeTransport = prepareToStop()
+        let message = "The host transport event stream could not keep up."
+        errorMessage = message
+        eventHub.yield(.failure(message))
+        await activeTransport?.stop()
     }
 
     public func stop() async {

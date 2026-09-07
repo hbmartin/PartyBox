@@ -20,6 +20,8 @@ private final class HandshakeDecisionSignal: @unchecked Sendable {
   private var decision: HandshakeDecision?
   private var continuation: CheckedContinuation<HandshakeDecision, Never>?
 
+  deinit {}
+
   func wait() async -> HandshakeDecision {
     await withCheckedContinuation { continuation in
       lock.lock()
@@ -50,6 +52,12 @@ private final class HandshakeDecisionSignal: @unchecked Sendable {
 
 actor HostTransport {
   nonisolated var events: AsyncStream<HostTransportEvent> { eventHub.stream() }
+
+  nonisolated func eventStream(
+    onOverflow: @escaping @Sendable () -> Void
+  ) -> AsyncStream<HostTransportEvent> {
+    eventHub.stream(onOverflow: onOverflow)
+  }
 
   private nonisolated let eventHub = EventHub<HostTransportEvent>()
   private let inputs: InputStore
@@ -179,12 +187,22 @@ actor HostTransport {
     do {
       switch decision {
       case .reject(let reason):
-        try await connection.send(.rejected(reason))
+        try await sendControl(
+          .rejected(reason),
+          over: connection,
+          connectionID: connectionID,
+          operation: "sending a handshake rejection"
+        )
       case .accept(let welcome):
         tokenToPlayer[welcome.sessionToken] = welcome.player.id
         tokenToConnection[welcome.sessionToken] = connectionID
         connectionTokens[connectionID] = welcome.sessionToken
-        try await connection.send(.welcome(welcome))
+        try await sendControl(
+          .welcome(welcome),
+          over: connection,
+          connectionID: connectionID,
+          operation: "sending a host welcome"
+        )
       }
       guard lifecycleGeneration == generation, connections[connectionID] != nil else {
         if case .accept(let welcome) = decision { removeToken(welcome.sessionToken) }
@@ -206,7 +224,12 @@ actor HostTransport {
     guard let connection = connections[connectionID] else {
       throw PartyNetTransportError.stopped
     }
-    try await connection.send(message)
+    try await sendControl(
+      message,
+      over: connection,
+      connectionID: connectionID,
+      operation: "sending a host message"
+    )
   }
 
   func invalidate(token: UInt64) {
@@ -228,7 +251,12 @@ actor HostTransport {
     if decisions[connectionID] != nil {
       _ = await respond(to: connectionID, with: .reject(.replaced))
     } else if let connection = connections[connectionID] {
-      try? await connection.send(.rejected(.replaced))
+      try? await sendControl(
+        .rejected(.replaced),
+        over: connection,
+        connectionID: connectionID,
+        operation: "notifying a replaced controller"
+      )
     }
     disconnect(connectionID: connectionID)
   }
@@ -315,7 +343,12 @@ actor HostTransport {
             }
           }
         } else {
-          try? await connection.send(.rejected(.malformedHello))
+          try? await self?.sendControl(
+            .rejected(.malformedHello),
+            over: connection,
+            connectionID: connectionID,
+            operation: "rejecting a malformed controller hello"
+          )
         }
       } catch is CancellationError {
         // Expected during shutdown.
@@ -481,10 +514,39 @@ actor HostTransport {
     lastAcknowledgmentAt[frame.token] = now
     do {
       if let connection = connections[connectionID] {
-        try await connection.send(.inputAck(sequence: frame.sequence))
+        try await sendControl(
+          .inputAck(sequence: frame.sequence),
+          over: connection,
+          connectionID: connectionID,
+          operation: "acknowledging controller input"
+        )
       }
     } catch {
       logger.debug("Input acknowledgment failed: \(error.localizedDescription)")
+    }
+  }
+
+  private func sendControl(
+    _ message: HostMessage,
+    over connection: HostControlConnection,
+    connectionID: UUID,
+    operation: String
+  ) async throws {
+    do {
+      try await withTimeout(
+        PartyNetConstants.helloTimeout,
+        clock: clock,
+        operationName: operation
+      ) {
+        try await connection.send(message)
+      }
+    } catch {
+      if let transportError = error as? PartyNetTransportError,
+        case .timedOut = transportError
+      {
+        disconnect(connectionID: connectionID)
+      }
+      throw error
     }
   }
 }

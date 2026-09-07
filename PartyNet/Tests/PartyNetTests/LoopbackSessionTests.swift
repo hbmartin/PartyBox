@@ -553,10 +553,9 @@ extension NetworkIntegrationTests {
           displayName: "Pending Handshake"
         )))
         var iterator = stream.makeAsyncIterator()
-        if case .hello = await iterator.next() {
-          // The pending handshake is active when the last strong transport reference is released.
-        } else {
+        guard case .hello = await iterator.next() else {
           Issue.record("Expected the transport to receive the pending handshake")
+          return
         }
       }
       try await waitUntil { weakHandshakingTransport == nil }
