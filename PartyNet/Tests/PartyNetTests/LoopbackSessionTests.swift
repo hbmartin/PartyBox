@@ -95,18 +95,18 @@ extension NetworkIntegrationTests {
     }
 
     private actor EventRecorder {
-      private(set) var feedback: [Feedback] = []
-      private(set) var menuActions: [MenuAction] = []
+      private(set) var clientPayloads: [Data] = []
+      private(set) var hostPayloads: [Data] = []
       private(set) var expiredPlayers: [PlayerInfo] = []
 
       func record(_ event: ClientEvent) {
-        if case .feedback(let value) = event { feedback.append(value) }
+        if case .application(let value) = event { clientPayloads.append(value) }
       }
 
       func record(_ event: HostEvent) {
         switch event {
-        case .menu(_, let action):
-          menuActions.append(action)
+        case .application(_, let payload):
+          hostPayloads.append(payload)
         case .playerExpired(let player):
           expiredPlayers.append(player)
         default:
@@ -114,9 +114,8 @@ extension NetworkIntegrationTests {
         }
       }
 
-      func contains(feedback expectedFeedback: [Feedback], menu expectedMenu: [MenuAction]) -> Bool
-      {
-        feedback == expectedFeedback && menuActions == expectedMenu
+      func contains(client expectedClient: Data, host expectedHost: Data) -> Bool {
+        clientPayloads.contains(expectedClient) && hostPayloads.contains(expectedHost)
       }
 
       func containsExpiredPlayer(named name: String) -> Bool {
@@ -344,7 +343,7 @@ extension NetworkIntegrationTests {
       await host.stop()
     }
 
-    @Test func propagatesRosterLayoutFeedbackMenuAndPing() async throws {
+    @Test func propagatesOpaqueApplicationPayloadsAndPing() async throws {
       let host = PartyHost()
       let port = try await host.start(hostName: "Propagation Host", advertise: false)
       let client = PartyClient(displayName: "Signals")
@@ -361,43 +360,36 @@ extension NetworkIntegrationTests {
       }
 
       await client.connect(host: "127.0.0.1", port: port)
-      try await waitUntil { client.roster.count == 1 }
-      let spectatorLayout = ControllerLayout.spectator(SpectatorLayout(queuePosition: 3))
-      await host.send(.layout(spectatorLayout), to: PlayerID(0))
-      await host.send(.feedback(.paddleHit), to: PlayerID(0))
-      await client.sendMenu(.right)
+      try await waitUntil { host.players.count == 1 }
+      let hostPayload = Data("host presentation".utf8)
+      let clientPayload = Data("controller command".utf8)
+      await host.send(.application(hostPayload), to: PlayerID(0))
+      #expect(await client.sendApplication(clientPayload))
       client.reconnectAfterForeground()
 
-      try await waitUntil {
-        client.layout == spectatorLayout && client.rttSampleCount > 0
-      }
+      try await waitUntil { client.rttSampleCount > 0 }
       try await waitUntilAsync {
-        await recorder.contains(feedback: [.paddleHit], menu: [.right])
+        await recorder.contains(client: hostPayload, host: clientPayload)
       }
 
       await client.disconnect()
       await host.stop()
     }
 
-    @Test func repeatedPaddleLayoutPreservesTheObservableControllerAxis() async throws {
+    @Test func repeatedApplicationPayloadPreservesTheObservableControllerAxis() async throws {
       let host = PartyHost()
       let port = try await host.start(hostName: "Paddle Reset Host", advertise: false)
       let client = PartyClient(displayName: "Paddle")
       await client.connect(host: "127.0.0.1", port: port)
-      let layout = ControllerLayout.paddle(PaddleLayout(
-        edge: .bottom,
-        colorHex: "#32E6FF",
-        label: "P1 Paddle"
-      ))
-
-      await host.send(.layout(layout), to: PlayerID(0))
-      try await waitUntil { client.layout == layout }
+      let payload = Data("same presentation".utf8)
+      await host.send(.application(payload), to: PlayerID(0))
+      try await waitUntil { host.players.count == 1 }
       client.setInput(axisX: 0.75)
       #expect(client.inputAxisX == 0.75)
 
       let pingCount = client.rttSampleCount
-      await host.send(.layout(layout), to: PlayerID(0))
-      await host.send(.pong(DispatchTime.now().uptimeNanoseconds), to: PlayerID(0))
+      await host.send(.application(payload), to: PlayerID(0))
+      await host.send(.pingResponse(DispatchTime.now().uptimeNanoseconds), to: PlayerID(0))
       try await waitUntil { client.rttSampleCount > pingCount }
       #expect(client.inputAxisX == 0.75)
 
@@ -494,24 +486,15 @@ extension NetworkIntegrationTests {
 
       await client.connect(host: "127.0.0.1", port: firstPort)
       await firstHostPeer.connect(host: "127.0.0.1", port: firstPort)
-      try await waitUntil { client.roster.count == 2 }
-      let staleLayout = ControllerLayout.paddle(PaddleLayout(
-        edge: .right,
-        colorHex: "#32E6FF",
-        label: "Old Host Paddle"
-      ))
-      await firstHost.send(.layout(staleLayout), to: PlayerID(0))
-      try await waitUntil { client.layout == staleLayout }
+      try await waitUntil { firstHost.players.count == 2 }
       client.setInput(axisX: 0.625)
 
       await client.connect(host: "127.0.0.1", port: secondPort)
 
       try await waitUntil {
         firstHost.players.count == 1 && secondHost.players.count == 1
-          && !client.roster.contains { $0.displayName == "Old Host Peer" }
       }
       #expect(client.player?.id == PlayerID(0))
-      #expect(client.layout == .lobby)
       #expect(client.inputAxisX == 0)
       await firstHostPeer.disconnect()
       await client.disconnect()
@@ -756,10 +739,10 @@ extension NetworkIntegrationTests {
       await writeFault.enable()
 
       await #expect(throws: InjectedWriteError.self) {
-        try await transport.send(.layout(.lobby), to: connectionID)
+        try await transport.send(.application(Data([1])), to: connectionID)
       }
       await #expect(throws: PartyNetTransportError.self) {
-        try await transport.send(.layout(.lobby), to: connectionID)
+        try await transport.send(.application(Data([1])), to: connectionID)
       }
       await transport.stop()
     }
@@ -770,7 +753,7 @@ extension NetworkIntegrationTests {
         HostTransport(
           inputs: inputs,
           controlSender: { connection, message in
-            if case .layout = message {
+            if case .application = message {
               await broadcastWrites.markStarted()
               try await Task.sleep(for: .seconds(30))
               return
@@ -787,7 +770,7 @@ extension NetworkIntegrationTests {
       try await waitUntil { host.players.count == 2 }
 
       let broadcastTask = Task {
-        await host.broadcast(.layout(.lobby))
+        await host.broadcast(.application(Data([1])))
       }
       try await waitUntilAsync { await broadcastWrites.count == 2 }
       await host.stop()
@@ -841,7 +824,7 @@ extension NetworkIntegrationTests {
           )
         }
         let sendTask = Task {
-          try await transport.send(.menu(.select), connectionID: connectionID)
+          try await transport.send(.application(Data([1])), connectionID: connectionID)
         }
         try await waitUntilAsync { await stalledWrite.started }
         await clock.advance(by: PartyNetConstants.helloTimeout)
@@ -851,7 +834,7 @@ extension NetworkIntegrationTests {
           try await sendTask.value
         }
         await #expect(throws: PartyNetTransportError.self) {
-          try await transport.send(.menu(.select), connectionID: connectionID)
+          try await transport.send(.application(Data([1])), connectionID: connectionID)
         }
         await transport.stop()
       }

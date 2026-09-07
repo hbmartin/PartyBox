@@ -20,9 +20,10 @@ final class PongScene: SKScene {
         players: [PlayerInfo],
         inputs: InputStore,
         seed: UInt64 = UInt64.random(in: 1...UInt64.max),
+        rules: PongRules = PongRules(),
         onEvents: @escaping ([PongEvent]) -> Void
     ) {
-        simulation = PongSimulation(assignments: assignments, seed: seed)
+        simulation = PongSimulation(assignments: assignments, seed: seed, rules: rules)
         inputStore = inputs
         playerInfo = Dictionary(uniqueKeysWithValues: players.map { ($0.id, $0) })
         self.onEvents = onEvents
@@ -37,8 +38,7 @@ final class PongScene: SKScene {
     required init?(coder: NSCoder) { nil }
 
     override func update(_ currentTime: TimeInterval) {
-        let snapshot = inputStore.snapshot()
-        for (playerID, frame) in snapshot {
+        inputStore.forEachFrame { playerID, frame in
             simulation.setPaddle(for: playerID, normalizedPosition: Double(frame.axisX))
         }
 
@@ -59,6 +59,10 @@ final class PongScene: SKScene {
             animate(events)
             onEvents(events)
         }
+    }
+
+    func edge(for playerID: PlayerID) -> PaddleEdge? {
+        simulation.edge(for: playerID)
     }
 
     private func buildScene(assignments: [SeatAssignment]) {
@@ -90,8 +94,8 @@ final class PongScene: SKScene {
             let color = SKColor.partyHex(info?.colorHex ?? "#FFFFFF")
             let horizontal = assignment.edge == .bottom || assignment.edge == .top
             let size = horizontal
-                ? CGSize(width: PongSimulation.paddleLength, height: PongSimulation.paddleThickness)
-                : CGSize(width: PongSimulation.paddleThickness, height: PongSimulation.paddleLength)
+                ? CGSize(width: simulation.rules.paddleLength, height: PongSimulation.paddleThickness)
+                : CGSize(width: PongSimulation.paddleThickness, height: simulation.rules.paddleLength)
             let paddle = SKShapeNode(rectOf: size, cornerRadius: 12)
             paddle.fillColor = color
             paddle.strokeColor = .white.withAlphaComponent(0.8)
@@ -153,7 +157,7 @@ final class PongScene: SKScene {
 
         for edge in PaddleEdge.allCases {
             guard let player = simulation.players[edge] else { continue }
-            let travel = PongSimulation.arenaHalfExtent - (PongSimulation.paddleLength / 2)
+            let travel = PongSimulation.arenaHalfExtent - (simulation.rules.paddleLength / 2)
             let offset = player.paddlePosition * travel
             paddleNodes[edge]?.position = paddlePosition(for: edge, tangent: offset)
             paddleNodes[edge]?.isHidden = !player.isActive
@@ -166,7 +170,7 @@ final class PongScene: SKScene {
         for event in events {
             switch event {
             case let .paddleHit(playerID):
-                guard let edge = simulation.players.first(where: { $0.value.playerID == playerID })?.key else { continue }
+                guard let edge = simulation.edge(for: playerID) else { continue }
                 paddleNodes[edge]?.run(.sequence([
                     .scale(to: 1.18, duration: 0.045),
                     .scale(to: 1, duration: 0.10),
@@ -176,13 +180,13 @@ final class PongScene: SKScene {
                     .fadeAlpha(to: 1, duration: 0.07),
                 ]))
             case let .lostLife(playerID, _):
-                guard let edge = simulation.players.first(where: { $0.value.playerID == playerID })?.key else { continue }
+                guard let edge = simulation.edge(for: playerID) else { continue }
                 lifeLabels[edge]?.run(.sequence([
                     .scale(to: 1.45, duration: 0.08),
                     .scale(to: 1, duration: 0.18),
                 ]))
             case let .eliminated(playerID), let .forfeited(playerID):
-                guard let edge = simulation.players.first(where: { $0.value.playerID == playerID })?.key else { continue }
+                guard let edge = simulation.edge(for: playerID) else { continue }
                 lifeLabels[edge]?.run(.fadeAlpha(to: 0.2, duration: 0.25))
             case .gameOver:
                 break

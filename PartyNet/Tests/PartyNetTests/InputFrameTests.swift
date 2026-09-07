@@ -21,12 +21,17 @@ struct InputFrameTests {
             0x00, 0x00, 0x00, 0x3F,
             0x00, 0x00, 0x80, 0xBE,
             0x05, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x80, 0x3F,
+            0x00, 0x00, 0x00, 0x00,
         ])
         #expect(InputFrame(data: data) == frame)
     }
 
     @Test func rejectsWrongLengthAndNonFiniteAxes() {
-        for byteCount in [0, 27, 29, 64] {
+        for byteCount in [0, 28, 47, 49, 64] {
             #expect(InputFrame(data: Data(repeating: 0, count: byteCount)) == nil)
         }
 
@@ -47,5 +52,30 @@ struct InputFrameTests {
         let decoded = InputFrame(data: frame.encode())
         #expect(decoded?.axisX == 1)
         #expect(decoded?.axisY == -1)
+    }
+
+    @Test func normalizesAvailableOrientationAndSuppressesUnavailableMotion() throws {
+        let available = InputFrame(
+            token: 1, sequence: 2, clientTimeMs: 3, axisX: 0, axisY: 0,
+            orientation: .init(x: 0, y: 0, z: 0, w: 2), flags: .motionAvailable
+        )
+        let decoded = try #require(InputFrame(data: available.encode()))
+        #expect(decoded.orientation == .identity)
+        #expect(decoded.flags == .motionAvailable)
+
+        let unavailable = InputFrame(
+            token: 1, sequence: 2, clientTimeMs: 3, axisX: 0, axisY: 0,
+            orientation: .init(x: 1, y: 0, z: 0, w: 0)
+        )
+        #expect(InputFrame(data: unavailable.encode())?.orientation == .identity)
+    }
+
+    @Test func rejectsInvalidAvailableOrientation() {
+        let invalid = InputFrame(
+            token: 1, sequence: 2, clientTimeMs: 3, axisX: 0, axisY: 0,
+            orientation: .init(x: .nan, y: 0, z: 0, w: 1), flags: .motionAvailable
+        )
+        #expect(invalid.validated == nil)
+        #expect(InputFrame(data: invalid.encode()) == nil)
     }
 }

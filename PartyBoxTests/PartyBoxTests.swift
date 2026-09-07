@@ -1,4 +1,6 @@
 import Dependencies
+import PartyBoxCore
+import PartyGameRuntime
 import PartyNet
 import Testing
 @testable import PartyBox
@@ -151,6 +153,38 @@ struct PartyBoxTests {
         #expect(game.players[.top]?.isActive == false)
     }
 
+    @Test func pongPublishesItsOwnCapacityControllerLayoutAndModifiers() throws {
+        let game = PongGame()
+        #expect(game.descriptor.minimumPlayers == 1)
+        #expect(game.descriptor.maximumPlayers == 4)
+        #expect(game.descriptor.modifiers.map(\.id) == ["fast-ball", "big-paddles", "extra-life"])
+
+        let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let session = game.makeSession(
+            context: .init(
+                participants: [.init(player: player, controllerID: ControllerID())],
+                inputs: InputStore(), seed: 42, modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+        let screen = session.controllerScreen(for: bottom)
+        #expect(screen.isValid)
+        #expect(screen.accessibilityID == "controller.layout.paddle.bottom")
+        #expect(screen.components.contains { if case .axisSurface = $0 { true } else { false } })
+    }
+
+    @Test func pongModifiersApplyTheSpecifiedRuleChanges() {
+        let normal = PongRules()
+        #expect(PongGame.rules(for: "fast-ball").startingSpeed == normal.startingSpeed * 1.25)
+        #expect(PongGame.rules(for: "big-paddles").paddleLength == normal.paddleLength * 1.35)
+        #expect(PongGame.rules(for: "extra-life").initialLives == 4)
+        let extraLife = PongSimulation(
+            assignments: [.init(playerID: bottom, edge: .bottom)],
+            rules: PongGame.rules(for: "extra-life")
+        )
+        #expect(extraLife.players[.bottom]?.lives == 4)
+    }
+
     @Test func seededLongRunMaintainsInvariantsAndScriptedMatchCompletes() {
         var game = PongSimulation(assignments: PaddleEdge.allCases.enumerated().map {
             SeatAssignment(playerID: PlayerID(UInt8($0.offset)), edge: $0.element)
@@ -195,7 +229,7 @@ struct PartyBoxTests {
             for client in clients {
                 await client.connect(host: "127.0.0.1", port: port)
             }
-            try await waitUntil { coordinator.seatQueue.active.count == 3 }
+            try await waitUntil { coordinator.turnOrder.players.count == 3 }
 
             clients[0].setInput(axisX: 0.75)
             try await waitUntil { coordinator.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.75 }
@@ -204,13 +238,14 @@ struct PartyBoxTests {
 
             #expect(coordinator.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0)
             try await waitUntil {
-                self.paddleEdge(of: clients[1]) == .top && self.paddleEdge(of: clients[2]) == .left
+                self.paddleEdge(of: PlayerID(1), coordinator: coordinator) == .top
+                    && self.paddleEdge(of: PlayerID(2), coordinator: coordinator) == .left
             }
             await clients[0].disconnect()
-            try await waitUntil { coordinator.seatQueue.active.count == 2 }
+            try await waitUntil { coordinator.turnOrder.players.count == 2 }
 
-            #expect(paddleEdge(of: clients[1]) == .top)
-            #expect(paddleEdge(of: clients[2]) == .left)
+            #expect(paddleEdge(of: PlayerID(1), coordinator: coordinator) == .top)
+            #expect(paddleEdge(of: PlayerID(2), coordinator: coordinator) == .left)
             for client in clients.dropFirst() { await client.disconnect() }
             await coordinator.stop()
         }
@@ -230,9 +265,8 @@ struct PartyBoxTests {
     }
 
     @MainActor
-    private func paddleEdge(of client: PartyClient) -> PaddleEdge? {
-        guard case let .paddle(layout) = client.layout else { return nil }
-        return layout.edge
+    private func paddleEdge(of playerID: PlayerID, coordinator: HostCoordinator) -> PaddleEdge? {
+        (coordinator.currentScene as? PongScene)?.edge(for: playerID)
     }
 
     private func assertInvariants(_ game: PongSimulation) {

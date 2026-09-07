@@ -26,6 +26,14 @@ public final class InputStore: Sendable {
         state.withLock { $0.frames }
     }
 
+    public func forEachFrame(_ body: (PlayerID, InputFrame) -> Void) {
+        state.withLock { state in
+            for (playerID, frame) in state.frames {
+                body(playerID, frame)
+            }
+        }
+    }
+
     public func remove(_ playerID: PlayerID) {
         state.withLock { state in
             _ = state.frames.removeValue(forKey: playerID)
@@ -44,7 +52,9 @@ public final class InputStore: Sendable {
                     sequence: frame.sequence,
                     clientTimeMs: frame.clientTimeMs,
                     axisX: 0,
-                    axisY: 0
+                    axisY: 0,
+                    orientation: frame.orientation,
+                    flags: frame.flags
                 )
             }
         }

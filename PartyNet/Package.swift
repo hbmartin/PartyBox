@@ -19,6 +19,8 @@ let package = Package(
             name: "PartyNetTestSupport",
             targets: ["PartyNetTestSupport"]
         ),
+        .library(name: "PartyBoxCore", targets: ["PartyBoxCore"]),
+        .library(name: "PartyGameRuntime", targets: ["PartyGameRuntime"]),
         .executable(
             name: "partyfault",
             targets: ["partyfault"]
@@ -48,6 +50,8 @@ let package = Package(
                 .product(name: "Dependencies", package: "swift-dependencies"),
             ]
         ),
+        .target(name: "PartyBoxCore", dependencies: ["PartyNet"]),
+        .target(name: "PartyGameRuntime", dependencies: ["PartyNet", "PartyBoxCore"]),
         .executableTarget(
             name: "partyfault",
             dependencies: ["PartyNet", "PartyNetTestSupport"]
@@ -60,6 +64,10 @@ let package = Package(
                 .product(name: "Dependencies", package: "swift-dependencies"),
                 .product(name: "DependenciesTestSupport", package: "swift-dependencies"),
             ]
+        ),
+        .testTarget(
+            name: "PartyBoxCoreTests",
+            dependencies: ["PartyBoxCore", "PartyNet"]
         ),
     ]
 )

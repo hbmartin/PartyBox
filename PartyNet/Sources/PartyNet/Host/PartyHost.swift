@@ -8,7 +8,8 @@ public enum HostEvent: Sendable {
     case playerReconnected(PlayerInfo)
     case playerDisconnected(PlayerInfo)
     case playerExpired(PlayerInfo)
-    case menu(playerID: PlayerID, action: MenuAction)
+    case rosterChanged([PlayerInfo])
+    case application(playerID: PlayerID, payload: Data)
     case failure(String)
 }
 
@@ -69,9 +70,6 @@ public final class PartyHost {
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
     private var broadcastTasks: [UUID: Task<Void, Never>] = [:]
-    private var rosterBroadcastTask: Task<Void, Never>?
-    private var rosterBroadcastGeneration = UUID()
-    private var pendingRosterBroadcast: [PlayerInfo]?
     private var pendingRenames: [ControllerID: PendingRename] = [:]
     private var renameWorkers: [ControllerID: RenameWorker] = [:]
     private var sessions: [ControllerID: PlayerSession] = [:]
@@ -102,7 +100,6 @@ public final class PartyHost {
     isolated deinit {
         transportTask?.cancel()
         broadcastTasks.values.forEach { $0.cancel() }
-        rosterBroadcastTask?.cancel()
         renameWorkers.values.forEach { $0.task.cancel() }
         sessions.values.forEach { $0.graceTask?.cancel() }
     }
@@ -162,6 +159,8 @@ public final class PartyHost {
     }
 
     public func send(_ message: HostMessage, to playerID: PlayerID) async {
+        if case .application(let payload) = message,
+           payload.count > PartyNetConstants.maximumApplicationPayloadBytes { return }
         guard let session = sessions.values.first(where: {
                   $0.playerID == playerID && $0.isAdmitted && $0.isWelcomedConnection
               }),
@@ -173,7 +172,29 @@ public final class PartyHost {
         }
     }
 
+    public func controllerID(for playerID: PlayerID) -> ControllerID? {
+        sessions.values.first { $0.playerID == playerID && $0.isAdmitted }?.controllerID
+    }
+
+    @discardableResult
+    public func sendApplication(_ payload: Data, to playerID: PlayerID) async -> Bool {
+        guard payload.count <= PartyNetConstants.maximumApplicationPayloadBytes else { return false }
+        guard let session = sessions.values.first(where: {
+                  $0.playerID == playerID && $0.isAdmitted && $0.isWelcomedConnection
+              }),
+              let connectionID = session.connectionID else { return false }
+        do {
+            try await transport?.send(.application(payload), to: connectionID)
+            return true
+        } catch {
+            logger.debug("Application send to player \(playerID.rawValue) failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     public func broadcast(_ message: HostMessage) async {
+        if case .application(let payload) = message,
+           payload.count > PartyNetConstants.maximumApplicationPayloadBytes { return }
         let generation = lifecycleGeneration
         let connectionIDs = sessions.values.compactMap { session in
             session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
@@ -256,10 +277,6 @@ public final class PartyHost {
         transportTask = nil
         broadcastTasks.values.forEach { $0.cancel() }
         broadcastTasks.removeAll()
-        rosterBroadcastTask?.cancel()
-        rosterBroadcastTask = nil
-        rosterBroadcastGeneration = UUID()
-        pendingRosterBroadcast = nil
         renameWorkers.values.forEach { $0.task.cancel() }
         renameWorkers.removeAll()
         pendingRenames.removeAll()
@@ -421,7 +438,6 @@ public final class PartyHost {
         sessions[hello.controllerID] = admitted
         refreshPlayers()
         eventHub.yield(event)
-        enqueueRosterBroadcast()
     }
 
     private func abandonReconnectHandshake(
@@ -449,7 +465,6 @@ public final class PartyHost {
             session.graceTask?.cancel()
             inputs.remove(session.playerID)
             refreshPlayers()
-            enqueueRosterBroadcast()
             if let token = session.sessionToken { await transport?.invalidate(token: token) }
             await transport?.disconnect(connectionID: connectionID)
         } else {
@@ -478,13 +493,14 @@ public final class PartyHost {
                 connectionID: connectionID,
                 generation: generation
             )
-        case let .menu(action):
-            eventHub.yield(.menu(playerID: session.playerID, action: action))
+        case let .application(payload):
+            guard payload.count <= PartyNetConstants.maximumApplicationPayloadBytes else { return }
+            eventHub.yield(.application(playerID: session.playerID, payload: payload))
         case let .input(frame):
             guard frame.token == session.sessionToken else { return }
             _ = inputs.update(frame, for: session.playerID)
         case let .ping(value):
-            await send(.pong(value), to: session.playerID)
+            await send(.pingResponse(value), to: session.playerID)
         case .leave:
             await expire(controllerID: controllerID, generation: generation)
         }
@@ -521,7 +537,6 @@ public final class PartyHost {
         if wasAdmitted {
             let player = info(for: session, connected: false)
             eventHub.yield(.playerDisconnected(player))
-            enqueueRosterBroadcast()
         }
         if let token { await transport?.invalidate(token: token) }
     }
@@ -545,7 +560,6 @@ public final class PartyHost {
         refreshPlayers()
         if session.isAdmitted {
             eventHub.yield(.playerExpired(info(for: session, connected: false)))
-            enqueueRosterBroadcast()
         }
         if let connectionID = session.connectionID {
             await transport?.disconnect(connectionID: connectionID)
@@ -588,7 +602,6 @@ public final class PartyHost {
         session.displayName = sanitized
         sessions[controllerID] = session
         refreshPlayers()
-        enqueueRosterBroadcast()
     }
 
     private func startRenameWorker(
@@ -644,33 +657,6 @@ public final class PartyHost {
         pendingRenames.removeValue(forKey: controllerID)
     }
 
-    private func enqueueRosterBroadcast() {
-        pendingRosterBroadcast = players
-        guard rosterBroadcastTask == nil else { return }
-        let generation = rosterBroadcastGeneration
-        let lifecycleGeneration = lifecycleGeneration
-        rosterBroadcastTask = Task { [weak self] in
-            await self?.drainRosterBroadcasts(
-                generation: generation,
-                lifecycleGeneration: lifecycleGeneration
-            )
-        }
-    }
-
-    private func drainRosterBroadcasts(generation: UUID, lifecycleGeneration: UInt64) async {
-        while !Task.isCancelled,
-              self.lifecycleGeneration == lifecycleGeneration,
-              rosterBroadcastGeneration == generation,
-              let roster = pendingRosterBroadcast {
-            pendingRosterBroadcast = nil
-            await broadcast(.roster(roster))
-        }
-        if self.lifecycleGeneration == lifecycleGeneration,
-           rosterBroadcastGeneration == generation {
-            rosterBroadcastTask = nil
-        }
-    }
-
     private func lowestAvailablePlayerID() -> PlayerID? {
         let used = Set(sessions.values.map(\.playerID))
         return (0..<PartyNetConstants.maximumControllers)
@@ -697,5 +683,6 @@ public final class PartyHost {
                 )
             }
             .sorted { $0.id < $1.id }
+        eventHub.yield(.rosterChanged(players))
     }
 }

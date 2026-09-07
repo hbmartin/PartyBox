@@ -29,7 +29,7 @@ struct MessagesTests {
         let messages: [ClientMessage] = [
             .hello(Hello(controllerID: ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!), displayName: "Harold")),
             .rename("A new name"),
-            .menu(.select),
+            .application(Data([0x01, 0x02, 0x03])),
             .input(frame),
             .ping(44),
             .leave,
@@ -51,17 +51,16 @@ struct MessagesTests {
             .rejected(.versionMismatch(hostVersion: 3)),
             .rejected(.malformedHello),
             .rejected(.replaced),
-            .roster([player]),
-            .layout(.lobby),
-            .layout(.menu(items: ["Pong"], selected: 0)),
-            .layout(.paddle(PaddleLayout(edge: .left, colorHex: player.colorHex, label: "Player 3 · Left"))),
-            .layout(.spectator(SpectatorLayout(queuePosition: 2))),
-            .layout(.gameOver(title: "Winner!", subtitle: "Great rally")),
-            .feedback(.won),
+            .application(Data([0xFA, 0xCE])),
             .inputAck(sequence: 54),
-            .pong(55),
+            .pingResponse(55),
         ]
         try assertRoundTrips(messages)
+    }
+
+    @Test func transportProtocolContainsNoGameVocabulary() {
+        let names = [String(describing: ClientMessage.self), String(describing: HostMessage.self)]
+        #expect(names.allSatisfy { !$0.lowercased().contains("paddle") && !$0.lowercased().contains("pong") })
     }
 
     @Test func displayNameValidation() {

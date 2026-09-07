@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		24B1CA0030486B0000592BFF /* PartyNet in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0330486B0000592BFF /* PartyNet */; };
 		24B1CA0130486B0000592BFF /* PartyNet in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0430486B0000592BFF /* PartyNet */; };
+		24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0830486B0000592BFF /* PartyBoxCore */; };
+		24B1CA0630486B0000592BFF /* PartyGameRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0930486B0000592BFF /* PartyGameRuntime */; };
+		24B1CA0730486B0000592BFF /* PartyBoxCore in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0A30486B0000592BFF /* PartyBoxCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,6 +93,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				24B1CA0030486B0000592BFF /* PartyNet in Frameworks */,
+				24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */,
+				24B1CA0630486B0000592BFF /* PartyGameRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				24B1CA0130486B0000592BFF /* PartyNet in Frameworks */,
+				24B1CA0730486B0000592BFF /* PartyBoxCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -179,6 +185,8 @@
 			name = PartyBox;
 			packageProductDependencies = (
 				24B1CA0330486B0000592BFF /* PartyNet */,
+				24B1CA0830486B0000592BFF /* PartyBoxCore */,
+				24B1CA0930486B0000592BFF /* PartyGameRuntime */,
 			);
 			productName = PartyBox;
 			productReference = 24B1C9AA30486A7700592BFF /* PartyBox.app */;
@@ -248,6 +256,7 @@
 			name = "PartyBox Controller";
 			packageProductDependencies = (
 				24B1CA0430486B0000592BFF /* PartyNet */,
+				24B1CA0A30486B0000592BFF /* PartyBoxCore */,
 			);
 			productName = "PartyBox Controller";
 			productReference = 24B1C9D830486AB100592BFF /* PartyBox Controller.app */;
@@ -1008,6 +1017,18 @@
 		24B1CA0430486B0000592BFF /* PartyNet */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PartyNet;
+		};
+		24B1CA0830486B0000592BFF /* PartyBoxCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PartyBoxCore;
+		};
+		24B1CA0930486B0000592BFF /* PartyGameRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PartyGameRuntime;
+		};
+		24B1CA0A30486B0000592BFF /* PartyBoxCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PartyBoxCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

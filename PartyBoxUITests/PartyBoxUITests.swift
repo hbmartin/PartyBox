@@ -20,6 +20,7 @@ final class PartyBoxUITests: XCTestCase {
             ("menu", "host.phase.menu"),
             ("four-way-match", "host.phase.playing"),
             ("game-over", "host.phase.gameOver"),
+            ("history", "host.phase.history"),
         ] {
             let app = launch(scenario: scenario)
             XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")

@@ -12,7 +12,7 @@ public enum PartyClientState: Equatable, Sendable {
 }
 
 public enum ClientEvent: Sendable {
-    case feedback(Feedback)
+    case application(Data)
     case hostsChanged([DiscoveredHost])
 }
 
@@ -23,13 +23,15 @@ public final class PartyClient {
     public private(set) var hosts: [DiscoveredHost] = []
     public private(set) var discoveryErrorMessage: String?
     public private(set) var player: PlayerInfo?
-    public private(set) var roster: [PlayerInfo] = []
-    public private(set) var layout: ControllerLayout = .lobby
     public private(set) var rttMilliseconds: Double?
     public private(set) var rttSampleCount: UInt64 = 0
     public private(set) var inputFramesSent: UInt64 = 0
     public private(set) var usesTCPFallback = false
     public private(set) var inputAxisX: Float = 0
+    public private(set) var inputAxisY: Float = 0
+    public private(set) var inputButtons: Buttons = []
+    public private(set) var inputOrientation: OrientationQuaternion = .identity
+    public private(set) var inputFlags: InputFlags = []
     /// A bounded stream that ends if its subscriber cannot keep up. Read the property again
     /// to subscribe afresh, or use `eventStream(onOverflow:)` to observe an overflow directly.
     public nonisolated var events: AsyncStream<ClientEvent> {
@@ -72,6 +74,8 @@ public final class PartyClient {
         let axisX: Float
         let axisY: Float
         let buttons: Buttons
+        let orientation: OrientationQuaternion
+        let flags: InputFlags
     }
 
     public init(
@@ -142,20 +146,50 @@ public final class PartyClient {
         try? await transport.send(.rename(displayName), connectionID: connectionID)
     }
 
-    public func sendMenu(_ action: MenuAction) async {
-        guard let connectionID else { return }
-        try? await transport.send(.menu(action), connectionID: connectionID)
+    @discardableResult
+    public func sendApplication(_ payload: Data) async -> Bool {
+        guard payload.count <= PartyNetConstants.maximumApplicationPayloadBytes,
+              let connectionID else { return false }
+        do {
+            try await transport.send(.application(payload), connectionID: connectionID)
+            return true
+        } catch {
+            return false
+        }
     }
 
     public func setInput(axisX: Float, axisY: Float = 0, buttons: Buttons = []) {
         let axisX = axisX.isFinite ? min(max(axisX, -1), 1) : 0
+        let axisY = axisY.isFinite ? min(max(axisY, -1), 1) : 0
         inputAxisX = axisX
+        inputAxisY = axisY
+        inputButtons = buttons
+        enqueueCurrentInput()
+    }
+
+    public func setOrientation(
+        _ orientation: OrientationQuaternion,
+        available: Bool = true
+    ) {
+        if available, let normalized = orientation.normalized {
+            inputOrientation = normalized
+            inputFlags.insert(.motionAvailable)
+        } else {
+            inputOrientation = .identity
+            inputFlags.remove(.motionAvailable)
+        }
+        enqueueCurrentInput()
+    }
+
+    private func enqueueCurrentInput() {
         guard let connectionID else { return }
         pendingInput = PendingInput(
             connectionID: connectionID,
-            axisX: axisX,
-            axisY: axisY,
-            buttons: buttons
+            axisX: inputAxisX,
+            axisY: inputAxisY,
+            buttons: inputButtons,
+            orientation: inputOrientation,
+            flags: inputFlags
         )
         startInputFlushIfNeeded()
     }
@@ -212,16 +246,12 @@ public final class PartyClient {
         state: PartyClientState,
         hosts: [DiscoveredHost] = [],
         discoveryErrorMessage: String? = nil,
-        player: PlayerInfo? = nil,
-        roster: [PlayerInfo] = [],
-        layout: ControllerLayout = .lobby
+        player: PlayerInfo? = nil
     ) {
         self.state = state
         self.hosts = hosts
         self.discoveryErrorMessage = discoveryErrorMessage
         self.player = player
-        self.roster = roster
-        self.layout = layout
     }
 
     public func insertTestingHost(_ host: DiscoveredHost) {
@@ -375,7 +405,7 @@ public final class PartyClient {
             cancelForegroundProbe()
             cancelInputFlush()
             connectionID = nil
-            inputAxisX = 0
+            resetInputPresentation()
             usesTCPFallback = false
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)
@@ -402,21 +432,12 @@ public final class PartyClient {
         case let .rejected(reason):
             isExplicitlyDisconnected = true
             state = .rejected(reason.message)
-        case let .roster(value):
-            roster = value
-            if let id = player?.id { player = value.first { $0.id == id } ?? player }
-        case let .layout(value):
-            let wasPaddleLayout = if case .paddle = layout { true } else { false }
-            let isPaddleLayout = if case .paddle = value { true } else { false }
-            if layout != value, wasPaddleLayout || isPaddleLayout {
-                setInput(axisX: 0)
-            }
-            layout = value
-        case let .feedback(value):
-            eventHub.yield(.feedback(value))
+        case let .application(payload):
+            guard payload.count <= PartyNetConstants.maximumApplicationPayloadBytes else { return }
+            eventHub.yield(.application(payload))
         case .inputAck:
             break
-        case let .pong(sentNanos):
+        case let .pingResponse(sentNanos):
             let elapsed = DispatchTime.now().uptimeNanoseconds &- sentNanos
             rttMilliseconds = Double(elapsed) / 1_000_000
             rttSampleCount &+= 1
@@ -491,6 +512,8 @@ public final class PartyClient {
                 axisX: input.axisX,
                 axisY: input.axisY,
                 buttons: input.buttons,
+                orientation: input.orientation,
+                flags: input.flags,
                 connectionID: input.connectionID
             )
         }
@@ -509,12 +532,18 @@ public final class PartyClient {
 
     private func resetSessionPresentation() {
         player = nil
-        roster = []
-        layout = .lobby
-        inputAxisX = 0
+        resetInputPresentation()
         rttMilliseconds = nil
         rttSampleCount = 0
         usesTCPFallback = false
+    }
+
+    private func resetInputPresentation() {
+        inputAxisX = 0
+        inputAxisY = 0
+        inputButtons = []
+        inputOrientation = .identity
+        inputFlags = []
     }
 
     private func startForegroundProbe(connectionID: UUID) {

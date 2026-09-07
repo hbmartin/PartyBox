@@ -74,6 +74,8 @@ actor ClientTransport {
     var axisX: Float = 0
     var axisY: Float = 0
     var buttons: Buttons = []
+    var orientation: OrientationQuaternion = .identity
+    var flags: InputFlags = []
   }
 
   private struct Session: Sendable {
@@ -306,12 +308,21 @@ actor ClientTransport {
     }
   }
 
-  func setInput(axisX: Float, axisY: Float, buttons: Buttons, connectionID: UUID) {
+  func setInput(
+    axisX: Float,
+    axisY: Float,
+    buttons: Buttons,
+    orientation: OrientationQuaternion,
+    flags: InputFlags,
+    connectionID: UUID
+  ) {
     guard var session = sessions[connectionID] else { return }
     session.desired = DesiredInput(
       axisX: axisX.isFinite ? min(max(axisX, -1), 1) : 0,
       axisY: axisY.isFinite ? min(max(axisY, -1), 1) : 0,
-      buttons: buttons
+      buttons: buttons,
+      orientation: orientation,
+      flags: flags
     )
     sessions[connectionID] = session
   }
@@ -395,7 +406,7 @@ actor ClientTransport {
       acknowledgeUDP(sequence: sequence, connectionID: connectionID)
       return
     }
-    if case .pong(let nonce) = message,
+    if case .pingResponse(let nonce) = message,
       var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
     {
       sessions[connectionID] = session
@@ -497,7 +508,9 @@ actor ClientTransport {
       clientTimeMs: UInt32(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds / 1_000_000),
       axisX: session.desired.axisX,
       axisY: session.desired.axisY,
-      buttons: session.desired.buttons
+      buttons: session.desired.buttons,
+      orientation: session.desired.orientation,
+      flags: session.desired.flags
     )
   }
 
