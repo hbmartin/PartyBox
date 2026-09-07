@@ -53,6 +53,24 @@ struct PartyBoxTests {
         await coordinator.stop()
     }
 
+    @Test func unexpectedHostEventStreamEndingRestartsTheHost() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = HostCoordinator()
+            await coordinator.start()
+            let originalInstanceID = coordinator.host.hostInstanceID
+            try #require(coordinator.host.port != nil)
+
+            await coordinator.simulateHostEventStreamEndingForTesting()
+
+            #expect(coordinator.host.port != nil)
+            #expect(coordinator.host.hostInstanceID != originalInstanceID)
+            #expect(coordinator.statusMessage == "Ready for controllers")
+            await coordinator.stop()
+        }
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))

@@ -12,6 +12,11 @@ enum ClientTransportEvent: Sendable {
   case discoveryFailed(String)
 }
 
+typealias ClientControlSender = @Sendable (
+  _ connection: ClientControlConnection,
+  _ message: ClientMessage
+) async throws -> Void
+
 public enum PartyClientError: Error, LocalizedError, Sendable {
   case invalidAddress
   case incompatibleHost
@@ -59,7 +64,11 @@ struct PingWatchdog: Sendable {
 }
 
 actor ClientTransport {
-  nonisolated var events: AsyncStream<ClientTransportEvent> { eventHub.stream() }
+  nonisolated func eventStream(
+    onOverflow: @escaping @Sendable () -> Void
+  ) -> AsyncStream<ClientTransportEvent> {
+    eventHub.stream(onOverflow: onOverflow)
+  }
 
   private struct DesiredInput: Equatable, Sendable {
     var axisX: Float = 0
@@ -95,6 +104,7 @@ actor ClientTransport {
   private nonisolated let eventHub = EventHub<ClientTransportEvent>()
   private let logger = Logger(subsystem: "PartyNet", category: "ClientTransport")
   private let clock: AnyClock<Duration>
+  private let controlSender: ClientControlSender
   private let inputSendInterval: Duration
   private let handshakeResponseHook: (@Sendable (HostMessage) async -> Void)?
   private var browser: NetworkBrowser<Bonjour>?
@@ -106,12 +116,16 @@ actor ClientTransport {
 
   init(
     inputSendInterval: Duration = .milliseconds(16),
-    handshakeResponseHook: (@Sendable (HostMessage) async -> Void)? = nil
+    handshakeResponseHook: (@Sendable (HostMessage) async -> Void)? = nil,
+    controlSender: @escaping ClientControlSender = { connection, message in
+      try await connection.send(message)
+    }
   ) {
     @Dependency(\.continuousClock) var continuousClock
     clock = AnyClock(continuousClock)
     self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
     self.handshakeResponseHook = handshakeResponseHook
+    self.controlSender = controlSender
   }
 
   deinit {
@@ -173,13 +187,14 @@ actor ClientTransport {
 
     let connectionID = UUID()
     let clock = clock
+    let controlSender = controlSender
     let handshakeTask = Task { [connection] in
       try await withTimeout(
         PartyNetConstants.helloTimeout,
         clock: clock,
         operationName: "connecting to the host"
       ) {
-        try await connection.send(.hello(hello))
+        try await controlSender(connection, .hello(hello))
       }
       return try await withTimeout(
         PartyNetConstants.helloTimeout,
@@ -256,7 +271,13 @@ actor ClientTransport {
       pendingHandshakes.removeValue(forKey: attemptID)
       return (connectionID, welcome)
     } catch {
-      if receivedWelcome { try? await connection.send(.leave) }
+      if receivedWelcome {
+        try? await sendControl(
+          .leave,
+          over: connection,
+          operation: "leaving after an unsuccessful connection"
+        )
+      }
       pendingHandshakes.removeValue(forKey: attemptID)
       handshakeTask.cancel()
       throw error
@@ -271,7 +292,18 @@ actor ClientTransport {
 
   func send(_ message: ClientMessage, connectionID: UUID) async throws {
     guard let session = sessions[connectionID] else { throw PartyNetTransportError.stopped }
-    try await session.tcp.send(message)
+    do {
+      try await sendControl(
+        message,
+        over: session.tcp,
+        operation: "sending a client message"
+      )
+    } catch {
+      if isTerminalControlWriteError(error) {
+        endSession(connectionID, reason: error.localizedDescription)
+      }
+      throw error
+    }
   }
 
   func setInput(axisX: Float, axisY: Float, buttons: Buttons, connectionID: UUID) {
@@ -286,7 +318,13 @@ actor ClientTransport {
 
   func disconnect(connectionID: UUID, sendLeave: Bool = true) async {
     guard let session = sessions[connectionID] else { return }
-    if sendLeave { try? await session.tcp.send(.leave) }
+    if sendLeave {
+      try? await sendControl(
+        .leave,
+        over: session.tcp,
+        operation: "leaving the host"
+      )
+    }
     removeSession(connectionID)
   }
 
@@ -319,8 +357,21 @@ actor ClientTransport {
   }
 
   private func disconnectAllSessions() async {
-    for (connectionID, session) in sessions {
-      try? await session.tcp.send(.leave)
+    let currentSessions = Array(sessions)
+    await withTaskGroup(of: Void.self) { group in
+      for (_, session) in currentSessions {
+        group.addTask { [clock, controlSender] in
+          _ = try? await withTimeout(
+            PartyNetConstants.helloTimeout,
+            clock: clock,
+            operationName: "leaving a previous host"
+          ) {
+            try await controlSender(session.tcp, .leave)
+          }
+        }
+      }
+    }
+    for (connectionID, _) in currentSessions {
       removeSession(connectionID)
     }
   }
@@ -423,7 +474,11 @@ actor ClientTransport {
     session.sequence &+= 1
     sessions[connectionID] = session
     do {
-      try await session.tcp.send(.input(frame))
+      try await sendControl(
+        .input(frame),
+        over: session.tcp,
+        operation: "sending controller input over TCP"
+      )
       guard var latest = sessions[connectionID] else { return true }
       latest.lastTCPSentAt = now
       sessions[connectionID] = latest
@@ -480,7 +535,11 @@ actor ClientTransport {
       sessions[connectionID] = latest
     }
     do {
-      try await session.tcp.send(.ping(value))
+      try await sendControl(
+        .ping(value),
+        over: session.tcp,
+        operation: "pinging the host"
+      )
       return true
     } catch {
       endSession(connectionID, reason: error.localizedDescription)
@@ -500,5 +559,24 @@ actor ClientTransport {
     session.inputTask?.cancel()
     session.pingTask?.cancel()
     receiveTasks.removeValue(forKey: connectionID)?.cancel()
+  }
+
+  private func sendControl(
+    _ message: ClientMessage,
+    over connection: ClientControlConnection,
+    operation: String
+  ) async throws {
+    let controlSender = controlSender
+    try await withTimeout(
+      PartyNetConstants.helloTimeout,
+      clock: clock,
+      operationName: operation
+    ) {
+      try await controlSender(connection, message)
+    }
+  }
+
+  private func isTerminalControlWriteError(_ error: any Error) -> Bool {
+    !(error is CancellationError) && !(error is EncodingError)
   }
 }

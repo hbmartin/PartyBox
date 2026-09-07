@@ -60,12 +60,23 @@ final class HostCoordinator {
             return
         }
 #endif
-        let stream = host.events
+        let stream = host.eventStream { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.recoverFromHostEventStreamEnding(
+                    generation: generation,
+                    cancelConsumer: true
+                )
+            }
+        }
         hostEventsTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
                 await self.handle(event, generation: generation)
             }
+            await self?.recoverFromHostEventStreamEnding(
+                generation: generation,
+                cancelConsumer: false
+            )
         }
         do {
             let name: String
@@ -88,10 +99,11 @@ final class HostCoordinator {
             }
         } catch {
             guard lifecycleGeneration == generation else { return }
+            isStarted = false
+            lifecycleGeneration = UUID()
             hostEventsTask?.cancel()
             hostEventsTask = nil
             await host.stop()
-            isStarted = false
             if !Task.isCancelled {
                 statusMessage = "Could not start: \(error.localizedDescription)"
             }
@@ -183,6 +195,41 @@ final class HostCoordinator {
             statusMessage = message
         }
     }
+
+    private func recoverFromHostEventStreamEnding(
+        generation: UUID,
+        cancelConsumer: Bool
+    ) async {
+        guard isStarted, lifecycleGeneration == generation else { return }
+        isStarted = false
+        let recoveryGeneration = UUID()
+        lifecycleGeneration = recoveryGeneration
+        let consumer = hostEventsTask
+        hostEventsTask = nil
+        if cancelConsumer { consumer?.cancel() }
+        let botsToStop = bots
+        bots.removeAll()
+        phase = .lobby
+        seatQueue = SeatQueue()
+        pongScene = nil
+        menuSelection = 0
+        currentMatchPlayerCount = 0
+        currentMatchAssignments = []
+        statusMessage = "Restarting after a host event overload…"
+        await host.stop()
+        for bot in botsToStop { await bot.stop() }
+        guard !isStarted, lifecycleGeneration == recoveryGeneration else { return }
+        await start()
+    }
+
+#if DEBUG
+    func simulateHostEventStreamEndingForTesting() async {
+        await recoverFromHostEventStreamEnding(
+            generation: lifecycleGeneration,
+            cancelConsumer: true
+        )
+    }
+#endif
 
     private func startPong() {
         guard phase != .playing, canStart else { return }

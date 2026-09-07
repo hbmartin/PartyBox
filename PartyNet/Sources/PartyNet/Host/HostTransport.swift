@@ -15,12 +15,15 @@ enum HandshakeDecision: Sendable {
   case reject(RejectReason)
 }
 
+typealias HostControlSender = @Sendable (
+  _ connection: HostControlConnection,
+  _ message: HostMessage
+) async throws -> Void
+
 private final class HandshakeDecisionSignal: @unchecked Sendable {
   private let lock = NSLock()
   private var decision: HandshakeDecision?
   private var continuation: CheckedContinuation<HandshakeDecision, Never>?
-
-  deinit {}
 
   func wait() async -> HandshakeDecision {
     await withCheckedContinuation { continuation in
@@ -51,8 +54,6 @@ private final class HandshakeDecisionSignal: @unchecked Sendable {
 }
 
 actor HostTransport {
-  nonisolated var events: AsyncStream<HostTransportEvent> { eventHub.stream() }
-
   nonisolated func eventStream(
     onOverflow: @escaping @Sendable () -> Void
   ) -> AsyncStream<HostTransportEvent> {
@@ -63,11 +64,13 @@ actor HostTransport {
   private let inputs: InputStore
   private let logger = Logger(subsystem: "PartyNet", category: "HostTransport")
   private let clock: AnyClock<Duration>
+  private let controlSender: HostControlSender
 
   private var tcpListener: NetworkListener<HostControlProtocol>?
   private var udpListener: NetworkListener<UDP>?
   private var listenerTasks: [Task<Void, Never>] = []
   private var controlTasks: [UUID: Task<Void, Never>] = [:]
+  private var acknowledgmentTasks: [UUID: Task<Void, Never>] = [:]
   private var udpTasks: [UUID: Task<Void, Never>] = [:]
   private var udpHandlerTokens: [UUID: UInt64] = [:]
   private var tokenUDPHandlers: [UInt64: Set<UUID>] = [:]
@@ -85,16 +88,23 @@ actor HostTransport {
 
   var udpPort: UInt16? { boundUDPPort }
 
-  init(inputs: InputStore) {
+  init(
+    inputs: InputStore,
+    controlSender: @escaping HostControlSender = { connection, message in
+      try await connection.send(message)
+    }
+  ) {
     @Dependency(\.continuousClock) var continuousClock
     clock = AnyClock(continuousClock)
     self.inputs = inputs
+    self.controlSender = controlSender
   }
 
   deinit {
     decisions.values.forEach { $0.resolve(.reject(.malformedHello)) }
     listenerTasks.forEach { $0.cancel() }
     controlTasks.values.forEach { $0.cancel() }
+    acknowledgmentTasks.values.forEach { $0.cancel() }
     udpTasks.values.forEach { $0.cancel() }
   }
 
@@ -243,8 +253,11 @@ actor HostTransport {
   }
 
   func disconnect(connectionID: UUID) {
-    decisions.removeValue(forKey: connectionID)?.resolve(.reject(.malformedHello))
     controlTasks.removeValue(forKey: connectionID)?.cancel()
+    finishControlConnection(
+      connectionID: connectionID,
+      generation: lifecycleGeneration
+    )
   }
 
   func replace(connectionID: UUID) async {
@@ -275,6 +288,8 @@ actor HostTransport {
     listenerTasks.removeAll()
     controlTasks.values.forEach { $0.cancel() }
     controlTasks.removeAll()
+    acknowledgmentTasks.values.forEach { $0.cancel() }
+    acknowledgmentTasks.removeAll()
     udpTasks.values.forEach { $0.cancel() }
     udpTasks.removeAll()
     udpHandlerTokens.removeAll()
@@ -432,6 +447,7 @@ actor HostTransport {
 
   private func finishControlConnection(connectionID: UUID, generation: UInt64) {
     controlTasks.removeValue(forKey: connectionID)
+    acknowledgmentTasks.removeValue(forKey: connectionID)?.cancel()
     let wasConnected = connections.removeValue(forKey: connectionID) != nil
     decisions.removeValue(forKey: connectionID)?.resolve(.reject(.malformedHello))
     if let token = connectionTokens.removeValue(forKey: connectionID) {
@@ -446,7 +462,7 @@ actor HostTransport {
     _ packet: Data,
     handlerID: UUID,
     generation: UInt64
-  ) async -> Bool {
+  ) -> Bool {
     guard lifecycleGeneration == generation else { return false }
     guard let frame = InputFrame(data: packet),
       let playerID = tokenToPlayer[frame.token],
@@ -459,7 +475,7 @@ actor HostTransport {
     // make this datagram stale for gameplay, but receipt still proves the UDP path is
     // healthy. InputStore continues to reject the stale state update.
     _ = inputs.update(frame, for: playerID)
-    await acknowledge(frame, connectionID: connectionID)
+    acknowledge(frame, connectionID: connectionID)
     return true
   }
 
@@ -504,7 +520,10 @@ actor HostTransport {
     eventHub.yield(.failure(message))
   }
 
-  private func acknowledge(_ frame: InputFrame, connectionID: UUID) async {
+  private func acknowledge(_ frame: InputFrame, connectionID: UUID) {
+    guard acknowledgmentTasks[connectionID] == nil,
+      let connection = connections[connectionID]
+    else { return }
     let now = clock.now
     if let last = lastAcknowledgmentAt[frame.token],
       last.duration(to: now) < PartyNetConstants.inputRefreshInterval
@@ -512,15 +531,31 @@ actor HostTransport {
       return
     }
     lastAcknowledgmentAt[frame.token] = now
+    let sequence = frame.sequence
+    acknowledgmentTasks[connectionID] = Task { [weak self, connection] in
+      await self?.sendInputAcknowledgment(
+        sequence: sequence,
+        over: connection,
+        connectionID: connectionID
+      )
+    }
+  }
+
+  private func sendInputAcknowledgment(
+    sequence: UInt32,
+    over connection: HostControlConnection,
+    connectionID: UUID
+  ) async {
+    defer { acknowledgmentTasks.removeValue(forKey: connectionID) }
     do {
-      if let connection = connections[connectionID] {
-        try await sendControl(
-          .inputAck(sequence: frame.sequence),
-          over: connection,
-          connectionID: connectionID,
-          operation: "acknowledging controller input"
-        )
-      }
+      try await sendControl(
+        .inputAck(sequence: sequence),
+        over: connection,
+        connectionID: connectionID,
+        operation: "acknowledging controller input"
+      )
+    } catch is CancellationError {
+      // Expected when the connection or transport stops.
     } catch {
       logger.debug("Input acknowledgment failed: \(error.localizedDescription)")
     }
@@ -532,18 +567,17 @@ actor HostTransport {
     connectionID: UUID,
     operation: String
   ) async throws {
+    let controlSender = controlSender
     do {
       try await withTimeout(
         PartyNetConstants.helloTimeout,
         clock: clock,
         operationName: operation
       ) {
-        try await connection.send(message)
+        try await controlSender(connection, message)
       }
     } catch {
-      if let transportError = error as? PartyNetTransportError,
-        case .timedOut = transportError
-      {
+      if !(error is CancellationError), !(error is EncodingError) {
         disconnect(connectionID: connectionID)
       }
       throw error
