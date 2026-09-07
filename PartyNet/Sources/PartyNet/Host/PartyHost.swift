@@ -21,7 +21,17 @@ public final class PartyHost {
     public private(set) var port: UInt16?
     public private(set) var errorMessage: String?
     public let inputs = InputStore()
-    public nonisolated var events: AsyncStream<HostEvent> { eventHub.stream() }
+    /// A bounded stream that ends if its subscriber cannot keep up. Read the property again
+    /// to subscribe afresh, or use `eventStream(onOverflow:)` to observe an overflow directly.
+    public nonisolated var events: AsyncStream<HostEvent> {
+        eventHub.stream(onOverflow: {})
+    }
+
+    public nonisolated func eventStream(
+        onOverflow: @escaping @Sendable () -> Void
+    ) -> AsyncStream<HostEvent> {
+        eventHub.stream(onOverflow: onOverflow)
+    }
 
     private struct PlayerSession {
         let controllerID: ControllerID
@@ -45,12 +55,20 @@ public final class PartyHost {
         let task: Task<Void, Never>
     }
 
+    private enum BroadcastResult: Sendable {
+        case sent
+        case cancelled
+        case failed(connectionID: UUID, errorDescription: String)
+    }
+
     private nonisolated let eventHub = EventHub<HostEvent>()
     private let logger = Logger(subsystem: "PartyNet", category: "PartyHost")
     private let reconnectGrace: Duration
     private let renameProcessingInterval: Duration
+    private let transportFactory: @Sendable (InputStore) -> HostTransport
     private var transport: HostTransport?
     private var transportTask: Task<Void, Never>?
+    private var broadcastTasks: [UUID: Task<Void, Never>] = [:]
     private var rosterBroadcastTask: Task<Void, Never>?
     private var rosterBroadcastGeneration = UUID()
     private var pendingRosterBroadcast: [PlayerInfo]?
@@ -60,16 +78,30 @@ public final class PartyHost {
     private var connectionOwners: [UUID: ControllerID] = [:]
     private var lifecycleGeneration: UInt64 = 0
 
-    public init(
+    public convenience init(
         reconnectGrace: Duration = PartyNetConstants.reconnectGrace,
         renameProcessingInterval: Duration = PartyNetConstants.renameProcessingInterval
     ) {
+        self.init(
+            reconnectGrace: reconnectGrace,
+            renameProcessingInterval: renameProcessingInterval,
+            transportFactory: { HostTransport(inputs: $0) }
+        )
+    }
+
+    init(
+        reconnectGrace: Duration = PartyNetConstants.reconnectGrace,
+        renameProcessingInterval: Duration = PartyNetConstants.renameProcessingInterval,
+        transportFactory: @escaping @Sendable (InputStore) -> HostTransport
+    ) {
         self.reconnectGrace = reconnectGrace
         self.renameProcessingInterval = renameProcessingInterval
+        self.transportFactory = transportFactory
     }
 
     isolated deinit {
         transportTask?.cancel()
+        broadcastTasks.values.forEach { $0.cancel() }
         rosterBroadcastTask?.cancel()
         renameWorkers.values.forEach { $0.task.cancel() }
         sessions.values.forEach { $0.graceTask?.cancel() }
@@ -86,7 +118,7 @@ public final class PartyHost {
         let hostInstanceID = UUID()
         self.hostInstanceID = hostInstanceID
         errorMessage = nil
-        let transport = HostTransport(inputs: inputs)
+        let transport = transportFactory(inputs)
         self.transport = transport
         let stream = transport.eventStream { [weak self, weak transport] in
             Task { @MainActor [weak self, weak transport] in
@@ -147,35 +179,52 @@ public final class PartyHost {
             session.isAdmitted && session.isWelcomedConnection ? session.connectionID : nil
         }
         guard let transport else { return }
-        await withTaskGroup(
-            of: (connectionID: UUID, errorDescription: String)?.self
-        ) { group in
-            for connectionID in connectionIDs {
-                group.addTask {
-                    guard !Task.isCancelled else { return nil }
-                    do {
-                        try await transport.send(message, to: connectionID)
-                        return nil
-                    } catch {
-                        return (
-                            connectionID: connectionID,
-                            errorDescription: error.localizedDescription
-                        )
+        let broadcastID = UUID()
+        let task = Task { [weak self, transport] in
+            guard let self else { return }
+            await withTaskGroup(of: BroadcastResult.self) { group in
+                for connectionID in connectionIDs {
+                    group.addTask { [weak self, transport] in
+                        guard !Task.isCancelled,
+                              let self,
+                              await self.canBroadcast(generation: generation, over: transport)
+                        else { return .cancelled }
+                        do {
+                            try await transport.send(message, to: connectionID)
+                            return .sent
+                        } catch is CancellationError {
+                            return .cancelled
+                        } catch {
+                            return .failed(
+                                connectionID: connectionID,
+                                errorDescription: error.localizedDescription
+                            )
+                        }
                     }
                 }
-            }
-            for await failure in group {
-                guard !Task.isCancelled, lifecycleGeneration == generation else {
-                    group.cancelAll()
-                    return
-                }
-                if let failure {
+                for await result in group {
+                    guard !Task.isCancelled,
+                          self.canBroadcast(generation: generation, over: transport)
+                    else {
+                        group.cancelAll()
+                        return
+                    }
+                    guard case let .failed(connectionID, errorDescription) = result else {
+                        continue
+                    }
                     logger.debug(
-                        "Broadcast to connection \(failure.connectionID) failed: \(failure.errorDescription)"
+                        "Broadcast to connection \(connectionID, privacy: .public) failed: \(errorDescription)"
                     )
                 }
             }
         }
+        broadcastTasks[broadcastID] = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        broadcastTasks.removeValue(forKey: broadcastID)
     }
 
     private func transportEventStreamOverwhelmed(
@@ -183,19 +232,21 @@ public final class PartyHost {
         generation: UInt64
     ) async {
         guard lifecycleGeneration == generation, self.transport === transport else { return }
-        lifecycleGeneration &+= 1
-        let activeTransport = prepareToStop()
         let message = "The host transport event stream could not keep up."
         errorMessage = message
         eventHub.yield(.failure(message))
-        await activeTransport?.stop()
+        await tearDown()
     }
 
     public func stop() async {
+        await tearDown()
+    }
+
+    private func tearDown() async {
         lifecycleGeneration &+= 1
         let transport = prepareToStop()
-        await transport?.stop()
         eventHub.finish()
+        await transport?.stop()
     }
 
     private func prepareToStop() -> HostTransport? {
@@ -203,6 +254,8 @@ public final class PartyHost {
         self.transport = nil
         transportTask?.cancel()
         transportTask = nil
+        broadcastTasks.values.forEach { $0.cancel() }
+        broadcastTasks.removeAll()
         rosterBroadcastTask?.cancel()
         rosterBroadcastTask = nil
         rosterBroadcastGeneration = UUID()
@@ -221,10 +274,24 @@ public final class PartyHost {
         return transport
     }
 
+    private func canBroadcast(generation: UInt64, over transport: HostTransport) -> Bool {
+        !Task.isCancelled
+            && lifecycleGeneration == generation
+            && self.transport === transport
+    }
+
 #if DEBUG
     public func configureFixture(hostName: String, players: [PlayerInfo]) {
         self.hostName = hostName
         self.players = players
+    }
+
+    func simulateTransportEventStreamOverflowForTesting() async {
+        guard let transport else { return }
+        await transportEventStreamOverwhelmed(
+            transport,
+            generation: lifecycleGeneration
+        )
     }
 #endif
 

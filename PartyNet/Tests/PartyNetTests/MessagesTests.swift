@@ -5,6 +5,23 @@ import Testing
 
 @Suite("Control message coding")
 struct MessagesTests {
+    private final class CallbackCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private let player = PlayerInfo(id: PlayerID(2), displayName: "Harold", colorHex: "#FFE44D")
 
     @Test func clientMessagesRoundTrip() throws {
@@ -139,13 +156,13 @@ struct MessagesTests {
 
     @Test func eventHubFinishEndsCurrentStreamsAndAllowsFreshSubscriptions() async {
         let hub = EventHub<Int>()
-        let firstStream = hub.stream()
+        let firstStream = hub.stream(onOverflow: {})
         hub.finish()
         var firstIterator = firstStream.makeAsyncIterator()
         let finishedValue = await firstIterator.next()
         #expect(finishedValue == nil)
 
-        let secondStream = hub.stream()
+        let secondStream = hub.stream(onOverflow: {})
         hub.yield(42)
         var secondIterator = secondStream.makeAsyncIterator()
         let yieldedValue = await secondIterator.next()
@@ -162,8 +179,9 @@ struct MessagesTests {
             operationName: "verifying EventHub overflow termination"
         ) {
             let hub = EventHub<Int>(bufferLimit: 2)
-            let firstStream = hub.stream()
-            let secondStream = hub.stream()
+            let callbackCounter = CallbackCounter()
+            let firstStream = hub.stream(onOverflow: { callbackCounter.increment() })
+            let secondStream = hub.stream(onOverflow: {})
             var secondIterator = secondStream.makeAsyncIterator()
             var secondReceived: [Int] = []
 
@@ -172,6 +190,7 @@ struct MessagesTests {
             hub.yield(2)
             if let value = await secondIterator.next() { secondReceived.append(value) }
             hub.yield(3)
+            hub.yield(4)
 
             var firstIterator = firstStream.makeAsyncIterator()
             let firstReceived = [
@@ -180,11 +199,17 @@ struct MessagesTests {
                 await firstIterator.next(),
             ]
             if let value = await secondIterator.next() { secondReceived.append(value) }
-            return (first: firstReceived, second: secondReceived)
+            if let value = await secondIterator.next() { secondReceived.append(value) }
+            return (
+                first: firstReceived,
+                second: secondReceived,
+                overflowCallbacks: callbackCounter.count
+            )
         }
 
         #expect(received.first == [1, 2, nil])
-        #expect(received.second == [1, 2, 3])
+        #expect(received.second == [1, 2, 3, 4])
+        #expect(received.overflowCallbacks == 1)
     }
 
     @Test func arcadePaletteParsesSharedHexColors() throws {

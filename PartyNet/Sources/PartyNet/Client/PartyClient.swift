@@ -30,7 +30,17 @@ public final class PartyClient {
     public private(set) var inputFramesSent: UInt64 = 0
     public private(set) var usesTCPFallback = false
     public private(set) var inputAxisX: Float = 0
-    public nonisolated var events: AsyncStream<ClientEvent> { eventHub.stream() }
+    /// A bounded stream that ends if its subscriber cannot keep up. Read the property again
+    /// to subscribe afresh, or use `eventStream(onOverflow:)` to observe an overflow directly.
+    public nonisolated var events: AsyncStream<ClientEvent> {
+        eventHub.stream(onOverflow: {})
+    }
+
+    public nonisolated func eventStream(
+        onOverflow: @escaping @Sendable () -> Void
+    ) -> AsyncStream<ClientEvent> {
+        eventHub.stream(onOverflow: onOverflow)
+    }
 
     public let controllerID: ControllerID
     public private(set) var displayName: String
@@ -38,6 +48,7 @@ public final class PartyClient {
     private nonisolated let eventHub = EventHub<ClientEvent>()
     private let transport: ClientTransport
     private var transportTask: Task<Void, Never>?
+    private var transportEventGeneration: UUID?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttemptID: UUID?
     private var connectionAttemptID: UUID?
@@ -50,6 +61,7 @@ public final class PartyClient {
     private var selectedHost: DiscoveredHost?
     private var expectedInstanceID: UUID?
     private var isExplicitlyDisconnected = false
+    private var isStopped = false
 #if DEBUG
     private var skipsReconnectNetworkingForTesting = false
     private var injectedHosts: [DiscoveredHost] = []
@@ -80,6 +92,7 @@ public final class PartyClient {
     }
 
     public func startBrowsing() async {
+        isStopped = false
         ensureEventTask()
         discoveryErrorMessage = nil
         await transport.startBrowsing()
@@ -87,6 +100,7 @@ public final class PartyClient {
     }
 
     public func restartBrowsing() async {
+        isStopped = false
         ensureEventTask()
         discoveryErrorMessage = nil
         await transport.restartBrowsing()
@@ -94,6 +108,7 @@ public final class PartyClient {
     }
 
     public func connect(to host: DiscoveredHost) async {
+        isStopped = false
         ensureEventTask()
         cancelReconnect()
         cancelForegroundProbe()
@@ -172,7 +187,9 @@ public final class PartyClient {
     }
 
     public func stop() async {
+        isStopped = true
         await disconnect()
+        transportEventGeneration = nil
         transportTask?.cancel()
         transportTask = nil
         await transport.stop()
@@ -285,13 +302,56 @@ public final class PartyClient {
     }
 
     private func ensureEventTask() {
-        guard transportTask == nil else { return }
-        let stream = transport.events
+        guard !isStopped, transportTask == nil else { return }
+        let generation = UUID()
+        transportEventGeneration = generation
+        let stream = transport.eventStream { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.transportEventStreamEnded(
+                    generation: generation,
+                    cancelConsumer: true
+                )
+            }
+        }
         transportTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
                 await self.handle(event)
             }
+            await self?.transportEventStreamEnded(
+                generation: generation,
+                cancelConsumer: false
+            )
+        }
+    }
+
+    private func transportEventStreamEnded(
+        generation: UUID,
+        cancelConsumer: Bool
+    ) async {
+        guard !isStopped, transportEventGeneration == generation else { return }
+        transportEventGeneration = nil
+        let consumer = transportTask
+        transportTask = nil
+        if cancelConsumer { consumer?.cancel() }
+
+        let shouldReconnect = !isExplicitlyDisconnected && selectedHost != nil
+        cancelReconnect()
+        cancelForegroundProbe()
+        cancelInputFlush()
+        connectionAttemptID = nil
+        connectionID = nil
+        resetSessionPresentation()
+        let reason = "The client transport event stream could not keep up."
+        state = shouldReconnect ? .reconnecting(reason) : .browsing
+
+        await transport.stop()
+        guard !isStopped, transportEventGeneration == nil else { return }
+        ensureEventTask()
+        if shouldReconnect {
+            beginReconnect(reason: reason)
+        } else {
+            await transport.startBrowsing()
         }
     }
 

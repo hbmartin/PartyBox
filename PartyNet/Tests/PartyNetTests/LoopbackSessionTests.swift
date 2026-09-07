@@ -68,6 +68,32 @@ extension NetworkIntegrationTests {
       }
     }
 
+    private actor WriteProbe {
+      private(set) var started = false
+      private(set) var count = 0
+
+      func markStarted() {
+        started = true
+        count += 1
+      }
+    }
+
+    private actor WriteFault {
+      private var enabled = false
+
+      func enable() {
+        enabled = true
+      }
+
+      func shouldFail() -> Bool {
+        enabled
+      }
+    }
+
+    private enum InjectedWriteError: Error {
+      case failed
+    }
+
     private actor EventRecorder {
       private(set) var feedback: [Feedback] = []
       private(set) var menuActions: [MenuAction] = []
@@ -538,7 +564,7 @@ extension NetworkIntegrationTests {
       do {
         let transport = HostTransport(inputs: InputStore())
         weakHandshakingTransport = transport
-        let stream = transport.events
+        let stream = transport.eventStream(onOverflow: {})
         let port = try await transport.start(
           hostName: "Handshake Lifetime Host",
           hostInstanceID: UUID(),
@@ -593,12 +619,268 @@ extension NetworkIntegrationTests {
 
     @Test func stoppingAHostTransportFinishesItsCurrentEventStream() async {
       let transport = HostTransport(inputs: InputStore())
-      let stream = transport.events
+      let stream = transport.eventStream(onOverflow: {})
 
       await transport.stop()
 
       var iterator = stream.makeAsyncIterator()
       #expect(await iterator.next() == nil)
+    }
+
+    @Test func stalledInputAcknowledgmentDoesNotBlockFollowingDatagrams() async throws {
+      let acknowledgmentWrite = WriteProbe()
+      let inputs = InputStore()
+      let transport = HostTransport(
+        inputs: inputs,
+        controlSender: { connection, message in
+          if case .inputAck = message {
+            await acknowledgmentWrite.markStarted()
+            try await Task.sleep(for: .seconds(30))
+            return
+          }
+          try await connection.send(message)
+        }
+      )
+      let stream = transport.eventStream(onOverflow: {})
+      let tcpPort = try await transport.start(
+        hostName: "Acknowledgment Test Host",
+        hostInstanceID: UUID(),
+        advertise: false
+      )
+      let controlConnection = ClientControlConnection(
+        to: .hostPort(
+          host: "127.0.0.1",
+          port: try #require(.init(rawValue: tcpPort))
+        ),
+        using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+      )
+      try await controlConnection.send(.hello(Hello(
+        controllerID: ControllerID(),
+        displayName: "Input Tester"
+      )))
+      var eventIterator = stream.makeAsyncIterator()
+      guard case .hello(let connectionID, _) = await eventIterator.next() else {
+        Issue.record("Expected the transport to receive the controller hello")
+        await transport.stop()
+        return
+      }
+      let udpPortValue = try #require(await transport.udpPort)
+      let token: UInt64 = 123
+      let welcomed = await transport.respond(
+        to: connectionID,
+        with: .accept(Welcome(
+          player: PlayerInfo(
+            id: PlayerID(0),
+            displayName: "Input Tester",
+            colorHex: "#32E6FF"
+          ),
+          udpPort: udpPortValue,
+          sessionToken: token,
+          hostName: "Acknowledgment Test Host",
+          hostInstanceID: UUID()
+        ))
+      )
+      #expect(welcomed)
+      _ = try await controlConnection.receive().content
+
+      let datagramConnection = NetworkConnection<UDP>(
+        to: .hostPort(
+          host: "127.0.0.1",
+          port: try #require(.init(rawValue: udpPortValue))
+        ),
+        using: .parameters { UDP() }.peerToPeerIncluded(false)
+      )
+      try await datagramConnection.send(InputFrame(
+        token: token,
+        sequence: 0,
+        clientTimeMs: 0,
+        axisX: 0.1,
+        axisY: 0
+      ).encode())
+      try await waitUntilAsync { await acknowledgmentWrite.started }
+
+      try await datagramConnection.send(InputFrame(
+        token: token,
+        sequence: 1,
+        clientTimeMs: 1,
+        axisX: 0.8,
+        axisY: 0
+      ).encode())
+      try await waitUntilAsync {
+        inputs.snapshot()[PlayerID(0)]?.axisX == 0.8
+      }
+      await transport.stop()
+    }
+
+    @Test func terminalHostWriteErrorImmediatelyRetiresTheConnection() async throws {
+      let writeFault = WriteFault()
+      let transport = HostTransport(
+        inputs: InputStore(),
+        controlSender: { connection, message in
+          if await writeFault.shouldFail() { throw InjectedWriteError.failed }
+          try await connection.send(message)
+        }
+      )
+      let stream = transport.eventStream(onOverflow: {})
+      let port = try await transport.start(
+        hostName: "Write Failure Host",
+        hostInstanceID: UUID(),
+        advertise: false
+      )
+      let connection = ClientControlConnection(
+        to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+        using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+      )
+      try await connection.send(.hello(Hello(
+        controllerID: ControllerID(),
+        displayName: "Write Failure"
+      )))
+      var iterator = stream.makeAsyncIterator()
+      guard case .hello(let connectionID, _) = await iterator.next() else {
+        Issue.record("Expected the transport to receive the controller hello")
+        await transport.stop()
+        return
+      }
+      let udpPort = try #require(await transport.udpPort)
+      #expect(await transport.respond(
+        to: connectionID,
+        with: .accept(Welcome(
+          player: PlayerInfo(id: PlayerID(0), displayName: "Write Failure", colorHex: "#32E6FF"),
+          udpPort: udpPort,
+          sessionToken: 456,
+          hostName: "Write Failure Host",
+          hostInstanceID: UUID()
+        ))
+      ))
+      _ = try await connection.receive().content
+      await writeFault.enable()
+
+      await #expect(throws: InjectedWriteError.self) {
+        try await transport.send(.layout(.lobby), to: connectionID)
+      }
+      await #expect(throws: PartyNetTransportError.self) {
+        try await transport.send(.layout(.lobby), to: connectionID)
+      }
+      await transport.stop()
+    }
+
+    @Test func stoppingTheHostCancelsInFlightBroadcastWrites() async throws {
+      let broadcastWrites = WriteProbe()
+      let host = PartyHost(transportFactory: { inputs in
+        HostTransport(
+          inputs: inputs,
+          controlSender: { connection, message in
+            if case .layout = message {
+              await broadcastWrites.markStarted()
+              try await Task.sleep(for: .seconds(30))
+              return
+            }
+            try await connection.send(message)
+          }
+        )
+      })
+      let port = try await host.start(hostName: "Broadcast Cancellation Host", advertise: false)
+      let first = PartyClient(displayName: "First")
+      let second = PartyClient(displayName: "Second")
+      await first.connect(host: "127.0.0.1", port: port)
+      await second.connect(host: "127.0.0.1", port: port)
+      try await waitUntil { host.players.count == 2 }
+
+      let broadcastTask = Task {
+        await host.broadcast(.layout(.lobby))
+      }
+      try await waitUntilAsync { await broadcastWrites.count == 2 }
+      await host.stop()
+      try await withTimeout(
+        .seconds(1),
+        clock: AnyClock(ContinuousClock()),
+        operationName: "waiting for cancelled broadcast writes"
+      ) {
+        await broadcastTask.value
+      }
+
+      await first.stop()
+      await second.stop()
+    }
+
+    @Test func clientControlWriteTimesOutAndRetiresTheSession() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in
+          await server.handle(connection)
+        }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let port = try #require(listener.port?.rawValue)
+      let clock = TestClock()
+      let stalledWrite = WriteProbe()
+
+      try await withDependencies {
+        $0.continuousClock = clock
+      } operation: {
+        let transport = ClientTransport(controlSender: { connection, message in
+          if case .hello = message {
+            try await connection.send(message)
+            return
+          }
+          await stalledWrite.markStarted()
+          try await clock.sleep(for: .seconds(30))
+        })
+        let target = try DiscoveredHost(host: "127.0.0.1", port: port)
+        let (connectionID, _) = try await runWhileAdvancingTestClock(clock) {
+          try await transport.connect(
+            to: target,
+            hello: Hello(controllerID: ControllerID(), displayName: "Timeout Tester"),
+            attemptID: UUID()
+          )
+        }
+        let sendTask = Task {
+          try await transport.send(.menu(.select), connectionID: connectionID)
+        }
+        try await waitUntilAsync { await stalledWrite.started }
+        await clock.advance(by: PartyNetConstants.helloTimeout)
+        await settle()
+
+        await #expect(throws: PartyNetTransportError.self) {
+          try await sendTask.value
+        }
+        await #expect(throws: PartyNetTransportError.self) {
+          try await transport.send(.menu(.select), connectionID: connectionID)
+        }
+        await transport.stop()
+      }
+    }
+
+    @Test func transportEventOverflowStopsTheHostAndAllowsARestart() async throws {
+      let host = PartyHost()
+      let failedStream = host.events
+      _ = try await host.start(hostName: "Overflow Host", advertise: false)
+
+      await host.simulateTransportEventStreamOverflowForTesting()
+
+      #expect(host.port == nil)
+      #expect(host.errorMessage == "The host transport event stream could not keep up.")
+      var failedIterator = failedStream.makeAsyncIterator()
+      guard case .failure(let message) = await failedIterator.next() else {
+        Issue.record("Expected the host to publish its transport-overflow failure")
+        return
+      }
+      #expect(message == "The host transport event stream could not keep up.")
+      #expect(await failedIterator.next() == nil)
+
+      let restartedStream = host.events
+      _ = try await host.start(hostName: "Restarted Host", advertise: false)
+      #expect(host.port != nil)
+      #expect(host.errorMessage == nil)
+      await host.stop()
+      var restartedIterator = restartedStream.makeAsyncIterator()
+      #expect(await restartedIterator.next() == nil)
     }
 
     private func waitUntil(

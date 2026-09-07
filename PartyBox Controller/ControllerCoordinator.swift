@@ -14,6 +14,7 @@ final class ControllerCoordinator {
 
     private let defaults: UserDefaults
     private var eventTask: Task<Void, Never>?
+    private var eventGeneration: UUID?
     private var discoveryHelpTask: Task<Void, Never>?
     private var discoveryHelpGeneration: UUID?
     private var stopOperation: (id: UUID, task: Task<Void, Never>)?
@@ -65,13 +66,7 @@ final class ControllerCoordinator {
             return
         }
 #endif
-        let stream = client.events
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { return }
-                self.handle(event)
-            }
-        }
+        startEventTask()
 #if DEBUG
         if let hostAddressError = configuration.hostAddressError {
             client.configureFixture(state: .disconnected(hostAddressError.localizedDescription))
@@ -95,6 +90,7 @@ final class ControllerCoordinator {
             return
         }
         isStarted = false
+        eventGeneration = nil
         discoveryHelpTask?.cancel()
         discoveryHelpTask = nil
         discoveryHelpGeneration = nil
@@ -180,6 +176,41 @@ final class ControllerCoordinator {
                 discoveryHelpVisible = false
             }
         }
+    }
+
+    private func startEventTask() {
+        let generation = UUID()
+        eventGeneration = generation
+        let stream = client.eventStream { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.restartEventTaskIfNeeded(
+                    generation: generation,
+                    cancelConsumer: true
+                )
+            }
+        }
+        eventTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                self.handle(event)
+            }
+            self?.restartEventTaskIfNeeded(
+                generation: generation,
+                cancelConsumer: false
+            )
+        }
+    }
+
+    private func restartEventTaskIfNeeded(
+        generation: UUID,
+        cancelConsumer: Bool
+    ) {
+        guard isStarted, eventGeneration == generation else { return }
+        eventGeneration = nil
+        let consumer = eventTask
+        eventTask = nil
+        if cancelConsumer { consumer?.cancel() }
+        startEventTask()
     }
 
     private func armDiscoveryHelp(resetVisibility: Bool = false) {

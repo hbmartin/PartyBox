@@ -17,7 +17,7 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
         self.bufferLimit = bufferLimit
     }
 
-    func stream(onOverflow: @escaping @Sendable () -> Void = {}) -> AsyncStream<Event> {
+    func stream(onOverflow: @escaping @Sendable () -> Void) -> AsyncStream<Event> {
         let id = UUID()
         return AsyncStream(bufferingPolicy: .bufferingOldest(bufferLimit)) { continuation in
             lock.lock()
