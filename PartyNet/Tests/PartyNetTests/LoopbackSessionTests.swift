@@ -117,7 +117,7 @@ extension NetworkIntegrationTests {
         switch event {
         case .application(_, let payload):
           hostPayloads.append(payload)
-        case .playerExpired(let player):
+        case .playerExpired(let player, _):
           expiredPlayers.append(player)
         default:
           break

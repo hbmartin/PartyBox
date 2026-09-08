@@ -19,6 +19,10 @@ final class ControllerCoordinator {
     private(set) var historyPersistenceError: String?
 
     var personalStatistics: HistoryStatistics { HistoryAggregation.personal(personalHistory) }
+    var currentPlayer: PlayerInfo? {
+        guard let welcomedPlayer = client.player else { return nil }
+        return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
@@ -115,7 +119,7 @@ final class ControllerCoordinator {
         eventTask?.cancel()
         eventTask = nil
         discoveryHelpVisible = false
-        stopMotionCapture()
+        resetSessionPresentation()
         setIdleTimer(connected: false)
         let id = UUID()
         let task = Task { [client] in await client.stop() }
@@ -129,6 +133,7 @@ final class ControllerCoordinator {
         discoveryHelpTask = nil
         discoveryHelpGeneration = nil
         discoveryHelpVisible = false
+        resetSessionPresentation()
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
         updateMotionCapture()
@@ -142,9 +147,7 @@ final class ControllerCoordinator {
     }
 
     func returnToPicker() async {
-        stopMotionCapture()
-        layout = .lobby
-        roster = []
+        resetSessionPresentation()
         await client.disconnect()
         guard isStarted else { return }
         await client.startBrowsing()
@@ -169,8 +172,13 @@ final class ControllerCoordinator {
     func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
 
     func clearPersonalHistory() async {
-        try? await historyStore.clear()
-        personalHistory = []
+        do {
+            try await historyStore.clear()
+            personalHistory = []
+            historyPersistenceError = nil
+        } catch {
+            historyPersistenceError = "History could not be cleared: \(error.localizedDescription)"
+        }
     }
 
     func scenePhaseChanged(isActive: Bool) {
@@ -205,6 +213,9 @@ final class ControllerCoordinator {
             switch presentation {
             case .roster(let players): roster = players
             case .layout(let value):
+                if layout != value, layout.isGame || value.isGame {
+                    client.setInput(axisX: 0, axisY: 0, buttons: [])
+                }
                 layout = value
                 updateMotionCapture()
             case .haptic(let pattern): play(pattern)
@@ -220,7 +231,15 @@ final class ControllerCoordinator {
                 discoveryHelpGeneration = nil
                 discoveryHelpVisible = false
             }
+        case .sessionReset:
+            resetSessionPresentation()
         }
+    }
+
+    private func resetSessionPresentation() {
+        stopMotionCapture()
+        layout = .lobby
+        roster = []
     }
 
     private func play(_ pattern: HapticPattern) {
@@ -324,6 +343,10 @@ final class ControllerCoordinator {
 #if DEBUG
     func appendPersonalHistoryForTesting(_ record: PersonalMatchRecord) async {
         await appendPersonalHistory(record)
+    }
+
+    func handleForTesting(_ event: ClientEvent) async {
+        await handle(event)
     }
 
     private func applyFixture(scenario: String) {

@@ -57,13 +57,16 @@ struct PartyBox_ControllerTests {
             let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
             let defaults = try #require(UserDefaults(suiteName: suiteName))
             defer { defaults.removePersistentDomain(forName: suiteName) }
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--ui-testing", "--disable-effects",
+            ])
 
-            let first = ControllerCoordinator(defaults: defaults)
+            let first = ControllerCoordinator(defaults: defaults, configuration: configuration)
             let controllerID = first.client.controllerID
             first.displayName = "  Ada    Lovelace  "
             await first.rename()
 
-            let relaunched = ControllerCoordinator(defaults: defaults)
+            let relaunched = ControllerCoordinator(defaults: defaults, configuration: configuration)
             #expect(relaunched.client.controllerID == controllerID)
             #expect(relaunched.displayName == "Ada Lovelace")
         }
@@ -74,7 +77,8 @@ struct PartyBox_ControllerTests {
             $0.continuousClock = ContinuousClock()
         } operation: {
             let configuration = ControllerLaunchConfiguration(arguments: [
-                "PartyBox Controller", "--host", "[not-an-ipv6]:49999",
+                "PartyBox Controller", "--ui-testing", "--disable-effects",
+                "--host", "[not-an-ipv6]:49999",
             ])
             let coordinator = ControllerCoordinator(configuration: configuration)
 
@@ -126,6 +130,49 @@ struct PartyBox_ControllerTests {
 
             #expect(coordinator.personalHistory == [record])
             #expect(coordinator.historyPersistenceError?.isEmpty == false)
+
+            await coordinator.clearPersonalHistory()
+
+            #expect(coordinator.personalHistory == [record])
+            #expect(coordinator.historyPersistenceError?.contains("could not be cleared") == true)
+        }
+    }
+
+    @Test func sessionAndGameLayoutChangesClearPresentationAndNeutralizeInput() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+            ])
+            let coordinator = ControllerCoordinator(configuration: configuration)
+            let gameScreen = ControllerScreen(
+                accessibilityID: "controller.layout.test",
+                accentColorHex: "#32E6FF",
+                components: [.axisSurface(.init(id: "axis", binding: .twoDimensional, instruction: "Move"))]
+            )
+            let gameLayout = PartyBoxCore.ControllerLayout.game(.init(
+                gameID: "test", payload: try PartyBoxWireCodec.encode(gameScreen)
+            ))
+            let gamePresentation = try PartyBoxWireCodec.encode(HostPresentation.layout(gameLayout))
+            let renamed = PlayerInfo(id: PlayerID(0), displayName: "Renamed", colorHex: "#32E6FF")
+            let rosterPresentation = try PartyBoxWireCodec.encode(HostPresentation.roster([renamed]))
+
+            await coordinator.start()
+            coordinator.client.setInput(axisX: 0.8, axisY: -0.4, buttons: .primary)
+            await coordinator.handleForTesting(.application(gamePresentation))
+
+            #expect(coordinator.client.inputAxisX == 0)
+            #expect(coordinator.client.inputAxisY == 0)
+            #expect(coordinator.client.inputButtons.isEmpty)
+
+            await coordinator.handleForTesting(.application(rosterPresentation))
+            #expect(coordinator.currentPlayer?.displayName == "Renamed")
+
+            await coordinator.handleForTesting(.sessionReset)
+            #expect(coordinator.layout == .lobby)
+            #expect(coordinator.roster.isEmpty)
+            await coordinator.stop()
         }
     }
 }

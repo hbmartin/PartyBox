@@ -76,7 +76,7 @@ struct PartyBoxTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             await coordinator.start()
             let originalInstanceID = coordinator.host.hostInstanceID
             try #require(coordinator.host.port != nil)
@@ -96,7 +96,7 @@ struct PartyBoxTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             let gate = CleanupGate()
             let staleFailure = Task {
                 await coordinator.simulateSuspendedStartFailureForTesting {
@@ -118,15 +118,26 @@ struct PartyBoxTests {
     }
 
     @Test func unchangedVotesDoNotRecomputeTalliesAndModifierTitlesAreResolved() {
-        let coordinator = HostCoordinator(configuration: .init(arguments: ["PartyBox", "--disable-effects"]))
+        let coordinator = isolatedHostCoordinator()
         let playerID = PlayerID(7)
+        let now = ContinuousClock().now
 
-        #expect(coordinator.storeVoteIfChanged("fast-ball", from: playerID))
-        #expect(!coordinator.storeVoteIfChanged("fast-ball", from: playerID))
-        #expect(!coordinator.storeVoteIfChanged("unknown", from: playerID))
+        #expect(coordinator.storeVoteIfChanged("fast-ball", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged("fast-ball", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged("unknown", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged(
+            "big-paddles", from: playerID, now: now.advanced(by: .milliseconds(249))
+        ))
         #expect(coordinator.voteTallies == ["fast-ball": 1])
         #expect(coordinator.displayedVoteTallies == [
             VoteTallyPresentation(id: "fast-ball", title: "FAST BALL", count: 1),
+        ])
+
+        #expect(coordinator.storeVoteIfChanged(
+            "big-paddles", from: playerID, now: now.advanced(by: .milliseconds(250))
+        ))
+        #expect(coordinator.displayedVoteTallies == [
+            VoteTallyPresentation(id: "big-paddles", title: "BIG PADDLES", count: 1),
         ])
     }
 
@@ -164,6 +175,87 @@ struct PartyBoxTests {
 
         #expect(coordinator.historyRecords == [record])
         #expect(coordinator.historyPersistenceError?.isEmpty == false)
+
+        coordinator.requestHistoryClear()
+        await coordinator.confirmHistoryClear()
+
+        #expect(coordinator.historyRecords == [record])
+        #expect(coordinator.historyPersistenceError?.contains("could not be cleared") == true)
+    }
+
+    @Test func oversizedNestedControllerLayoutFallsBackToASendableScreen() throws {
+        let coordinator = isolatedHostCoordinator()
+        let oversized = ControllerScreen(
+            accessibilityID: "oversized",
+            accentColorHex: "#32E6FF",
+            components: [.text(.init(
+                id: "oversized.text",
+                text: String(repeating: "x", count: 50_000),
+                style: .body
+            ))]
+        )
+        let screenPayload = try PartyBoxWireCodec.encode(oversized)
+        let layout = PartyBoxCore.ControllerLayout.game(.init(gameID: "oversized-game", payload: screenPayload))
+        #expect(throws: PartyBoxWireError.self) {
+            try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
+        }
+
+        let payload = try #require(coordinator.encodedLayoutPresentation(layout))
+        let presentation = try PartyBoxWireCodec.decode(HostPresentation.self, from: payload)
+        guard case .layout(.game(let envelope)) = presentation else {
+            Issue.record("Expected a game controller fallback")
+            return
+        }
+        #expect(envelope.gameID == "oversized-game")
+        #expect(envelope.validatedControllerScreen?.accessibilityID == "controller.layout.unavailable")
+    }
+
+    @Test func pongTranslationPreservesEveryTVAudioCue() throws {
+        let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let session = try #require(PongGame().makeSession(
+            context: .init(
+                participants: [.init(player: player, controllerID: ControllerID())],
+                inputs: InputStore(), seed: 42, modifierID: nil
+            ),
+            onEvents: { _ in }
+        ) as? PongGameSession)
+
+        let translated = session.translateForTesting([
+            .lostLife(bottom, remaining: 0),
+            .forfeited(bottom),
+            .gameOver(winner: nil, rally: 3),
+        ])
+        let audio = translated.compactMap { event -> HapticPattern? in
+            guard case .audio(let cue) = event else { return nil }
+            return cue
+        }
+        #expect(audio == [.heavyImpact, .error, .success])
+    }
+
+    @Test func stoppedCoordinatorCannotBeRevivedBySuspendedMatchCompletion() async throws {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "four-way-match", "--disable-effects",
+        ]))
+        await coordinator.start()
+        let gate = CleanupGate()
+        coordinator.setFinishMatchCheckpointForTesting { await gate.wait() }
+        let outcome = GameOutcome(
+            title: "MATCH OVER", subtitle: "Done", winner: bottom,
+            playerOutcomes: [.init(playerID: bottom, outcome: .won)], metrics: []
+        )
+        let completion = Task { await coordinator.finishCurrentMatchForTesting(outcome) }
+        defer {
+            gate.release()
+            completion.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await completion.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.currentScene == nil)
     }
 
     @Test func emptyEdgeActsAsWall() {
@@ -337,7 +429,7 @@ struct PartyBoxTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             await coordinator.start()
             let port = try #require(coordinator.host.port)
             let clients = [
@@ -368,6 +460,47 @@ struct PartyBoxTests {
             for client in clients.dropFirst() { await client.disconnect() }
             await coordinator.stop()
         }
+    }
+
+    @Test func recycledPlayerIDDoesNotAcquireThePreviousControllersMatchIdentity() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let host = PartyHost(reconnectGrace: .zero)
+            let coordinator = HostCoordinator(
+                configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]),
+                host: host
+            )
+            let originalControllerID = ControllerID()
+            let original = PartyClient(controllerID: originalControllerID, displayName: "Original")
+            let replacementControllerID = ControllerID()
+            let replacement = PartyClient(controllerID: replacementControllerID, displayName: "Replacement")
+
+            await coordinator.start()
+            let port = try #require(host.port)
+            await original.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.count == 1 }
+            let player = try #require(host.players.first)
+            let participant = GameParticipant(player: player, controllerID: originalControllerID)
+            #expect(coordinator.isLiveParticipantForTesting(participant))
+
+            await original.disconnect()
+            try await waitUntil { host.players.isEmpty }
+            await replacement.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.count == 1 }
+
+            #expect(host.players.first?.id == player.id)
+            #expect(host.controllerID(for: player.id) == replacementControllerID)
+            #expect(!coordinator.isLiveParticipantForTesting(participant))
+
+            await replacement.disconnect()
+            await coordinator.stop()
+        }
+    }
+
+    @MainActor
+    private func isolatedHostCoordinator() -> HostCoordinator {
+        HostCoordinator(configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]))
     }
 
     @MainActor

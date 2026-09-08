@@ -98,6 +98,11 @@ public enum ControllerLayout: Codable, Equatable, Sendable {
     case game(GameLayoutEnvelope)
     case gameOver(GameOverLayout)
     case historyNavigation
+
+    public var isGame: Bool {
+        if case .game = self { return true }
+        return false
+    }
 }
 
 public enum SpectatorAction: Codable, Equatable, Sendable {

@@ -53,6 +53,7 @@ public struct GameOutcome: Equatable, Sendable {
 }
 
 public enum GameEvent: Equatable, Sendable {
+    case audio(HapticPattern)
     case haptic(PlayerID, HapticPattern)
     case eliminated(PlayerID)
     case completed(GameOutcome)

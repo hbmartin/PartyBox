@@ -234,7 +234,7 @@ private struct ConnectedControllerView: View {
     }
 
     private var playerLabel: String {
-        guard let player = coordinator.client.player else { return coordinator.displayName }
+        guard let player = coordinator.currentPlayer else { return coordinator.displayName }
         return "P\(player.number)  \(player.displayName)"
     }
 }

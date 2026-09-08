@@ -106,19 +106,29 @@ final class PongGameSession: PartyGameSession {
     }
 
     private func handle(_ events: [PongEvent]) {
+        let translated = translate(events)
+        if !translated.isEmpty { onEvents(translated) }
+    }
+
+    private func translate(_ events: [PongEvent]) -> [GameEvent] {
         var translated: [GameEvent] = []
         for event in events {
             switch event {
             case .paddleHit(let playerID):
+                translated.append(.audio(.lightImpact))
                 translated.append(.haptic(playerID, .lightImpact))
             case let .lostLife(playerID, remaining):
+                translated.append(.audio(.heavyImpact))
                 if remaining > 0 { translated.append(.haptic(playerID, .heavyImpact)) }
             case .eliminated(let playerID):
+                translated.append(.audio(.error))
                 translated.append(.haptic(playerID, .error))
                 translated.append(.eliminated(playerID))
             case .forfeited(let playerID):
+                translated.append(.audio(.error))
                 translated.append(.eliminated(playerID))
             case let .gameOver(winner, rally):
+                translated.append(.audio(.success))
                 if let winner { translated.append(.haptic(winner, .success)) }
                 let solo = context.participants.count == 1
                 let title: String
@@ -155,6 +165,10 @@ final class PongGameSession: PartyGameSession {
                 )))
             }
         }
-        if !translated.isEmpty { onEvents(translated) }
+        return translated
     }
+
+#if DEBUG
+    func translateForTesting(_ events: [PongEvent]) -> [GameEvent] { translate(events) }
+#endif
 }

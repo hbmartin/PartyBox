@@ -14,6 +14,7 @@ public enum PartyClientState: Equatable, Sendable {
 public enum ClientEvent: Sendable {
     case application(Data)
     case hostsChanged([DiscoveredHost])
+    case sessionReset
 }
 
 @MainActor
@@ -467,8 +468,7 @@ public final class PartyClient {
             cancelForegroundProbe()
             cancelInputFlush()
             connectionID = nil
-            resetInputPresentation()
-            usesTCPFallback = false
+            resetSessionPresentation()
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)
         case let .discoveryFailed(message):
@@ -598,6 +598,7 @@ public final class PartyClient {
         rttMilliseconds = nil
         rttSampleCount = 0
         usesTCPFallback = false
+        eventHub.yield(.sessionReset)
     }
 
     private func resetInputPresentation() {

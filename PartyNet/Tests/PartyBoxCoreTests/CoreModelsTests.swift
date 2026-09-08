@@ -120,6 +120,24 @@ struct CoreModelsTests {
         #expect(await store.append(record) == .duplicate)
     }
 
+    @Test func failedHistoryClearKeepsTheAcceptedInMemoryRecords() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storageDirectory = directory.appendingPathComponent("store", isDirectory: true)
+        let url = storageDirectory.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let record = match()
+        let store = JSONRecordStore<MatchRecord>(fileURL: url)
+        #expect(await store.append(record) == .inserted)
+
+        try FileManager.default.removeItem(at: storageDirectory)
+        try Data("blocked".utf8).write(to: storageDirectory)
+
+        await #expect(throws: (any Error).self) {
+            try await store.clear()
+        }
+        #expect(await store.all() == [record])
+    }
+
     @Test func malformedHistoryIsPreservedAsCorruptBackup() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let url = directory.appendingPathComponent("history.json")

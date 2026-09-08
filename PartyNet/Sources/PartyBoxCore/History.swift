@@ -201,15 +201,15 @@ public actor JSONRecordStore<Record: Codable & Identifiable & Sendable> where Re
     }
 
     public func clear() throws {
+        try persist([])
         records.removeAll()
-        try persist()
     }
 
-    private func persist() throws {
+    private func persist(_ recordsToPersist: [Record]? = nil) throws {
         guard let fileURL else { return }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
-        try encoder.encode(Archive(version: 1, records: records)).write(to: fileURL, options: .atomic)
+        try encoder.encode(Archive(version: 1, records: recordsToPersist ?? records)).write(to: fileURL, options: .atomic)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 import PartyBoxCore
 import PartyGameRuntime
 import PartyNet
@@ -44,7 +45,7 @@ struct VoteTallyPresentation: Identifiable, Equatable {
 @MainActor
 @Observable
 final class HostCoordinator {
-    let host = PartyHost()
+    let host: PartyHost
     let configuration: HostLaunchConfiguration
     private(set) var phase: HostPhase = .lobby
     private(set) var turnOrder = TurnOrder()
@@ -61,6 +62,7 @@ final class HostCoordinator {
     @ObservationIgnored private let games: [any PartyGame]
     @ObservationIgnored private let sounds: ArcadeSoundPlayer?
     @ObservationIgnored private let historyStore: JSONRecordStore<MatchRecord>
+    @ObservationIgnored private let logger = Logger(subsystem: "PartyBox", category: "HostCoordinator")
     @ObservationIgnored private var currentSession: (any PartyGameSession)?
     @ObservationIgnored private var bots: [PartyClient] = []
     @ObservationIgnored private var hostEventsTask: Task<Void, Never>?
@@ -68,13 +70,25 @@ final class HostCoordinator {
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var lifecycleGeneration = UUID()
     @ObservationIgnored private var currentParticipants: [GameParticipant] = []
-    @ObservationIgnored private var eliminatedPlayers: Set<PlayerID> = []
+    @ObservationIgnored private var currentMatchID: UUID?
+    @ObservationIgnored private var pendingGameEventBatches: [[GameEvent]] = []
+    @ObservationIgnored private var gameEventOperation: (id: UUID, task: Task<Void, Never>)?
+    @ObservationIgnored private var layoutBroadcastOperation: (id: UUID, task: Task<Void, Never>)?
+    @ObservationIgnored private var layoutsNeedBroadcast = false
+    @ObservationIgnored private var rosterBroadcastOperation: (id: UUID, task: Task<Void, Never>)?
+    @ObservationIgnored private var pendingRosterBroadcast: [PlayerInfo]?
+    @ObservationIgnored private var latestRequestedRoster: [PlayerInfo]?
+    @ObservationIgnored private var eliminatedControllers: Set<ControllerID> = []
     @ObservationIgnored private var votes: [PlayerID: String] = [:]
     @ObservationIgnored private var lastReactionAt: [PlayerID: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var lastVoteAt: [PlayerID: ContinuousClock.Instant] = [:]
     @ObservationIgnored private var currentMatchSeed: UInt64 = 1
     @ObservationIgnored private var matchStartedAt = Date()
     @ObservationIgnored private var appliedModifier: GameModifierDescriptor?
     @ObservationIgnored private var pendingModifier: GameModifierDescriptor?
+#if DEBUG
+    @ObservationIgnored private var finishMatchCheckpointForTesting: (@MainActor () async -> Void)?
+#endif
 
     var menuItems: [String] { games.map { $0.descriptor.title } + ["HISTORY & LEADERBOARD"] }
     var menuDetails: [String] { games.map { $0.descriptor.summary } + ["All-time results and match details"] }
@@ -96,9 +110,14 @@ final class HostCoordinator {
         return connectedCount >= games[menuSelection].descriptor.minimumPlayers
     }
 
-    init(configuration suppliedConfiguration: HostLaunchConfiguration? = nil, historyFileURL: URL? = nil) {
+    init(
+        configuration suppliedConfiguration: HostLaunchConfiguration? = nil,
+        historyFileURL: URL? = nil,
+        host suppliedHost: PartyHost? = nil
+    ) {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
+        host = suppliedHost ?? PartyHost()
         games = [PongGame()]
         sounds = configuration.disableEffects ? nil : ArcadeSoundPlayer()
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
@@ -193,25 +212,25 @@ final class HostCoordinator {
         case .lobby:
             if action == .select, canStart {
                 phase = .gameMenu
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             }
         case .gameMenu:
             switch action {
             case .up, .left:
                 menuSelection = max(0, menuSelection - 1)
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             case .down, .right:
                 menuSelection = min(menuItems.count - 1, menuSelection + 1)
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             case .select:
                 if games.indices.contains(menuSelection) { startSelectedGame() }
                 else {
                     phase = .history
-                    Task { await sendLayouts() }
+                    requestLayoutBroadcast()
                 }
             case .back:
                 phase = .lobby
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             }
         case .playing:
             break
@@ -221,7 +240,7 @@ final class HostCoordinator {
             case .back:
                 pendingModifier = nil
                 phase = .gameMenu
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             default: break
             }
         case .history:
@@ -231,7 +250,7 @@ final class HostCoordinator {
             case .back:
                 confirmsHistoryClear = false
                 phase = .gameMenu
-                Task { await sendLayouts() }
+                requestLayoutBroadcast()
             default: break
             }
         }
@@ -242,9 +261,14 @@ final class HostCoordinator {
 
     func confirmHistoryClear(source: HostInputSource = .local) async {
         guard source == .local, confirmsHistoryClear else { return }
-        try? await historyStore.clear()
-        historyRecords = []
-        historySelection = 0
+        do {
+            try await historyStore.clear()
+            historyRecords = []
+            historySelection = 0
+            historyPersistenceError = nil
+        } catch {
+            historyPersistenceError = "History could not be cleared: \(error.localizedDescription)"
+        }
         confirmsHistoryClear = false
     }
 
@@ -252,23 +276,29 @@ final class HostCoordinator {
         guard isStarted, lifecycleGeneration == generation else { return }
         switch event {
         case .rosterChanged(let roster):
-            await broadcast(.roster(roster))
+            requestRosterBroadcast(roster)
         case .playerJoined(let player):
             turnOrder.joined(player.id)
             statusMessage = "\(player.displayName) joined"
-            await sendLayouts()
+            requestLayoutBroadcast()
         case .playerReconnected(let player):
             statusMessage = "\(player.displayName) reconnected"
-            await sendLayout(to: player.id)
+            requestLayoutBroadcast()
         case .playerDisconnected(let player):
             statusMessage = "Waiting 15 seconds for \(player.displayName)…"
-        case .playerExpired(let player):
+        case .playerExpired(let player, let controllerID):
             turnOrder.left(player.id)
             votes.removeValue(forKey: player.id)
             lastReactionAt.removeValue(forKey: player.id)
-            if phase == .playing { currentSession?.forfeit(player.id) }
+            lastVoteAt.removeValue(forKey: player.id)
+            if phase == .playing,
+               currentParticipants.contains(where: {
+                   $0.player.id == player.id && $0.controllerID == controllerID
+               }) {
+                currentSession?.forfeit(player.id)
+            }
             statusMessage = host.players.isEmpty ? "Ready for controllers" : "\(player.displayName) left the party"
-            await sendLayouts()
+            requestLayoutBroadcast()
         case let .application(playerID, payload):
             guard let command = try? PartyBoxWireCodec.decode(ControllerCommand.self, from: payload) else { return }
             await handle(command, from: playerID)
@@ -285,8 +315,8 @@ final class HostCoordinator {
                   games.indices.contains(menuSelection),
                   envelope.gameID == games[menuSelection].descriptor.id,
                   envelope.schemaVersion == ControllerScreen.schemaVersion,
-                  currentParticipants.contains(where: { $0.player.id == playerID }),
-                  !eliminatedPlayers.contains(playerID) else { return }
+                  let participant = currentParticipant(for: playerID),
+                  !eliminatedControllers.contains(participant.controllerID) else { return }
             currentSession?.handle(action: envelope.action, from: playerID)
         case .spectator(let action):
             guard isEligibleSpectator(playerID) else { return }
@@ -294,7 +324,7 @@ final class HostCoordinator {
             case .reaction(let emoji): addReaction(emoji, from: playerID)
             case .vote(let modifierID):
                 guard storeVoteIfChanged(modifierID, from: playerID) else { return }
-                await sendLayouts()
+                requestLayoutBroadcast()
             }
         }
     }
@@ -315,8 +345,14 @@ final class HostCoordinator {
         pendingModifier = nil
         appliedModifier = modifier
         currentParticipants = participants
-        eliminatedPlayers = []
+        let matchID = UUID()
+        currentMatchID = matchID
+        pendingGameEventBatches = []
+        gameEventOperation?.task.cancel()
+        gameEventOperation = nil
+        eliminatedControllers = []
         votes = [:]
+        lastVoteAt = [:]
         voteTallies = [:]
         currentMatchSeed = configuration.seed ?? UInt64.random(in: 1...UInt64.max)
         matchStartedAt = Date()
@@ -324,39 +360,89 @@ final class HostCoordinator {
         let context = GameSessionContext(
             participants: participants, inputs: host.inputs, seed: currentMatchSeed, modifierID: modifier?.id
         )
-        currentSession = game.makeSession(context: context) { [weak self] events in self?.handleGame(events) }
+        currentSession = game.makeSession(context: context) { [weak self] events in
+            self?.handleGame(events, matchID: matchID)
+        }
         currentScene = currentSession?.scene
         phase = .playing
         statusMessage = "Match in progress"
-        Task { await sendLayouts() }
+        requestLayoutBroadcast()
     }
 
-    private func handleGame(_ events: [GameEvent]) {
-        guard phase == .playing else { return }
+    private func handleGame(_ events: [GameEvent], matchID: UUID) {
+        guard phase == .playing, currentMatchID == matchID, !events.isEmpty else { return }
+        pendingGameEventBatches.append(events)
+        guard gameEventOperation == nil else { return }
+        let operationID = UUID()
+        let lifecycleGeneration = lifecycleGeneration
+        let task: Task<Void, Never> = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainGameEvents(
+                operationID: operationID,
+                matchID: matchID,
+                lifecycleGeneration: lifecycleGeneration
+            )
+        }
+        gameEventOperation = (operationID, task)
+    }
+
+    private func drainGameEvents(operationID: UUID, matchID: UUID, lifecycleGeneration: UUID) async {
+        while !Task.isCancelled,
+              gameEventOperation?.id == operationID,
+              isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration),
+              !pendingGameEventBatches.isEmpty {
+            let events = pendingGameEventBatches.removeFirst()
+            await processGameEvents(events, matchID: matchID, lifecycleGeneration: lifecycleGeneration)
+        }
+        if gameEventOperation?.id == operationID { gameEventOperation = nil }
+    }
+
+    private func processGameEvents(_ events: [GameEvent], matchID: UUID, lifecycleGeneration: UUID) async {
+        guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+        var needsLayout = false
+        var completion: GameOutcome?
+        var haptics: [(PlayerID, HapticPattern)] = []
         for event in events {
             switch event {
+            case .audio(let cue):
+                sounds?.play(cue)
             case let .haptic(playerID, pattern):
-                sounds?.play(pattern)
-                Task { await send(.haptic(pattern), to: playerID) }
+                haptics.append((playerID, pattern))
             case .eliminated(let playerID):
-                eliminatedPlayers.insert(playerID)
-                Task { await sendLayouts() }
+                if let participant = currentParticipants.first(where: { $0.player.id == playerID }) {
+                    eliminatedControllers.insert(participant.controllerID)
+                }
+                needsLayout = true
             case .completed(let outcome):
-                Task { await finishMatch(outcome) }
+                completion = outcome
             }
+        }
+        for (playerID, pattern) in haptics {
+            guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+            guard let participant = currentParticipants.first(where: { $0.player.id == playerID }),
+                  livePlayer(for: participant)?.isConnected == true else { continue }
+            await send(.haptic(pattern), to: playerID)
+        }
+        guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+        if let completion {
+            await finishMatch(completion, matchID: matchID, lifecycleGeneration: lifecycleGeneration)
+        } else if needsLayout {
+            requestLayoutBroadcast()
         }
     }
 
-    private func finishMatch(_ outcome: GameOutcome) async {
-        guard phase == .playing, games.indices.contains(menuSelection) else { return }
+    private func finishMatch(_ outcome: GameOutcome, matchID: UUID, lifecycleGeneration: UUID) async {
+        guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration),
+              games.indices.contains(menuSelection) else { return }
         let game = games[menuSelection]
+        let participants = currentParticipants
         pendingModifier = resolveVote(in: game.descriptor)
         let endedAt = Date()
-        let participantRecords = currentParticipants.map { participant in
+        let participantRecords = participants.map { participant in
             let value = outcome.playerOutcomes.first { $0.playerID == participant.player.id }?.outcome ?? .lost
             return MatchParticipant(
                 controllerID: participant.controllerID,
-                displayName: host.players.first(where: { $0.id == participant.player.id })?.displayName ?? participant.player.displayName,
+                displayName: livePlayer(for: participant)?.displayName ?? participant.player.displayName,
                 colorHex: participant.player.colorHex,
                 outcome: value
             )
@@ -370,16 +456,47 @@ final class HostCoordinator {
             participants: participantRecords,
             metrics: outcome.metrics
         )
-        await appendHistory(record)
-        for participant in currentParticipants where host.players.contains(where: { $0.id == participant.player.id && $0.isConnected }) {
+        let historyResult = await historyStore.append(record)
+#if DEBUG
+        if let checkpoint = finishMatchCheckpointForTesting { await checkpoint() }
+#endif
+        guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+        applyHistoryAppend(record, result: historyResult)
+        for participant in participants {
+            guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+            guard livePlayer(for: participant)?.isConnected == true else { continue }
             await send(.matchCompleted(PersonalMatchRecord(record: record, controllerID: participant.controllerID)), to: participant.player.id)
         }
-        turnOrder.rotateAfterMatch(active: currentParticipants.map { $0.player.id }, winner: outcome.winner)
+        guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
+        let identityMatchedParticipants = participants.filter { livePlayer(for: $0) != nil }
+        let identityMatchedIDs = identityMatchedParticipants.map { $0.player.id }
+        let identityMatchedWinner = outcome.winner.flatMap { winner in
+            identityMatchedParticipants.contains(where: { $0.player.id == winner }) ? winner : nil
+        }
+        turnOrder.rotateAfterMatch(active: identityMatchedIDs, winner: identityMatchedWinner)
+        currentMatchID = nil
+        pendingGameEventBatches = []
         currentSession = nil
         currentScene = nil
         appliedModifier = nil
         phase = .gameOver(outcome)
-        await sendLayouts()
+        requestLayoutBroadcast()
+    }
+
+    private func isCurrentMatch(_ matchID: UUID, lifecycleGeneration: UUID) -> Bool {
+        isStarted && self.lifecycleGeneration == lifecycleGeneration
+            && currentMatchID == matchID && phase == .playing
+    }
+
+    private func livePlayer(for participant: GameParticipant) -> PlayerInfo? {
+        guard host.controllerID(for: participant.player.id) == participant.controllerID else { return nil }
+        return host.players.first { $0.id == participant.player.id }
+    }
+
+    private func currentParticipant(for playerID: PlayerID) -> GameParticipant? {
+        currentParticipants.first { participant in
+            participant.player.id == playerID && livePlayer(for: participant) != nil
+        }
     }
 
     private func resolveVote(in descriptor: GameDescriptor) -> GameModifierDescriptor? {
@@ -393,7 +510,8 @@ final class HostCoordinator {
 
     private func isEligibleSpectator(_ playerID: PlayerID) -> Bool {
         guard phase == .playing, host.players.contains(where: { $0.id == playerID && $0.isConnected }) else { return false }
-        return !currentParticipants.contains(where: { $0.player.id == playerID }) || eliminatedPlayers.contains(playerID)
+        guard let participant = currentParticipant(for: playerID) else { return true }
+        return eliminatedControllers.contains(participant.controllerID)
     }
 
     private func addReaction(_ emoji: String, from playerID: PlayerID) {
@@ -417,10 +535,19 @@ final class HostCoordinator {
     }
 
     @discardableResult
-    func storeVoteIfChanged(_ modifierID: String, from playerID: PlayerID) -> Bool {
+    func storeVoteIfChanged(
+        _ modifierID: String,
+        from playerID: PlayerID,
+        now suppliedNow: ContinuousClock.Instant? = nil
+    ) -> Bool {
         guard games.indices.contains(menuSelection),
               games[menuSelection].descriptor.modifiers.contains(where: { $0.id == modifierID }),
               votes[playerID] != modifierID else { return false }
+        let now = suppliedNow ?? ContinuousClock().now
+        if let previous = lastVoteAt[playerID], previous.duration(to: now) < .milliseconds(250) {
+            return false
+        }
+        lastVoteAt[playerID] = now
         votes[playerID] = modifierID
         updateVoteTallies()
         return true
@@ -428,6 +555,10 @@ final class HostCoordinator {
 
     private func appendHistory(_ record: MatchRecord) async {
         let result = await historyStore.append(record)
+        applyHistoryAppend(record, result: result)
+    }
+
+    private func applyHistoryAppend(_ record: MatchRecord, result: JSONRecordAppendResult) {
         guard result.wasInserted else { return }
         if !historyRecords.contains(where: { $0.id == record.id }) {
             historyRecords.insert(record, at: 0)
@@ -449,15 +580,20 @@ final class HostCoordinator {
         case .playing:
             guard games.indices.contains(menuSelection) else { return .lobby }
             let game = games[menuSelection]
-            let active = currentParticipants.map { $0.player.id }
+            let active = currentParticipants.compactMap { participant in
+                livePlayer(for: participant) == nil ? nil : participant.player.id
+            }
             let screen: ControllerScreen
-            if active.contains(playerID), !eliminatedPlayers.contains(playerID) {
+            if let participant = currentParticipant(for: playerID),
+               !eliminatedControllers.contains(participant.controllerID) {
                 screen = currentSession?.controllerScreen(for: playerID) ?? SpectatorScreenFactory.make(
                     game: game.descriptor,
                     state: .init(role: .active, choices: [], tallies: [:], selection: nil)
                 )
             } else {
-                let role: PlayerRole = eliminatedPlayers.contains(playerID)
+                let role: PlayerRole = currentParticipant(for: playerID).map {
+                    eliminatedControllers.contains($0.controllerID)
+                } == true
                     ? .eliminated
                     : .waiting(position: turnOrder.waitingPosition(of: playerID, active: active) ?? 1)
                 screen = SpectatorScreenFactory.make(
@@ -465,24 +601,104 @@ final class HostCoordinator {
                     state: .init(role: role, choices: game.descriptor.modifiers, tallies: voteTallies, selection: votes[playerID])
                 )
             }
-            guard let payload = try? PartyBoxWireCodec.encode(screen) else { return .lobby }
-            return .game(.init(gameID: game.descriptor.id, payload: payload))
-        }
-    }
-
-    private func sendLayouts() async {
-        let pending = host.players.filter(\.isConnected).map { ($0.id, layout(for: $0.id)) }
-        await withTaskGroup(of: Void.self) { group in
-            for (playerID, layout) in pending {
-                group.addTask { [host] in
-                    guard let payload = try? PartyBoxWireCodec.encode(HostPresentation.layout(layout)) else { return }
-                    _ = await host.sendApplication(payload, to: playerID)
-                }
+            do {
+                return .game(.init(gameID: game.descriptor.id, payload: try PartyBoxWireCodec.encode(screen)))
+            } catch {
+                logger.error("Controller screen for \(game.descriptor.id, privacy: .public) is too large or invalid: \(error.localizedDescription, privacy: .public)")
+                return unavailableGameLayout(gameID: game.descriptor.id)
             }
         }
     }
 
-    private func sendLayout(to playerID: PlayerID) async { await send(.layout(layout(for: playerID)), to: playerID) }
+    private func unavailableGameLayout(gameID: String) -> PartyBoxCore.ControllerLayout {
+        let screen = ControllerScreen(
+            accessibilityID: "controller.layout.unavailable",
+            accentColorHex: "#FF9F0A",
+            components: [
+                .text(.init(id: "unavailable", text: "CONTROLLER UNAVAILABLE", style: .title)),
+                .text(.init(id: "detail", text: "This game sent a controller screen that was too large.", style: .body)),
+            ]
+        )
+        return .game(.init(gameID: gameID, payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+    }
+
+    func encodedLayoutPresentation(_ layout: PartyBoxCore.ControllerLayout) -> Data? {
+        do {
+            return try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
+        } catch {
+            logger.error("Controller layout exceeded the application payload limit: \(error.localizedDescription, privacy: .public)")
+            let fallback: PartyBoxCore.ControllerLayout
+            if case .game(let envelope) = layout {
+                fallback = unavailableGameLayout(gameID: envelope.gameID)
+            } else {
+                fallback = .lobby
+            }
+            do {
+                return try PartyBoxWireCodec.encode(HostPresentation.layout(fallback))
+            } catch {
+                logger.fault("Could not encode the controller layout fallback: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+    }
+
+    private func requestLayoutBroadcast() {
+        layoutsNeedBroadcast = true
+        guard layoutBroadcastOperation == nil else { return }
+        let operationID = UUID()
+        let generation = lifecycleGeneration
+        let task: Task<Void, Never> = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainLayoutBroadcasts(operationID: operationID, generation: generation)
+        }
+        layoutBroadcastOperation = (operationID, task)
+    }
+
+    private func drainLayoutBroadcasts(operationID: UUID, generation: UUID) async {
+        while !Task.isCancelled,
+              isStarted,
+              lifecycleGeneration == generation,
+              layoutBroadcastOperation?.id == operationID,
+              layoutsNeedBroadcast {
+            layoutsNeedBroadcast = false
+            let pending = host.players.filter(\.isConnected).compactMap { player -> (PlayerID, Data)? in
+                guard let payload = encodedLayoutPresentation(layout(for: player.id)) else { return nil }
+                return (player.id, payload)
+            }
+            await withTaskGroup(of: Void.self) { group in
+                for (playerID, payload) in pending {
+                    group.addTask { [host] in _ = await host.sendApplication(payload, to: playerID) }
+                }
+            }
+        }
+        if layoutBroadcastOperation?.id == operationID { layoutBroadcastOperation = nil }
+    }
+
+    private func requestRosterBroadcast(_ roster: [PlayerInfo]) {
+        guard latestRequestedRoster != roster else { return }
+        latestRequestedRoster = roster
+        pendingRosterBroadcast = roster
+        guard rosterBroadcastOperation == nil else { return }
+        let operationID = UUID()
+        let generation = lifecycleGeneration
+        let task: Task<Void, Never> = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainRosterBroadcasts(operationID: operationID, generation: generation)
+        }
+        rosterBroadcastOperation = (operationID, task)
+    }
+
+    private func drainRosterBroadcasts(operationID: UUID, generation: UUID) async {
+        while !Task.isCancelled,
+              isStarted,
+              lifecycleGeneration == generation,
+              rosterBroadcastOperation?.id == operationID,
+              let roster = pendingRosterBroadcast {
+            pendingRosterBroadcast = nil
+            await broadcast(.roster(roster))
+        }
+        if rosterBroadcastOperation?.id == operationID { rosterBroadcastOperation = nil }
+    }
 
     private func send(_ presentation: HostPresentation, to playerID: PlayerID) async {
         guard let payload = try? PartyBoxWireCodec.encode(presentation) else { return }
@@ -517,20 +733,35 @@ final class HostCoordinator {
     }
 
     private func resetRuntime() {
+        gameEventOperation?.task.cancel()
+        gameEventOperation = nil
+        pendingGameEventBatches = []
+        layoutBroadcastOperation?.task.cancel()
+        layoutBroadcastOperation = nil
+        layoutsNeedBroadcast = false
+        rosterBroadcastOperation?.task.cancel()
+        rosterBroadcastOperation = nil
+        pendingRosterBroadcast = nil
+        latestRequestedRoster = nil
         phase = .lobby
         turnOrder = TurnOrder()
         currentSession = nil
         currentScene = nil
+        currentMatchID = nil
         statusMessage = "Starting local party…"
         menuSelection = 0
         currentParticipants = []
-        eliminatedPlayers = []
+        eliminatedControllers = []
         votes = [:]
+        lastVoteAt = [:]
         voteTallies = [:]
         pendingModifier = nil
         appliedModifier = nil
         reactionBursts = []
         confirmsHistoryClear = false
+#if DEBUG
+        finishMatchCheckpointForTesting = nil
+#endif
     }
 
 #if DEBUG
@@ -559,6 +790,19 @@ final class HostCoordinator {
         await appendHistory(record)
     }
 
+    func setFinishMatchCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
+        finishMatchCheckpointForTesting = checkpoint
+    }
+
+    func finishCurrentMatchForTesting(_ outcome: GameOutcome) async {
+        guard let currentMatchID else { return }
+        await finishMatch(outcome, matchID: currentMatchID, lifecycleGeneration: lifecycleGeneration)
+    }
+
+    func isLiveParticipantForTesting(_ participant: GameParticipant) -> Bool {
+        livePlayer(for: participant) != nil
+    }
+
     private func applyFixture(scenario: String) {
         resetRuntime()
         let names = ["Ada", "Grace", "Katherine", "Margaret"]
@@ -575,6 +819,7 @@ final class HostCoordinator {
             currentParticipants = fixturePlayers.map { player in
                 GameParticipant(player: player, controllerID: ControllerID())
             }
+            currentMatchID = UUID()
             let context = GameSessionContext(
                 participants: currentParticipants, inputs: host.inputs,
                 seed: configuration.seed ?? 42, modifierID: nil

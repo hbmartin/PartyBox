@@ -7,7 +7,7 @@ public enum HostEvent: Sendable {
     case playerJoined(PlayerInfo)
     case playerReconnected(PlayerInfo)
     case playerDisconnected(PlayerInfo)
-    case playerExpired(PlayerInfo)
+    case playerExpired(PlayerInfo, controllerID: ControllerID)
     case rosterChanged([PlayerInfo])
     case application(playerID: PlayerID, payload: Data)
     case failure(String)
@@ -556,7 +556,10 @@ public final class PartyHost {
         inputs.remove(session.playerID)
         refreshPlayers()
         if session.isAdmitted {
-            eventHub.yield(.playerExpired(info(for: session, connected: false)))
+            eventHub.yield(.playerExpired(
+                info(for: session, connected: false),
+                controllerID: session.controllerID
+            ))
         }
         if let connectionID = session.connectionID {
             await transport?.disconnect(connectionID: connectionID)
@@ -671,7 +674,7 @@ public final class PartyHost {
     }
 
     private func refreshPlayers() {
-        players = sessions.values
+        let refreshedPlayers = sessions.values
             .filter(\.isAdmitted)
             .map {
                 info(
@@ -680,6 +683,8 @@ public final class PartyHost {
                 )
             }
             .sorted { $0.id < $1.id }
+        guard refreshedPlayers != players else { return }
+        players = refreshedPlayers
         eventHub.yield(.rosterChanged(players))
     }
 }
