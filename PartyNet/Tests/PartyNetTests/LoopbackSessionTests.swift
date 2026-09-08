@@ -30,11 +30,13 @@ extension NetworkIntegrationTests {
 
     private actor WelcomingHandshakeServer {
       private(set) var receivedLeave = false
+      private(set) var receivedHelloCount = 0
 
       func handle(_ connection: HostControlConnection) async {
         do {
           let first = try await connection.receive().content
           guard case .hello = first else { return }
+          receivedHelloCount += 1
           let welcome = Welcome(
             player: PlayerInfo(id: PlayerID(0), displayName: "Cancelled", colorHex: "#32E6FF"),
             udpPort: 9,
@@ -75,6 +77,14 @@ extension NetworkIntegrationTests {
       func markStarted() {
         started = true
         count += 1
+      }
+    }
+
+    private actor CompletionProbe {
+      private(set) var completed = false
+
+      func markCompleted() {
+        completed = true
       }
     }
 
@@ -749,6 +759,7 @@ extension NetworkIntegrationTests {
 
     @Test func stoppingTheHostCancelsInFlightBroadcastWrites() async throws {
       let broadcastWrites = WriteProbe()
+      let completion = CompletionProbe()
       let host = PartyHost(transportFactory: { inputs in
         HostTransport(
           inputs: inputs,
@@ -771,16 +782,13 @@ extension NetworkIntegrationTests {
 
       let broadcastTask = Task {
         await host.broadcast(.application(Data([1])))
+        await completion.markCompleted()
       }
+      defer { broadcastTask.cancel() }
       try await waitUntilAsync { await broadcastWrites.count == 2 }
       await host.stop()
-      try await withTimeout(
-        .seconds(1),
-        clock: AnyClock(ContinuousClock()),
-        operationName: "waiting for cancelled broadcast writes"
-      ) {
-        await broadcastTask.value
-      }
+      try await waitUntilAsync(timeout: .seconds(1)) { await completion.completed }
+      await broadcastTask.value
 
       await first.stop()
       await second.stop()
@@ -840,12 +848,122 @@ extension NetworkIntegrationTests {
       }
     }
 
+    @Test func replacingASessionDoesNotWaitForThePreviousLeaveWrite() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in await server.handle(connection) }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let target = try DiscoveredHost(
+        host: "127.0.0.1",
+        port: try #require(listener.port?.rawValue)
+      )
+      let stalledLeave = WriteProbe()
+      let transport = ClientTransport(controlSender: { connection, message in
+        if case .leave = message {
+          await stalledLeave.markStarted()
+          try await Task.sleep(for: .seconds(30))
+          return
+        }
+        try await connection.send(message)
+      })
+
+      _ = try await transport.connect(
+        to: target,
+        hello: Hello(controllerID: ControllerID(), displayName: "First Session"),
+        attemptID: UUID()
+      )
+      let replacement = Task {
+        try await transport.connect(
+          to: target,
+          hello: Hello(controllerID: ControllerID(), displayName: "Replacement Session"),
+          attemptID: UUID()
+        )
+      }
+      defer { replacement.cancel() }
+
+      try await waitUntilAsync { await stalledLeave.started }
+      try await waitUntilAsync(timeout: .seconds(1)) { await server.receivedHelloCount == 2 }
+      _ = try await replacement.value
+      await transport.stop()
+    }
+
+    @Test func nonterminalPingWriteErrorDoesNotRetireTheSession() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in await server.handle(connection) }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let clock = TestClock()
+      let failedPing = WriteProbe()
+
+      try await withDependencies {
+        $0.continuousClock = clock
+      } operation: {
+        let transport = ClientTransport(controlSender: { connection, message in
+          if case .ping = message {
+            await failedPing.markStarted()
+            throw EncodingError.invalidValue(
+              message,
+              .init(codingPath: [], debugDescription: "Injected encoding failure")
+            )
+          }
+          try await connection.send(message)
+        })
+        let target = try DiscoveredHost(
+          host: "127.0.0.1",
+          port: try #require(listener.port?.rawValue)
+        )
+        let (connectionID, _) = try await runWhileAdvancingTestClock(clock) {
+          try await transport.connect(
+            to: target,
+            hello: Hello(controllerID: ControllerID(), displayName: "Encoding Tester"),
+            attemptID: UUID()
+          )
+        }
+
+        await clock.advance(by: PartyNetConstants.pingInterval)
+        try await waitUntilAsync { await failedPing.started }
+        try await transport.send(.application(Data([1])), connectionID: connectionID)
+        await transport.stop()
+      }
+    }
+
+    @Test func clientOverflowPreservesTerminalStateAndPresentation() async {
+      let client = PartyClient(displayName: "Terminal Client")
+      let player = PlayerInfo(
+        id: PlayerID(0),
+        displayName: "Terminal Client",
+        colorHex: "#32E6FF"
+      )
+      for state in [PartyClientState.rejected("Full"), .disconnected("Offline")] {
+        client.configureFixture(state: state, player: player)
+        await client.simulateTransportEventStreamOverflowForTesting()
+        #expect(client.state == state)
+        #expect(client.player == player)
+      }
+      await client.stop()
+    }
+
     @Test func transportEventOverflowStopsTheHostAndAllowsARestart() async throws {
       let host = PartyHost()
       let failedStream = host.events
       _ = try await host.start(hostName: "Overflow Host", advertise: false)
 
       await host.simulateTransportEventStreamOverflowForTesting()
+      try await waitUntil { host.port == nil }
 
       #expect(host.port == nil)
       #expect(host.errorMessage == "The host transport event stream could not keep up.")

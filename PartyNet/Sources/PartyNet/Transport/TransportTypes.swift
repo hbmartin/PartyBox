@@ -39,15 +39,11 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
             case .enqueued:
                 break
             case .dropped:
-                guard remove(id) != nil else { continue }
-                subscription.continuation.finish()
-                subscription.onOverflow()
+                finishOverflowedSubscription(id: id, subscription: subscription)
             case .terminated:
                 remove(id)
             @unknown default:
-                guard remove(id) != nil else { continue }
-                subscription.continuation.finish()
-                subscription.onOverflow()
+                finishOverflowedSubscription(id: id, subscription: subscription)
             }
         }
     }
@@ -73,6 +69,23 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
         lock.unlock()
         return subscription
     }
+
+    private func finishOverflowedSubscription(id: UUID, subscription: Subscription) {
+        guard remove(id) != nil else { return }
+        subscription.continuation.finish()
+        subscription.onOverflow()
+    }
+
+#if DEBUG
+    func simulateOverflowForTesting() {
+        lock.lock()
+        let current = Array(subscriptions)
+        lock.unlock()
+        for (id, subscription) in current {
+            finishOverflowedSubscription(id: id, subscription: subscription)
+        }
+    }
+#endif
 }
 
 package typealias HostControlProtocol = Coder<HostMessage, ClientMessage, NetworkJSONCoder>
@@ -92,6 +105,10 @@ package enum PartyNetTransportError: Error, LocalizedError, Sendable {
         case .stopped: "The network session stopped."
         }
     }
+}
+
+package func isTerminalControlWriteError(_ error: any Error) -> Bool {
+    !(error is CancellationError) && !(error is EncodingError)
 }
 
 package func hostControlStack() -> HostControlProtocol {

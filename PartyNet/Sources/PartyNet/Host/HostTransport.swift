@@ -577,10 +577,16 @@ actor HostTransport {
         try await controlSender(connection, message)
       }
     } catch {
-      if !(error is CancellationError), !(error is EncodingError) {
+      if isTerminalControlWriteError(error) {
         disconnect(connectionID: connectionID)
       }
       throw error
     }
   }
+
+#if DEBUG
+  func simulateEventOverflowForTesting() {
+    eventHub.simulateOverflowForTesting()
+  }
+#endif
 }
