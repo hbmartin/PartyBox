@@ -45,9 +45,31 @@ struct PongGame: PartyGame {
 
 @MainActor
 final class PongGameSession: PartyGameSession {
+    private struct BotState {
+        var position: Double
+        var target: Double
+        var reactionRemaining: Double
+        let errorUnit: Double
+    }
+
+    private struct BotParameters {
+        let reactionInterval: Double
+        let maximumSpeed: Double
+        let aimError: Double
+
+        static func forDifficulty(_ difficulty: GameBotDifficulty) -> Self {
+            switch difficulty {
+            case .easy: .init(reactionInterval: 0.300, maximumSpeed: 1.0, aimError: 0.22)
+            case .normal: .init(reactionInterval: 0.160, maximumSpeed: 1.8, aimError: 0.10)
+            case .hard: .init(reactionInterval: 0.080, maximumSpeed: 3.0, aimError: 0.03)
+            }
+        }
+    }
+
     private let context: GameSessionContext
     private let onEvents: @MainActor ([GameEvent]) -> Void
     private var forfeited: Set<PlayerID> = []
+    private var botStates: [PlayerID: BotState] = [:]
     private(set) var pongScene: PongScene!
 
     var scene: SKScene { pongScene }
@@ -67,6 +89,17 @@ final class PongGameSession: PartyGameSession {
             rules: rules
         ) { [weak self] events in
             self?.handle(events)
+        }
+        for participant in context.participants where participant.player.kind == .bot {
+            let mixed = context.seed
+                &+ (UInt64(participant.player.id.rawValue) &* 0x9E37_79B9_7F4A_7C15)
+            let fraction = Double((mixed ^ (mixed >> 29)) & 0xFFFF) / Double(0xFFFF)
+            botStates[participant.player.id] = BotState(
+                position: 0,
+                target: 0,
+                reactionRemaining: 0,
+                errorUnit: (fraction * 2) - 1
+            )
         }
     }
 
@@ -89,7 +122,7 @@ final class PongGameSession: PartyGameSession {
             components: [
                 .text(.init(
                     id: "pong.player",
-                    text: "P\(participant.player.number) \(participant.player.displayName)",
+                    text: "\(participant.player.mark.glyph)  P\(participant.player.number) \(participant.player.displayName)",
                     style: .headline,
                     tint: .accent
                 )),
@@ -100,6 +133,32 @@ final class PongGameSession: PartyGameSession {
     }
 
     func handle(action: ControllerAction, from playerID: PlayerID) {}
+
+    func botInput(
+        for playerID: PlayerID,
+        difficulty: GameBotDifficulty,
+        deltaTime: Duration
+    ) -> GameBotInput? {
+        guard var state = botStates[playerID] else { return nil }
+        let components = deltaTime.components
+        let seconds = max(
+            0,
+            Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
+        )
+        let parameters = BotParameters.forDifficulty(difficulty)
+        state.reactionRemaining -= seconds
+        if state.reactionRemaining <= 0 {
+            let projected = pongScene.botTarget(for: playerID) ?? 0
+            state.target = min(max(projected + (state.errorUnit * parameters.aimError), -1), 1)
+            state.reactionRemaining = parameters.reactionInterval
+        }
+        let current = pongScene.paddlePosition(for: playerID) ?? state.position
+        let maximumDelta = parameters.maximumSpeed * seconds
+        state.position = current + min(max(state.target - current, -maximumDelta), maximumDelta)
+        state.position = min(max(state.position, -1), 1)
+        botStates[playerID] = state
+        return GameBotInput(axisX: Float(state.position))
+    }
 
     func forfeit(_ playerID: PlayerID) {
         pongScene.forfeit(playerID) { forfeited.insert(playerID) }

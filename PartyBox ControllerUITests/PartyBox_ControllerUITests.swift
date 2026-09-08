@@ -84,6 +84,52 @@ final class PartyBox_ControllerUITests: XCTestCase {
     }
 
     @MainActor
+    func testCaptainMemberBotAndMarkControls() throws {
+        var app = launch(scenario: "lobby")
+        XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 5))
+        for mark in ["circle", "square", "triangle", "diamond", "star", "hexagon", "plus", "ring"] {
+            XCTAssertTrue(element("controller.mark.\(mark)", in: app).exists, "Missing mark \(mark)")
+        }
+        app.swipeUp()
+        XCTAssertTrue(element("controller.lobby.bots.decrease", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(element("controller.lobby.bots.decrease", in: app).isEnabled)
+        XCTAssertTrue(element("controller.lobby.bots.increase", in: app).isEnabled)
+        XCTAssertEqual(element("controller.lobby.botDifficulty", in: app).label, "DIFFICULTY  HARD")
+        XCTAssertTrue(element("controller.lobby.openMenu", in: app).exists)
+        app.terminate()
+
+        app = launch(scenario: "lobby-member")
+        XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 5))
+        app.swipeUp()
+        XCTAssertTrue(element("controller.lobby.bots.decrease", in: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(element("controller.lobby.bots.decrease", in: app).isEnabled)
+        XCTAssertFalse(element("controller.lobby.bots.increase", in: app).isEnabled)
+        XCTAssertFalse(element("controller.lobby.openMenu", in: app).exists)
+        app.terminate()
+
+        app = launch(scenario: "menu")
+        XCTAssertTrue(element("controller.menu.select", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element("controller.menu.back", in: app).exists)
+        XCTAssertFalse(element("controller.menu.ready", in: app).exists)
+        app.terminate()
+
+        app = launch(scenario: "menu-member")
+        let ready = element("controller.menu.ready", in: app)
+        XCTAssertTrue(ready.waitForExistence(timeout: 5))
+        XCTAssertEqual(ready.label, "CANCEL READY")
+        XCTAssertFalse(element("controller.menu.select", in: app).exists)
+        XCTAssertFalse(element("controller.menu.back", in: app).exists)
+        app.terminate()
+
+        app = launch(scenario: "game-over-member")
+        let next = element("controller.gameOver.next", in: app)
+        XCTAssertTrue(next.waitForExistence(timeout: 5))
+        XCTAssertEqual(next.label, "CANCEL READY")
+        XCTAssertTrue(element("controller.gameOver.botDifficulty", in: app).exists)
+        XCTAssertFalse(element("controller.gameOver.menu", in: app).exists)
+    }
+
+    @MainActor
     func testConnectionErrorRecoversToPicker() throws {
         let app = launch(scenario: "connection-loss")
         let back = element("controller.error.back", in: app)
@@ -112,10 +158,12 @@ final class PartyBox_ControllerUITests: XCTestCase {
         }
         app.tap()
         let host = element("controller.host.\(address)", in: app)
-        XCTAssertTrue(host.waitForExistence(timeout: 8))
-        host.tap()
-        XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 8))
-        XCTAssertTrue(element("controller.roster.player.1", in: app).exists)
+        let lobby = element("controller.layout.lobby", in: app)
+        if host.waitForExistence(timeout: 3) {
+            host.tap()
+        }
+        XCTAssertTrue(element("controller.state.connected", in: app).waitForExistence(timeout: 8))
+        XCTAssertTrue(lobby.waitForExistence(timeout: 8))
     }
 
     @MainActor

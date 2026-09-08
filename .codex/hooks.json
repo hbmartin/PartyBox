@@ -1,0 +1,30 @@
+{
+  "description": "Record apply_patch edits and verify relevant PartyBox changes before Codex stops.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/scripts/codex-record-change.sh\"",
+            "timeout": 10,
+            "statusMessage": "Recording changed PartyBox files"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/scripts/codex-stop-verify.sh\"",
+            "timeout": 3600,
+            "statusMessage": "Running PartyBox normal verification"
+          }
+        ]
+      }
+    ]
+  }
+}

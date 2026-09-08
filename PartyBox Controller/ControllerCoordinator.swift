@@ -14,11 +14,12 @@ final class ControllerCoordinator {
     private(set) var savedDisplayName: String
     private(set) var discoveryHelpVisible = false
     private(set) var roster: [PlayerInfo] = []
-    private(set) var layout: PartyBoxCore.ControllerLayout = .lobby
+    private(set) var layout: PartyBoxCore.ControllerLayout = .lobby(.waiting)
     private(set) var personalHistory: [PersonalMatchRecord] = []
     private(set) var historyPersistenceError: String?
 
     var personalStatistics: HistoryStatistics { HistoryAggregation.personal(personalHistory) }
+    var soloStatistics: HistoryStatistics { HistoryAggregation.solo(personalHistory) }
     var currentPlayer: PlayerInfo? {
         guard let welcomedPlayer = client.player else { return nil }
         return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
@@ -62,7 +63,19 @@ final class ControllerCoordinator {
         )
         displayName = name
         savedDisplayName = name
-        client = PartyClient(controllerID: controllerID, displayName: name)
+        let preferredMark: PlayerMark
+        if let rawMark = defaults.string(forKey: "partybox.preferredMark"),
+           let storedMark = PlayerMark(rawValue: rawMark) {
+            preferredMark = storedMark
+        } else {
+            preferredMark = PlayerMark.defaultMark(for: controllerID)
+            defaults.set(preferredMark.rawValue, forKey: "partybox.preferredMark")
+        }
+        client = PartyClient(
+            controllerID: controllerID,
+            displayName: name,
+            preferredMark: preferredMark
+        )
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("PartyBox Controller", isDirectory: true)
             .appendingPathComponent("history-\(controllerID.rawValue.uuidString)-v1.json")
@@ -165,6 +178,16 @@ final class ControllerCoordinator {
 
     func sendMenu(_ action: PartyBoxCore.MenuAction) async { await send(.menu(action)) }
 
+    func selectMark(_ mark: PlayerMark) async {
+        defaults.set(mark.rawValue, forKey: "partybox.preferredMark")
+        client.setPreferredMark(mark)
+        await send(.lobby(.selectMark(mark)))
+    }
+
+    func setBotFillTarget(_ target: Int) async {
+        await send(.lobby(.setBotFillTarget(target)))
+    }
+
     func sendGameAction(id: String, value: ControllerActionValue, gameID: String) async {
         await send(.game(.init(gameID: gameID, action: .init(id: id, value: value))))
     }
@@ -238,7 +261,7 @@ final class ControllerCoordinator {
 
     private func resetSessionPresentation() {
         stopMotionCapture()
-        layout = .lobby
+        layout = .lobby(.waiting)
         roster = []
     }
 
@@ -352,9 +375,46 @@ final class ControllerCoordinator {
     private func applyFixture(scenario: String) {
         let players = (0..<4).map { index in
             let id = PlayerID(UInt8(index))
-            return PlayerInfo(id: id, displayName: ["Ada", "Grace", "Katherine", "Margaret"][index], colorHex: PlayerPalette.color(for: id), isConnected: index != 2)
+            return PlayerInfo(
+                id: id,
+                displayName: ["Ada", "Grace", "Katherine", "Bot 1"][index],
+                colorHex: PlayerPalette.color(for: id),
+                isConnected: index != 2,
+                kind: index == 3 ? .bot : .human
+            )
         }
         let currentPlayer = players[0]
+        let member = players[1]
+        let captainControl = PartyControlStatus(
+            captainID: currentPlayer.id,
+            isCaptain: true,
+            isReady: false,
+            readyCount: 2,
+            requiredReadyCount: 2
+        )
+        let memberControl = PartyControlStatus(
+            captainID: currentPlayer.id,
+            isCaptain: false,
+            isReady: true,
+            readyCount: 2,
+            requiredReadyCount: 2
+        )
+        let captainLobby = LobbyLayout(
+            captainID: currentPlayer.id,
+            isCaptain: true,
+            botFillTarget: 2,
+            activeBotCount: 1,
+            maximumBotCount: 3,
+            botDifficulty: "HARD"
+        )
+        let memberLobby = LobbyLayout(
+            captainID: currentPlayer.id,
+            isCaptain: false,
+            botFillTarget: 2,
+            activeBotCount: 1,
+            maximumBotCount: 3,
+            botDifficulty: "HARD"
+        )
         let host = try? DiscoveredHost(host: "127.0.0.1", port: 49_999, name: "Living Room PartyBox", protocolVersion: PartyNetConstants.protocolVersion, instanceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
         let incompatible = try? DiscoveredHost(host: "127.0.0.1", port: 49_998, name: "Old PartyBox", protocolVersion: 999, instanceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         roster = players
@@ -362,9 +422,28 @@ final class ControllerCoordinator {
         case "empty-picker": client.configureFixture(state: .browsing)
         case "populated-picker": client.configureFixture(state: .browsing, hosts: [host, incompatible].compactMap { $0 })
         case "connecting": client.configureFixture(state: .connecting("Living Room PartyBox"))
+        case "lobby":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            layout = .lobby(captainLobby)
+        case "lobby-member":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
+            layout = .lobby(memberLobby)
         case "menu":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
-            layout = .menu(.init(items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"], details: ["Winner stays", "Your night"], selected: 0))
+            layout = .menu(.init(
+                items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"],
+                details: ["Winner stays", "Your night"],
+                selected: 0,
+                control: captainControl
+            ))
+        case "menu-member":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
+            layout = .menu(.init(
+                items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"],
+                details: ["Winner stays", "Your night"],
+                selected: 0,
+                control: memberControl
+            ))
         case "paddle-bottom", "paddle-top", "paddle-left", "paddle-right":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let edge = String(scenario.dropFirst("paddle-".count))
@@ -382,7 +461,20 @@ final class ControllerCoordinator {
             layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
         case "game-over":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
-            layout = .gameOver(.init(title: "P1 ADA WINS", subtitle: "Winner stays"))
+            layout = .gameOver(.init(
+                title: "P1 ADA WINS",
+                subtitle: "Winner stays",
+                control: captainControl,
+                botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
+            ))
+        case "game-over-member":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
+            layout = .gameOver(.init(
+                title: "P1 ADA WINS",
+                subtitle: "Winner stays",
+                control: memberControl,
+                botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
+            ))
         case "history":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .historyNavigation
@@ -395,7 +487,7 @@ final class ControllerCoordinator {
         case "connection-loss": client.configureFixture(state: .disconnected("The host is no longer reachable."), player: currentPlayer)
         default:
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
-            layout = .lobby
+            layout = .lobby(.waiting)
         }
     }
 #endif

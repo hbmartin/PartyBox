@@ -58,14 +58,22 @@ final class HostCoordinator {
     private(set) var historyPersistenceError: String?
     private(set) var historySelection = 0
     private(set) var confirmsHistoryClear = false
+    private(set) var captainID: PlayerID?
+    private(set) var readyPlayerIDs: Set<PlayerID> = []
+    private(set) var botFillTarget = 0
+    private(set) var botDifficultyChange: String?
 
     @ObservationIgnored private let games: [any PartyGame]
     @ObservationIgnored private let sounds: ArcadeSoundPlayer?
     @ObservationIgnored private let historyStore: JSONRecordStore<MatchRecord>
     @ObservationIgnored private let logger = Logger(subsystem: "PartyBox", category: "HostCoordinator")
     @ObservationIgnored private var currentSession: (any PartyGameSession)?
-    @ObservationIgnored private var bots: [PartyClient] = []
+    @ObservationIgnored private var bots: [ControllerID: PartyClient] = [:]
     @ObservationIgnored private var hostEventsTask: Task<Void, Never>?
+    @ObservationIgnored private var botInputTask: Task<Void, Never>?
+    @ObservationIgnored private var botReconciliationTask: Task<Void, Never>?
+    @ObservationIgnored private var botsNeedReconciliation = false
+    @ObservationIgnored private var nextBotNumber = 1
     @ObservationIgnored private var reactionTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var lifecycleGeneration = UUID()
@@ -82,11 +90,17 @@ final class HostCoordinator {
     @ObservationIgnored private var votes: [PlayerID: String] = [:]
     @ObservationIgnored private var lastReactionAt: [PlayerID: ContinuousClock.Instant] = [:]
     @ObservationIgnored private var lastVoteAt: [PlayerID: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var lastDirectionAt: [PlayerID: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var lastDecisionAt: [PlayerID: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var humanConnectionOrder: [ControllerID] = []
+    @ObservationIgnored private var connectedHumanControllers: Set<ControllerID> = []
+    @ObservationIgnored private var difficultyByGameID: [String: GameBotDifficulty] = [:]
     @ObservationIgnored private var currentMatchSeed: UInt64 = 1
     @ObservationIgnored private var matchStartedAt = Date()
     @ObservationIgnored private var appliedModifier: GameModifierDescriptor?
     @ObservationIgnored private var pendingModifier: GameModifierDescriptor?
 #if DEBUG
+    @ObservationIgnored private var startCheckpointForTesting: (@MainActor () async -> Void)?
     @ObservationIgnored private var finishMatchCheckpointForTesting: (@MainActor () async -> Void)?
 #endif
 
@@ -104,6 +118,24 @@ final class HostCoordinator {
         }
     }
     var connectedCount: Int { host.players.filter(\.isConnected).count }
+    var connectedHumanCount: Int {
+        host.players.filter { $0.isConnected && $0.kind == .human }.count
+    }
+    var activeBotCount: Int {
+        host.players.filter { $0.isConnected && $0.kind == .bot }.count
+    }
+    var currentBotDifficulty: GameBotDifficulty {
+        guard games.indices.contains(menuSelection) else { return .normal }
+        return difficultyByGameID[games[menuSelection].descriptor.id] ?? .normal
+    }
+    var requiredReadyCount: Int {
+        connectedHumanCount == 0 ? 0 : (connectedHumanCount / 2) + 1
+    }
+    var readyCount: Int {
+        let connected = Set(host.players.filter { $0.isConnected && $0.kind == .human }.map(\.id))
+        let captainVote = captainID.map { connected.contains($0) } == true ? 1 : 0
+        return captainVote + readyPlayerIDs.intersection(connected).count
+    }
     var canStart: Bool {
         if phase == .lobby { return connectedCount > 0 }
         guard games.indices.contains(menuSelection) else { return false }
@@ -124,14 +156,24 @@ final class HostCoordinator {
             .appendingPathComponent("PartyBox", isDirectory: true)
             .appendingPathComponent("history-v1.json")
         historyStore = JSONRecordStore(fileURL: configuration.isUITesting ? nil : (historyFileURL ?? defaultURL))
+        botFillTarget = min(configuration.botCount, PartyNetConstants.maximumControllers)
     }
 
     func start() async {
+        await start(preservingHostInstanceID: nil)
+    }
+
+    private func start(preservingHostInstanceID: UUID?) async {
         guard !isStarted else { return }
-        isStarted = true
-        historyRecords = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
         let generation = UUID()
         lifecycleGeneration = generation
+        isStarted = true
+#if DEBUG
+        if let checkpoint = startCheckpointForTesting { await checkpoint() }
+#endif
+        let storedHistory = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
+        guard isStarted, lifecycleGeneration == generation else { return }
+        historyRecords = storedHistory
 #if DEBUG
         if let scenario = configuration.scenario {
             applyFixture(scenario: scenario)
@@ -161,13 +203,14 @@ final class HostCoordinator {
                 }.value + "'s PartyBox"
             }
             guard isStarted, lifecycleGeneration == generation else { return }
-            _ = try await host.start(hostName: name)
+            _ = try await host.start(
+                hostName: name,
+                hostInstanceID: preservingHostInstanceID
+            )
+            guard isStarted, lifecycleGeneration == generation else { return }
             statusMessage = "Ready for controllers"
-            for index in 0..<configuration.botCount {
-                let bot = PartyClient(displayName: "Bot \(index + 1)")
-                bots.append(bot)
-                if let port = host.port { await bot.connect(host: "127.0.0.1", port: port) }
-            }
+            startBotInputLoop(generation: generation)
+            requestBotReconciliation()
         } catch {
             await handleStartFailure(error, generation: generation) { [host] in
                 await host.stop()
@@ -193,6 +236,113 @@ final class HostCoordinator {
         statusMessage = "Could not start: \(error.localizedDescription)"
     }
 
+    private var desiredBotCount: Int {
+        if configuration.botCount > 0 {
+            return min(configuration.botCount, max(0, PartyNetConstants.maximumControllers - connectedHumanCount))
+        }
+        return min(botFillTarget, max(0, 4 - connectedHumanCount))
+    }
+
+    private func requestBotReconciliation() {
+        botsNeedReconciliation = true
+        guard isStarted, phase != .playing, host.port != nil, botReconciliationTask == nil else { return }
+        let generation = lifecycleGeneration
+        botReconciliationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainBotReconciliation(generation: generation)
+        }
+    }
+
+    private func drainBotReconciliation(generation: UUID) async {
+        defer {
+            botReconciliationTask = nil
+            if botsNeedReconciliation, phase != .playing { requestBotReconciliation() }
+        }
+        while botsNeedReconciliation,
+              isStarted,
+              lifecycleGeneration == generation,
+              phase != .playing,
+              let port = host.port {
+            botsNeedReconciliation = false
+            let desired = desiredBotCount
+
+            while bots.count > desired,
+                  isStarted,
+                  lifecycleGeneration == generation,
+                  phase != .playing,
+                  let entry = bots.sorted(by: {
+                      $0.value.displayName.localizedStandardCompare($1.value.displayName) == .orderedDescending
+                  }).first {
+                bots.removeValue(forKey: entry.key)
+                await entry.value.stop()
+                host.unregisterLocalBot(controllerID: entry.key)
+            }
+
+            while bots.count < desired,
+                  isStarted,
+                  lifecycleGeneration == generation,
+                  phase != .playing {
+                let controllerID = ControllerID()
+                let number = nextBotNumber
+                nextBotNumber += 1
+                let preferred = PlayerMark.allCases[(number - 1) % PlayerMark.allCases.count]
+                let bot = PartyClient(
+                    controllerID: controllerID,
+                    displayName: "Bot \(number)",
+                    preferredMark: preferred,
+                    inputSendInterval: .seconds(1.0 / 60.0)
+                )
+                host.registerLocalBot(controllerID: controllerID)
+                bots[controllerID] = bot
+                await bot.connect(host: "127.0.0.1", port: port)
+                guard isStarted, lifecycleGeneration == generation else {
+                    bots.removeValue(forKey: controllerID)
+                    await bot.stop()
+                    host.unregisterLocalBot(controllerID: controllerID)
+                    return
+                }
+                guard bot.player != nil else {
+                    bots.removeValue(forKey: controllerID)
+                    await bot.stop()
+                    host.unregisterLocalBot(controllerID: controllerID)
+                    statusMessage = "A bot could not join"
+                    break
+                }
+            }
+            requestLayoutBroadcast()
+        }
+    }
+
+    private func startBotInputLoop(generation: UUID) {
+        botInputTask?.cancel()
+        botInputTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1.0 / 60.0)) }
+                catch { return }
+                guard let self,
+                      self.isStarted,
+                      self.lifecycleGeneration == generation else { return }
+                self.driveBots(deltaTime: 1.0 / 60.0)
+            }
+        }
+    }
+
+    private func driveBots(deltaTime: TimeInterval) {
+        guard phase == .playing, let currentSession else { return }
+        let difficulty = currentBotDifficulty
+        for bot in bots.values {
+            guard let player = bot.player,
+                  player.kind == .bot,
+                  currentParticipants.contains(where: { $0.player.id == player.id }),
+                  let input = currentSession.botInput(
+                      for: player.id,
+                      difficulty: difficulty,
+                      deltaTime: .seconds(deltaTime)
+                  ) else { continue }
+            bot.setInput(axisX: input.axisX, axisY: input.axisY, buttons: input.buttons)
+        }
+    }
+
     func stop() async {
         isStarted = false
         lifecycleGeneration = UUID()
@@ -200,47 +350,61 @@ final class HostCoordinator {
         hostEventsTask = nil
         reactionTasks.values.forEach { $0.cancel() }
         reactionTasks.removeAll()
-        let botsToStop = bots
+        botInputTask?.cancel()
+        botInputTask = nil
+        botReconciliationTask?.cancel()
+        botReconciliationTask = nil
+        let botsToStop = Array(bots.values)
         bots.removeAll()
         resetRuntime()
         await host.stop()
         for bot in botsToStop { await bot.stop() }
     }
 
-    func perform(_ action: PartyBoxCore.MenuAction, source: HostInputSource = .local) {
+    func perform(
+        _ action: PartyBoxCore.MenuAction,
+        source: HostInputSource = .local,
+        now suppliedNow: ContinuousClock.Instant? = nil
+    ) {
+        guard accepts(action, from: source, now: suppliedNow) else { return }
         switch phase {
         case .lobby:
             if action == .select, canStart {
-                phase = .gameMenu
-                requestLayoutBroadcast()
+                transition(to: .gameMenu)
             }
         case .gameMenu:
             switch action {
             case .up, .left:
-                menuSelection = max(0, menuSelection - 1)
-                requestLayoutBroadcast()
+                setMenuSelection(max(0, menuSelection - 1))
             case .down, .right:
-                menuSelection = min(menuItems.count - 1, menuSelection + 1)
-                requestLayoutBroadcast()
+                setMenuSelection(min(menuItems.count - 1, menuSelection + 1))
             case .select:
-                if games.indices.contains(menuSelection) { startSelectedGame() }
+                if games.indices.contains(menuSelection) {
+                    if isCaptainControl(source) {
+                        startSelectedGame()
+                    } else if case let .controller(playerID) = source {
+                        toggleReadiness(for: playerID)
+                    }
+                }
                 else {
-                    phase = .history
-                    requestLayoutBroadcast()
+                    transition(to: .history)
                 }
             case .back:
-                phase = .lobby
-                requestLayoutBroadcast()
+                transition(to: .lobby)
             }
         case .playing:
             break
         case .gameOver:
             switch action {
-            case .select: startSelectedGame()
+            case .select:
+                if isCaptainControl(source) {
+                    startSelectedGame()
+                } else if case let .controller(playerID) = source {
+                    toggleReadiness(for: playerID)
+                }
             case .back:
                 pendingModifier = nil
-                phase = .gameMenu
-                requestLayoutBroadcast()
+                transition(to: .gameMenu)
             default: break
             }
         case .history:
@@ -249,11 +413,84 @@ final class HostCoordinator {
             case .down: historySelection = min(max(0, historyRecords.count - 1), historySelection + 1)
             case .back:
                 confirmsHistoryClear = false
-                phase = .gameMenu
-                requestLayoutBroadcast()
+                transition(to: .gameMenu)
             default: break
             }
         }
+    }
+
+    private func accepts(
+        _ action: PartyBoxCore.MenuAction,
+        from source: HostInputSource,
+        now suppliedNow: ContinuousClock.Instant?
+    ) -> Bool {
+        guard case let .controller(playerID) = source else { return true }
+        guard let player = host.players.first(where: {
+            $0.id == playerID && $0.isConnected && $0.kind == .human
+        }) else { return false }
+
+        let isAuthorized: Bool
+        if action == .select {
+            switch phase {
+            case .gameMenu:
+                isAuthorized = games.indices.contains(menuSelection) || player.id == captainID
+            case .gameOver:
+                isAuthorized = true
+            case .lobby, .history:
+                isAuthorized = player.id == captainID
+            case .playing:
+                isAuthorized = false
+            }
+        } else {
+            isAuthorized = player.id == captainID
+        }
+        guard isAuthorized else { return false }
+
+        let now = suppliedNow ?? ContinuousClock().now
+        let isDecision = action == .select || action == .back
+        let previous = isDecision ? lastDecisionAt[player.id] : lastDirectionAt[player.id]
+        let cooldown: Duration = isDecision ? .milliseconds(750) : .milliseconds(150)
+        guard previous.map({ $0.duration(to: now) >= cooldown }) ?? true else { return false }
+        if isDecision { lastDecisionAt[player.id] = now }
+        else { lastDirectionAt[player.id] = now }
+        return true
+    }
+
+    private func isCaptainControl(_ source: HostInputSource) -> Bool {
+        if source == .local { return true }
+        if case let .controller(playerID) = source { return playerID == captainID }
+        return false
+    }
+
+    private func setMenuSelection(_ selection: Int) {
+        guard selection != menuSelection else { return }
+        menuSelection = selection
+        clearReadiness()
+        botDifficultyChange = nil
+        requestLayoutBroadcast()
+    }
+
+    private func transition(to newPhase: HostPhase) {
+        guard phase != newPhase else { return }
+        phase = newPhase
+        clearReadiness()
+        requestLayoutBroadcast()
+        requestBotReconciliation()
+    }
+
+    private func toggleReadiness(for playerID: PlayerID) {
+        guard canStart, playerID != captainID,
+              host.players.contains(where: {
+                  $0.id == playerID && $0.isConnected && $0.kind == .human
+              }) else { return }
+        if readyPlayerIDs.remove(playerID) == nil { readyPlayerIDs.insert(playerID) }
+        requestLayoutBroadcast()
+        if readyCount >= requiredReadyCount { startSelectedGame() }
+    }
+
+    private func clearReadiness() {
+        guard !readyPlayerIDs.isEmpty else { return }
+        readyPlayerIDs.removeAll()
     }
 
     func requestHistoryClear() { confirmsHistoryClear = true }
@@ -276,21 +513,42 @@ final class HostCoordinator {
         guard isStarted, lifecycleGeneration == generation else { return }
         switch event {
         case .rosterChanged(let roster):
+            updateConnectedHumanRoster(roster)
             requestRosterBroadcast(roster)
+            requestLayoutBroadcast()
+            requestBotReconciliation()
         case .playerJoined(let player):
             turnOrder.joined(player.id)
-            statusMessage = "\(player.displayName) joined"
+            if player.kind == .human, let controllerID = host.controllerID(for: player.id) {
+                if !humanConnectionOrder.contains(controllerID) { humanConnectionOrder.append(controllerID) }
+                if captainID == nil { captainID = player.id }
+            }
+            statusMessage = player.kind == .bot
+                ? "\(player.displayName) is ready"
+                : "\(player.displayName) joined"
             requestLayoutBroadcast()
         case .playerReconnected(let player):
             statusMessage = "\(player.displayName) reconnected"
             requestLayoutBroadcast()
         case .playerDisconnected(let player):
+            if player.kind == .human, captainID == player.id { promoteCaptain() }
             statusMessage = "Waiting 15 seconds for \(player.displayName)…"
+            requestLayoutBroadcast()
         case .playerExpired(let player, let controllerID):
             turnOrder.left(player.id)
-            votes.removeValue(forKey: player.id)
+            if votes.removeValue(forKey: player.id) != nil {
+                updateVoteTallies()
+            }
             lastReactionAt.removeValue(forKey: player.id)
             lastVoteAt.removeValue(forKey: player.id)
+            lastDirectionAt.removeValue(forKey: player.id)
+            lastDecisionAt.removeValue(forKey: player.id)
+            humanConnectionOrder.removeAll { $0 == controllerID }
+            if player.kind == .bot, let bot = bots.removeValue(forKey: controllerID) {
+                host.unregisterLocalBot(controllerID: controllerID)
+                Task { await bot.stop() }
+            }
+            if captainID == player.id { promoteCaptain() }
             if phase == .playing,
                currentParticipants.contains(where: {
                    $0.player.id == player.id && $0.controllerID == controllerID
@@ -299,6 +557,7 @@ final class HostCoordinator {
             }
             statusMessage = host.players.isEmpty ? "Ready for controllers" : "\(player.displayName) left the party"
             requestLayoutBroadcast()
+            requestBotReconciliation()
         case let .application(playerID, payload):
             guard let command = try? PartyBoxWireCodec.decode(ControllerCommand.self, from: payload) else { return }
             await handle(command, from: playerID)
@@ -309,6 +568,26 @@ final class HostCoordinator {
 
     private func handle(_ command: ControllerCommand, from playerID: PlayerID) async {
         switch command {
+        case .lobby(let action):
+            guard phase == .lobby,
+                  let player = host.players.first(where: {
+                      $0.id == playerID && $0.isConnected && $0.kind == .human
+                  }) else { return }
+            switch action {
+            case .selectMark(let mark):
+                if host.assignMark(mark, to: player.id) {
+                    clearReadiness()
+                    requestLayoutBroadcast()
+                }
+            case .setBotFillTarget(let target):
+                guard player.id == captainID, configuration.botCount == 0 else { return }
+                let clamped = min(max(target, 0), 3)
+                guard clamped != botFillTarget else { return }
+                botFillTarget = clamped
+                clearReadiness()
+                requestLayoutBroadcast()
+                requestBotReconciliation()
+            }
         case .menu(let action): perform(action, source: .controller(playerID))
         case .game(let envelope):
             guard phase == .playing,
@@ -329,6 +608,34 @@ final class HostCoordinator {
         }
     }
 
+    private func updateConnectedHumanRoster(_ roster: [PlayerInfo]) {
+        let connected = Set(roster.compactMap { player -> ControllerID? in
+            guard player.isConnected, player.kind == .human else { return nil }
+            return host.controllerID(for: player.id)
+        })
+        guard connected != connectedHumanControllers else { return }
+        connectedHumanControllers = connected
+        clearReadiness()
+    }
+
+    private func promoteCaptain() {
+        let connectedByController = Dictionary(uniqueKeysWithValues: host.players.compactMap {
+            player -> (ControllerID, PlayerID)? in
+            guard player.isConnected, player.kind == .human,
+                  let controllerID = host.controllerID(for: player.id) else { return nil }
+            return (controllerID, player.id)
+        })
+        let promoted = humanConnectionOrder.lazy.compactMap { connectedByController[$0] }.first
+        guard promoted != captainID else { return }
+        captainID = promoted
+        clearReadiness()
+        if let promoted,
+           let player = host.players.first(where: { $0.id == promoted }) {
+            statusMessage = "\(player.displayName) is now party captain"
+        }
+        requestLayoutBroadcast()
+    }
+
     private func startSelectedGame() {
         guard phase != .playing, games.indices.contains(menuSelection) else { return }
         let game = games[menuSelection]
@@ -344,6 +651,8 @@ final class HostCoordinator {
         let modifier = pendingModifier
         pendingModifier = nil
         appliedModifier = modifier
+        botDifficultyChange = nil
+        clearReadiness()
         currentParticipants = participants
         let matchID = UUID()
         currentMatchID = matchID
@@ -444,7 +753,8 @@ final class HostCoordinator {
                 controllerID: participant.controllerID,
                 displayName: livePlayer(for: participant)?.displayName ?? participant.player.displayName,
                 colorHex: participant.player.colorHex,
-                outcome: value
+                outcome: value,
+                kind: participant.player.kind
             )
         }
         let record = MatchRecord(
@@ -474,13 +784,40 @@ final class HostCoordinator {
             identityMatchedParticipants.contains(where: { $0.player.id == winner }) ? winner : nil
         }
         turnOrder.rotateAfterMatch(active: identityMatchedIDs, winner: identityMatchedWinner)
+        updateBotDifficulty(after: outcome, participants: participants, gameID: game.descriptor.id)
         currentMatchID = nil
         pendingGameEventBatches = []
         currentSession = nil
         currentScene = nil
         appliedModifier = nil
         phase = .gameOver(outcome)
+        clearReadiness()
         requestLayoutBroadcast()
+        requestBotReconciliation()
+    }
+
+    private func updateBotDifficulty(
+        after outcome: GameOutcome,
+        participants: [GameParticipant],
+        gameID: String
+    ) {
+        let hasHuman = participants.contains { $0.player.kind == .human }
+        let hasBot = participants.contains { $0.player.kind == .bot }
+        guard hasHuman, hasBot, let winner = outcome.winner,
+              let winnerKind = participants.first(where: { $0.player.id == winner })?.player.kind else {
+            botDifficultyChange = nil
+            return
+        }
+        let previous = difficultyByGameID[gameID] ?? .normal
+        let updated = winnerKind == .human ? previous.harder : previous.easier
+        guard updated != previous else {
+            botDifficultyChange = nil
+            return
+        }
+        difficultyByGameID[gameID] = updated
+        let direction = updated.rawValue > previous.rawValue ? "increased" : "reduced"
+        botDifficultyChange = "BOT DIFFICULTY \(direction.uppercased()) TO \(updated.title.uppercased())"
+        statusMessage = botDifficultyChange ?? statusMessage
     }
 
     private func isCurrentMatch(_ matchID: UUID, lifecycleGeneration: UUID) -> Bool {
@@ -572,13 +909,33 @@ final class HostCoordinator {
 
     private func layout(for playerID: PlayerID) -> PartyBoxCore.ControllerLayout {
         switch phase {
-        case .lobby: return .lobby
-        case .gameMenu: return .menu(.init(items: menuItems, details: menuDetails, selected: menuSelection))
+        case .lobby:
+            return .lobby(.init(
+                captainID: captainID,
+                isCaptain: playerID == captainID,
+                botFillTarget: botFillTarget,
+                activeBotCount: activeBotCount,
+                maximumBotCount: 3,
+                botDifficulty: currentBotDifficulty.title
+            ))
+        case .gameMenu:
+            return .menu(.init(
+                items: menuItems,
+                details: menuDetails,
+                selected: menuSelection,
+                control: controlStatus(for: playerID)
+            ))
         case .history: return .historyNavigation
         case .gameOver(let outcome):
-            return .gameOver(.init(title: outcome.title, subtitle: outcome.subtitle, nextModifier: pendingModifier?.title))
+            return .gameOver(.init(
+                title: outcome.title,
+                subtitle: outcome.subtitle,
+                nextModifier: pendingModifier?.title,
+                control: controlStatus(for: playerID),
+                botDifficultyChange: botDifficultyChange
+            ))
         case .playing:
-            guard games.indices.contains(menuSelection) else { return .lobby }
+            guard games.indices.contains(menuSelection) else { return lobbyLayout(for: playerID) }
             let game = games[menuSelection]
             let active = currentParticipants.compactMap { participant in
                 livePlayer(for: participant) == nil ? nil : participant.player.id
@@ -610,6 +967,27 @@ final class HostCoordinator {
         }
     }
 
+    private func lobbyLayout(for playerID: PlayerID) -> PartyBoxCore.ControllerLayout {
+        .lobby(.init(
+            captainID: captainID,
+            isCaptain: playerID == captainID,
+            botFillTarget: botFillTarget,
+            activeBotCount: activeBotCount,
+            maximumBotCount: 3,
+            botDifficulty: currentBotDifficulty.title
+        ))
+    }
+
+    private func controlStatus(for playerID: PlayerID) -> PartyControlStatus {
+        PartyControlStatus(
+            captainID: captainID,
+            isCaptain: playerID == captainID,
+            isReady: readyPlayerIDs.contains(playerID),
+            readyCount: readyCount,
+            requiredReadyCount: requiredReadyCount
+        )
+    }
+
     private func unavailableGameLayout(gameID: String) -> PartyBoxCore.ControllerLayout {
         let screen = ControllerScreen(
             accessibilityID: "controller.layout.unavailable",
@@ -631,7 +1009,7 @@ final class HostCoordinator {
             if case .game(let envelope) = layout {
                 fallback = unavailableGameLayout(gameID: envelope.gameID)
             } else {
-                fallback = .lobby
+                fallback = lobbyLayout(for: captainID ?? PlayerID(0))
             }
             do {
                 return try PartyBoxWireCodec.encode(HostPresentation.layout(fallback))
@@ -716,20 +1094,25 @@ final class HostCoordinator {
 
     private func recoverFromHostEventStreamEnding(generation: UUID, cancelConsumer: Bool) async {
         guard isStarted, lifecycleGeneration == generation else { return }
+        let preservedHostInstanceID = host.hostInstanceID
         isStarted = false
         let recoveryGeneration = UUID()
         lifecycleGeneration = recoveryGeneration
         let consumer = hostEventsTask
         hostEventsTask = nil
         if cancelConsumer { consumer?.cancel() }
-        let botsToStop = bots
+        botInputTask?.cancel()
+        botInputTask = nil
+        botReconciliationTask?.cancel()
+        botReconciliationTask = nil
+        let botsToStop = Array(bots.values)
         bots.removeAll()
         resetRuntime()
         statusMessage = "Restarting after a host event overload…"
         await host.stop()
         for bot in botsToStop { await bot.stop() }
         guard !isStarted, lifecycleGeneration == recoveryGeneration else { return }
-        await start()
+        await start(preservingHostInstanceID: preservedHostInstanceID)
     }
 
     private func resetRuntime() {
@@ -751,6 +1134,13 @@ final class HostCoordinator {
         statusMessage = "Starting local party…"
         menuSelection = 0
         currentParticipants = []
+        captainID = nil
+        readyPlayerIDs = []
+        humanConnectionOrder = []
+        connectedHumanControllers = []
+        lastDirectionAt = [:]
+        lastDecisionAt = [:]
+        botsNeedReconciliation = false
         eliminatedControllers = []
         votes = [:]
         lastVoteAt = [:]
@@ -758,8 +1148,10 @@ final class HostCoordinator {
         pendingModifier = nil
         appliedModifier = nil
         reactionBursts = []
+        botDifficultyChange = nil
         confirmsHistoryClear = false
 #if DEBUG
+        startCheckpointForTesting = nil
         finishMatchCheckpointForTesting = nil
 #endif
     }
@@ -790,6 +1182,14 @@ final class HostCoordinator {
         await appendHistory(record)
     }
 
+    func setStartCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
+        startCheckpointForTesting = checkpoint
+    }
+
+    var hasHostEventConsumerForTesting: Bool {
+        hostEventsTask != nil
+    }
+
     func setFinishMatchCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
         finishMatchCheckpointForTesting = checkpoint
     }
@@ -803,16 +1203,40 @@ final class HostCoordinator {
         livePlayer(for: participant) != nil
     }
 
+    var botInputFramesSentForTesting: UInt64 {
+        bots.values.reduce(0) { $0 + $1.inputFramesSent }
+    }
+
+    func updateBotDifficultyForTesting(
+        outcome: GameOutcome,
+        participants: [GameParticipant],
+        gameID: String = "pong"
+    ) {
+        updateBotDifficulty(after: outcome, participants: participants, gameID: gameID)
+    }
+
+    func setBotDifficultyForTesting(_ difficulty: GameBotDifficulty, gameID: String = "pong") {
+        difficultyByGameID[gameID] = difficulty
+    }
+
     private func applyFixture(scenario: String) {
         resetRuntime()
-        let names = ["Ada", "Grace", "Katherine", "Margaret"]
+        let names = ["Ada", "Grace", "Katherine", "Bot 1"]
         let players = names.indices.map { index in
             let id = PlayerID(UInt8(index))
-            return PlayerInfo(id: id, displayName: names[index], colorHex: PlayerPalette.color(for: id))
+            return PlayerInfo(
+                id: id,
+                displayName: names[index],
+                colorHex: PlayerPalette.color(for: id),
+                kind: index == 3 ? .bot : .human
+            )
         }
         let fixturePlayers = scenario == "empty-lobby" ? [] : players
         host.configureFixture(hostName: configuration.hostName ?? "UI Test PartyBox", players: fixturePlayers)
         fixturePlayers.forEach { turnOrder.joined($0.id) }
+        captainID = fixturePlayers.first(where: { $0.kind == .human })?.id
+        botFillTarget = fixturePlayers.contains(where: { $0.kind == .bot }) ? 1 : 0
+        readyPlayerIDs = Set(fixturePlayers.filter { $0.kind == .human && $0.id != captainID }.prefix(1).map(\.id))
         switch scenario {
         case "menu": phase = .gameMenu
         case "four-way-match":
@@ -828,6 +1252,7 @@ final class HostCoordinator {
             currentScene = currentSession?.scene
             phase = .playing
         case "game-over":
+            botDifficultyChange = "BOT DIFFICULTY INCREASED TO HARD"
             phase = .gameOver(.init(
                 title: "P1 ADA WINS", subtitle: "Winner stays  •  Select for the next match", winner: PlayerID(0),
                 playerOutcomes: fixturePlayers.map { .init(playerID: $0.id, outcome: $0.id == PlayerID(0) ? .won : .lost) },

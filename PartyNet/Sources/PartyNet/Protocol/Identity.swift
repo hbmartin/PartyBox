@@ -24,17 +24,82 @@ public struct PlayerID: Codable, Hashable, Sendable, Comparable, Identifiable {
     }
 }
 
+public enum PlayerKind: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case human
+    case bot
+}
+
+public enum PlayerMark: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case circle
+    case square
+    case triangle
+    case diamond
+    case star
+    case hexagon
+    case plus
+    case ring
+
+    public static func defaultMark(for id: PlayerID) -> PlayerMark {
+        allCases[Int(id.rawValue) % allCases.count]
+    }
+
+    public static func defaultMark(for id: ControllerID) -> PlayerMark {
+        let bytes = id.rawValue.uuid
+        let value = Int(bytes.0 ^ bytes.5 ^ bytes.10 ^ bytes.15)
+        return allCases[value % allCases.count]
+    }
+
+    public var systemImageName: String {
+        switch self {
+        case .circle: "circle.fill"
+        case .square: "square.fill"
+        case .triangle: "triangle.fill"
+        case .diamond: "diamond.fill"
+        case .star: "star.fill"
+        case .hexagon: "hexagon.fill"
+        case .plus: "plus"
+        case .ring: "circle"
+        }
+    }
+
+    public var glyph: String {
+        switch self {
+        case .circle: "●"
+        case .square: "■"
+        case .triangle: "▲"
+        case .diamond: "◆"
+        case .star: "★"
+        case .hexagon: "⬢"
+        case .plus: "+"
+        case .ring: "○"
+        }
+    }
+
+    public var title: String { rawValue.capitalized }
+}
+
 public struct PlayerInfo: Codable, Hashable, Sendable, Identifiable {
     public let id: PlayerID
     public var displayName: String
     public let colorHex: String
     public var isConnected: Bool
+    public var mark: PlayerMark
+    public let kind: PlayerKind
 
-    public init(id: PlayerID, displayName: String, colorHex: String, isConnected: Bool = true) {
+    public init(
+        id: PlayerID,
+        displayName: String,
+        colorHex: String,
+        isConnected: Bool = true,
+        mark: PlayerMark? = nil,
+        kind: PlayerKind = .human
+    ) {
         self.id = id
         self.displayName = displayName
         self.colorHex = colorHex
         self.isConnected = isConnected
+        self.mark = mark ?? PlayerMark.defaultMark(for: id)
+        self.kind = kind
     }
 
     public var number: Int { Int(id.rawValue) + 1 }

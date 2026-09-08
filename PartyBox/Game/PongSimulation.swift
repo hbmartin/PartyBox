@@ -109,11 +109,58 @@ struct PongSimulation: Sendable {
 
     func edge(for playerID: PlayerID) -> PaddleEdge? { edgeByPlayerID[playerID] }
 
+    func botTarget(for playerID: PlayerID) -> Double? {
+        guard let edge = edgeByPlayerID[playerID],
+              players[edge]?.isActive == true,
+              respawnRemaining <= 0,
+              ballVelocity != .zero else { return nil }
+        let boundary = Self.arenaHalfExtent - Self.ballRadius
+        let collisionTime: Double
+        switch edge {
+        case .bottom:
+            guard ballVelocity.y < 0 else { return nil }
+            collisionTime = (-boundary - ballPosition.y) / ballVelocity.y
+        case .top:
+            guard ballVelocity.y > 0 else { return nil }
+            collisionTime = (boundary - ballPosition.y) / ballVelocity.y
+        case .left:
+            guard ballVelocity.x < 0 else { return nil }
+            collisionTime = (-boundary - ballPosition.x) / ballVelocity.x
+        case .right:
+            guard ballVelocity.x > 0 else { return nil }
+            collisionTime = (boundary - ballPosition.x) / ballVelocity.x
+        }
+        guard collisionTime >= 0 else { return nil }
+        let firstCollision = nextCollision(within: collisionTime + 0.000_001)
+        guard firstCollision?.edge == edge else { return nil }
+        let tangent = switch edge {
+        case .bottom, .top: ballPosition.x + (ballVelocity.x * collisionTime)
+        case .left, .right: ballPosition.y + (ballVelocity.y * collisionTime)
+        }
+        let travel = Self.arenaHalfExtent - (rules.paddleLength / 2)
+        guard travel > 0 else { return 0 }
+        return min(max(tangent / travel, -1), 1)
+    }
+
+    func paddlePosition(for playerID: PlayerID) -> Double? {
+        guard let edge = edgeByPlayerID[playerID] else { return nil }
+        return players[edge]?.paddlePosition
+    }
+
 #if DEBUG
     mutating func setBallForTesting(position: PongPoint, velocity: PongPoint) {
         ballPosition = position
         ballVelocity = velocity
         respawnRemaining = 0
+    }
+
+    mutating func launchTargetForTesting() -> PaddleEdge? {
+        launchBall()
+        guard ballVelocity != .zero else { return nil }
+        if abs(ballVelocity.x) > abs(ballVelocity.y) {
+            return ballVelocity.x < 0 ? .left : .right
+        }
+        return ballVelocity.y < 0 ? .bottom : .top
     }
 #endif
 
@@ -279,7 +326,8 @@ struct PongSimulation: Sendable {
     private mutating func randomActiveEdge() -> PaddleEdge? {
         let edges = PaddleEdge.allCases.filter { players[$0]?.isActive == true }
         guard !edges.isEmpty else { return nil }
-        return edges[Int(nextRandom() % UInt64(edges.count))]
+        let bounded = nextRandom().multipliedFullWidth(by: UInt64(edges.count)).high
+        return edges[Int(bounded)]
     }
 
     private mutating func nextRandomUnit() -> Double {
@@ -287,7 +335,10 @@ struct PongSimulation: Sendable {
     }
 
     private mutating func nextRandom() -> UInt64 {
-        randomState = (randomState &* 6_364_136_223_846_793_005) &+ 1_442_695_040_888_963_407
-        return randomState
+        randomState &+= 0x9E37_79B9_7F4A_7C15
+        var value = randomState
+        value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+        return value ^ (value >> 31)
     }
 }

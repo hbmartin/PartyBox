@@ -2,7 +2,7 @@ import Foundation
 
 public enum PartyNetConstants {
     public static let serviceType = "_partybox._tcp"
-    public static let protocolVersion: UInt16 = 3
+    public static let protocolVersion: UInt16 = 4
     public static let maximumControllers = 8
     public static let maximumApplicationPayloadBytes = 65_536
     public static let reconnectGrace: Duration = .seconds(15)
@@ -10,6 +10,7 @@ public enum PartyNetConstants {
     public static let helloTimeout: Duration = .seconds(5)
     public static let udpIdleTimeout: Duration = .seconds(5)
     public static let udpReadyTimeout: Duration = .seconds(1)
+    public static let inputAcknowledgmentTimeout: Duration = .milliseconds(750)
     public static let inputRefreshInterval: Duration = .milliseconds(200)
     public static let renameProcessingInterval: Duration = .milliseconds(100)
     public static let tcpFallbackInterval: Duration = .milliseconds(33)

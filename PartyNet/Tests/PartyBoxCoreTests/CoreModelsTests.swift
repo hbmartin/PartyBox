@@ -169,6 +169,47 @@ struct CoreModelsTests {
         #expect(HistoryAggregation.personal(personal) == .init(played: 1, won: 1))
     }
 
+    @Test func historySeparatesPracticeSoloAndPartyAndExcludesBotsFromLeaderboard() {
+        let botID = ControllerID()
+        let solo = MatchRecord(
+            gameID: "pong", gameTitle: "Pong", endedAt: Date(timeIntervalSince1970: 30),
+            durationSeconds: 10, modifierTitle: nil,
+            participants: [
+                .init(controllerID: firstID, displayName: "Ada", colorHex: "#FFFFFF", outcome: .won),
+                .init(controllerID: botID, displayName: "Bot 1", colorHex: "#00FFFF", outcome: .lost, kind: .bot),
+            ],
+            metrics: []
+        )
+        let party = match()
+        let practice = MatchRecord(
+            gameID: "pong", gameTitle: "Pong", endedAt: Date(), durationSeconds: 1,
+            modifierTitle: nil,
+            participants: [.init(controllerID: firstID, displayName: "Ada", colorHex: "#FFFFFF", outcome: .practice)],
+            metrics: []
+        )
+
+        #expect(practice.isPractice)
+        #expect(solo.isSoloBotMatch)
+        #expect(party.isPartyMatch)
+        #expect(!HistoryAggregation.leaderboard([solo, party]).contains { $0.id == botID })
+        let personal = [solo, party, practice].map { PersonalMatchRecord(record: $0, controllerID: firstID) }
+        #expect(HistoryAggregation.personal(personal).played == 1)
+        #expect(HistoryAggregation.solo(personal) == .init(played: 1, won: 1))
+    }
+
+    @Test func legacyVersionOneHistoryDefaultsMissingKindsToHuman() throws {
+        let legacy = """
+        {
+          "controllerID": {"rawValue": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
+          "displayName": "Ada",
+          "colorHex": "#FFFFFF",
+          "outcome": "won"
+        }
+        """.data(using: .utf8)!
+        let participant = try JSONDecoder().decode(MatchParticipant.self, from: legacy)
+        #expect(participant.kind == .human)
+    }
+
     private func match(id: UUID = UUID()) -> MatchRecord {
         MatchRecord(
             id: id, gameID: "pong", gameTitle: "Pong",

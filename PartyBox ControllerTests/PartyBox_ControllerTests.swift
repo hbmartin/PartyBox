@@ -72,6 +72,26 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    @Test func preferredMarkPersistsAcrossLaunches() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--ui-testing", "--disable-effects",
+            ])
+
+            let first = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            await first.selectMark(.star)
+            #expect(first.client.preferredMark == .star)
+
+            let relaunched = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            #expect(relaunched.client.preferredMark == .star)
+        }
+    }
+
     @Test func invalidDebugHostSurfacesAnAddressError() async {
         await withDependencies {
             $0.continuousClock = ContinuousClock()
@@ -170,7 +190,7 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.currentPlayer?.displayName == "Renamed")
 
             await coordinator.handleForTesting(.sessionReset)
-            #expect(coordinator.layout == .lobby)
+            #expect(coordinator.layout == .lobby(.waiting))
             #expect(coordinator.roster.isEmpty)
             await coordinator.stop()
         }

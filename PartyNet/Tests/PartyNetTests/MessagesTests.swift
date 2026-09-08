@@ -27,7 +27,11 @@ struct MessagesTests {
     @Test func clientMessagesRoundTrip() throws {
         let frame = InputFrame(token: 9, sequence: 4, clientTimeMs: 12, axisX: 0.25, axisY: -0.5, buttons: .primary)
         let messages: [ClientMessage] = [
-            .hello(Hello(controllerID: ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!), displayName: "Harold")),
+            .hello(Hello(
+                controllerID: ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!),
+                displayName: "Harold",
+                preferredMark: .hexagon
+            )),
             .rename("A new name"),
             .application(Data([0x01, 0x02, 0x03])),
             .input(frame),
@@ -35,6 +39,21 @@ struct MessagesTests {
             .leave,
         ]
         try assertRoundTrips(messages)
+    }
+
+    @Test func protocolV4CarriesPreferredMarksAndHostAssignedIdentity() throws {
+        #expect(PartyNetConstants.protocolVersion == 4)
+        let controllerID = ControllerID()
+        let hello = Hello(controllerID: controllerID, displayName: "Ada", preferredMark: .ring)
+        let decodedHello = try JSONDecoder().decode(Hello.self, from: JSONEncoder().encode(hello))
+        #expect(decodedHello.preferredMark == .ring)
+
+        let assigned = PlayerInfo(
+            id: PlayerID(0), displayName: "Ada", colorHex: "#32E6FF",
+            mark: .star, kind: .bot
+        )
+        let data = try JSONEncoder().encode(assigned)
+        #expect(try JSONDecoder().decode(PlayerInfo.self, from: data) == assigned)
     }
 
     @Test func hostMessagesRoundTrip() throws {

@@ -59,12 +59,53 @@ public enum GameEvent: Equatable, Sendable {
     case completed(GameOutcome)
 }
 
+public enum GameBotDifficulty: Int, Codable, CaseIterable, Equatable, Sendable {
+    case easy
+    case normal
+    case hard
+
+    public var title: String { String(describing: self).uppercased() }
+
+    public var harder: Self {
+        Self(rawValue: min(Self.hard.rawValue, rawValue + 1)) ?? .hard
+    }
+
+    public var easier: Self {
+        Self(rawValue: max(Self.easy.rawValue, rawValue - 1)) ?? .easy
+    }
+}
+
+public struct GameBotInput: Equatable, Sendable {
+    public let axisX: Float
+    public let axisY: Float
+    public let buttons: Buttons
+
+    public init(axisX: Float, axisY: Float = 0, buttons: Buttons = []) {
+        self.axisX = axisX.isFinite ? min(max(axisX, -1), 1) : 0
+        self.axisY = axisY.isFinite ? min(max(axisY, -1), 1) : 0
+        self.buttons = buttons
+    }
+}
+
 @MainActor
 public protocol PartyGameSession: AnyObject {
     var scene: SKScene { get }
     func controllerScreen(for playerID: PlayerID) -> ControllerScreen
     func handle(action: ControllerAction, from playerID: PlayerID)
     func forfeit(_ playerID: PlayerID)
+    func botInput(
+        for playerID: PlayerID,
+        difficulty: GameBotDifficulty,
+        deltaTime: Duration
+    ) -> GameBotInput?
+}
+
+public extension PartyGameSession {
+    func botInput(
+        for playerID: PlayerID,
+        difficulty: GameBotDifficulty,
+        deltaTime: Duration
+    ) -> GameBotInput? { nil }
 }
 
 @MainActor

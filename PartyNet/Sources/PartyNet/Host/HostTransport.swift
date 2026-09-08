@@ -20,6 +20,11 @@ typealias HostControlSender = @Sendable (
   _ message: HostMessage
 ) async throws -> Void
 
+private struct PendingAcknowledgment: Sendable {
+  let sequence: UInt32
+  let token: UInt64
+}
+
 private final class HandshakeDecisionSignal: @unchecked Sendable {
   private let lock = NSLock()
   private var decision: HandshakeDecision?
@@ -71,6 +76,7 @@ actor HostTransport {
   private var listenerTasks: [Task<Void, Never>] = []
   private var controlTasks: [UUID: Task<Void, Never>] = [:]
   private var acknowledgmentTasks: [UUID: Task<Void, Never>] = [:]
+  private var pendingAcknowledgments: [UUID: PendingAcknowledgment] = [:]
   private var udpTasks: [UUID: Task<Void, Never>] = [:]
   private var udpHandlerTokens: [UUID: UInt64] = [:]
   private var tokenUDPHandlers: [UInt64: Set<UUID>] = [:]
@@ -290,6 +296,7 @@ actor HostTransport {
     controlTasks.removeAll()
     acknowledgmentTasks.values.forEach { $0.cancel() }
     acknowledgmentTasks.removeAll()
+    pendingAcknowledgments.removeAll()
     udpTasks.values.forEach { $0.cancel() }
     udpTasks.removeAll()
     udpHandlerTokens.removeAll()
@@ -448,6 +455,7 @@ actor HostTransport {
   private func finishControlConnection(connectionID: UUID, generation: UInt64) {
     controlTasks.removeValue(forKey: connectionID)
     acknowledgmentTasks.removeValue(forKey: connectionID)?.cancel()
+    pendingAcknowledgments.removeValue(forKey: connectionID)
     let wasConnected = connections.removeValue(forKey: connectionID) != nil
     decisions.removeValue(forKey: connectionID)?.resolve(.reject(.malformedHello))
     if let token = connectionTokens.removeValue(forKey: connectionID) {
@@ -521,43 +529,55 @@ actor HostTransport {
   }
 
   private func acknowledge(_ frame: InputFrame, connectionID: UUID) {
-    guard acknowledgmentTasks[connectionID] == nil,
-      let connection = connections[connectionID]
-    else { return }
-    let now = clock.now
-    if let last = lastAcknowledgmentAt[frame.token],
-      last.duration(to: now) < PartyNetConstants.inputRefreshInterval
-    {
-      return
-    }
-    lastAcknowledgmentAt[frame.token] = now
-    let sequence = frame.sequence
-    acknowledgmentTasks[connectionID] = Task { [weak self, connection] in
-      await self?.sendInputAcknowledgment(
-        sequence: sequence,
-        over: connection,
-        connectionID: connectionID
-      )
+    guard connections[connectionID] != nil else { return }
+    pendingAcknowledgments[connectionID] = PendingAcknowledgment(
+      sequence: frame.sequence,
+      token: frame.token
+    )
+    guard acknowledgmentTasks[connectionID] == nil else { return }
+    acknowledgmentTasks[connectionID] = Task { [weak self] in
+      await self?.drainInputAcknowledgments(connectionID: connectionID)
     }
   }
 
-  private func sendInputAcknowledgment(
-    sequence: UInt32,
-    over connection: HostControlConnection,
-    connectionID: UUID
-  ) async {
-    defer { acknowledgmentTasks.removeValue(forKey: connectionID) }
-    do {
-      try await sendControl(
-        .inputAck(sequence: sequence),
-        over: connection,
-        connectionID: connectionID,
-        operation: "acknowledging controller input"
-      )
-    } catch is CancellationError {
-      // Expected when the connection or transport stops.
-    } catch {
-      logger.debug("Input acknowledgment failed: \(error.localizedDescription)")
+  private func drainInputAcknowledgments(connectionID: UUID) async {
+    defer {
+      acknowledgmentTasks.removeValue(forKey: connectionID)
+      pendingAcknowledgments.removeValue(forKey: connectionID)
+    }
+    while !Task.isCancelled, var pending = pendingAcknowledgments.removeValue(forKey: connectionID) {
+      if let last = lastAcknowledgmentAt[pending.token] {
+        let elapsed = last.duration(to: clock.now)
+        if elapsed < PartyNetConstants.inputRefreshInterval {
+          do {
+            try await clock.sleep(for: PartyNetConstants.inputRefreshInterval - elapsed)
+          } catch {
+            return
+          }
+          guard !Task.isCancelled else { return }
+          if let latest = pendingAcknowledgments.removeValue(forKey: connectionID) {
+            pending = latest
+          }
+        }
+      }
+      guard let connection = connections[connectionID],
+        connectionTokens[connectionID] == pending.token
+      else { return }
+      lastAcknowledgmentAt[pending.token] = clock.now
+      do {
+        try await sendControl(
+          .inputAck(sequence: pending.sequence),
+          over: connection,
+          connectionID: connectionID,
+          operation: "acknowledging controller input",
+          timeout: PartyNetConstants.inputAcknowledgmentTimeout,
+          disconnectOnFailure: false
+        )
+      } catch is CancellationError {
+        return
+      } catch {
+        logger.debug("Input acknowledgment failed: \(error.localizedDescription)")
+      }
     }
   }
 
@@ -565,19 +585,21 @@ actor HostTransport {
     _ message: HostMessage,
     over connection: HostControlConnection,
     connectionID: UUID,
-    operation: String
+    operation: String,
+    timeout: Duration = PartyNetConstants.helloTimeout,
+    disconnectOnFailure: Bool = true
   ) async throws {
     let controlSender = controlSender
     do {
       try await withTimeout(
-        PartyNetConstants.helloTimeout,
+        timeout,
         clock: clock,
         operationName: operation
       ) {
         try await controlSender(connection, message)
       }
     } catch {
-      if isTerminalControlWriteError(error) {
+      if disconnectOnFailure, isTerminalControlWriteError(error) {
         disconnect(connectionID: connectionID)
       }
       throw error

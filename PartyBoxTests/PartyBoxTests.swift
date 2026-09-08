@@ -85,11 +85,31 @@ struct PartyBoxTests {
 
             try await waitUntil {
                 coordinator.host.port != nil
-                    && coordinator.host.hostInstanceID != originalInstanceID
+                    && coordinator.host.hostInstanceID == originalInstanceID
             }
             #expect(coordinator.statusMessage == "Ready for controllers")
             await coordinator.stop()
         }
+    }
+
+    @Test func stopDuringStartCannotInstallAStaleHostConsumer() async throws {
+        let coordinator = isolatedHostCoordinator()
+        let gate = CleanupGate()
+        coordinator.setStartCheckpointForTesting { await gate.wait() }
+        let start = Task { await coordinator.start() }
+        defer {
+            gate.release()
+            start.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await start.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.host.port == nil)
+        #expect(!coordinator.hasHostEventConsumerForTesting)
     }
 
     @Test func staleStartFailureCannotOverwriteANewerSuccessfulStart() async throws {
@@ -396,6 +416,124 @@ struct PartyBoxTests {
         #expect(extraLife.players[.bottom]?.lives == 4)
     }
 
+    @Test func pongBotProjectionIsBoundedDeterministicAndDifficultyControlsSpeed() throws {
+        var simulation = PongSimulation(assignments: [
+            .init(playerID: bottom, edge: .bottom),
+            .init(playerID: top, edge: .top),
+        ])
+        simulation.setBallForTesting(
+            position: PongPoint(x: 300, y: -400),
+            velocity: PongPoint(x: 0, y: -100)
+        )
+        let projected = try #require(simulation.botTarget(for: bottom))
+        #expect(projected > 0.7 && projected < 0.8)
+        #expect(simulation.botTarget(for: top) == nil)
+
+        let human = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let bot = PlayerInfo(
+            id: top, displayName: "Bot", colorHex: "#FF4FD8", mark: .star, kind: .bot
+        )
+        func session() -> PongGameSession {
+            PongGameSession(context: .init(
+                participants: [
+                    .init(player: human, controllerID: ControllerID()),
+                    .init(player: bot, controllerID: ControllerID()),
+                ],
+                inputs: InputStore(), seed: 42, modifierID: nil
+            )) { _ in }
+        }
+        let easy = session()
+        let normal = session()
+        let hard = session()
+        for value in [easy, normal, hard] {
+            value.pongScene.setBallForTesting(
+                position: PongPoint(x: 300, y: 400),
+                velocity: PongPoint(x: 0, y: 100)
+            )
+        }
+        let easyInput = try #require(easy.botInput(for: top, difficulty: .easy, deltaTime: .milliseconds(50)))
+        let normalInput = try #require(normal.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(50)))
+        let hardInput = try #require(hard.botInput(for: top, difficulty: .hard, deltaTime: .milliseconds(50)))
+        #expect(abs(easyInput.axisX) < abs(normalInput.axisX))
+        #expect(abs(normalInput.axisX) < abs(hardInput.axisX))
+        #expect((-1...1).contains(easyInput.axisX))
+        #expect((-1...1).contains(normalInput.axisX))
+        #expect((-1...1).contains(hardInput.axisX))
+
+        let first = session()
+        let second = session()
+        first.pongScene.setBallForTesting(position: PongPoint(x: -250, y: 400), velocity: PongPoint(x: 0, y: 100))
+        second.pongScene.setBallForTesting(position: PongPoint(x: -250, y: 400), velocity: PongPoint(x: 0, y: 100))
+        #expect(
+            first.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(16))
+                == second.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(16))
+        )
+        #expect(GameBotInput(axisX: .infinity, axisY: -.infinity).axisX == 0)
+    }
+
+    @Test func pongPaddlesCarryMarksAndTrailClearsOnServeResetAndGameOver() {
+        let player = PlayerInfo(
+            id: bottom, displayName: "Ada", colorHex: "#32E6FF", mark: .hexagon
+        )
+        let scene = PongScene(
+            assignments: [.init(playerID: bottom, edge: .bottom)],
+            players: [player], inputs: InputStore(), seed: 42
+        ) { _ in }
+        #expect(scene.paddleMarkCountForTesting == 1)
+        scene.animateForTesting([.paddleHit(bottom)])
+        #expect(scene.hasActiveTrailForTesting)
+        scene.animateForTesting([.lostLife(bottom, remaining: 2)])
+        #expect(!scene.hasActiveTrailForTesting)
+        scene.animateForTesting([.paddleHit(bottom), .gameOver(winner: nil, rally: 1)])
+        #expect(!scene.hasActiveTrailForTesting)
+    }
+
+    @Test func mixedMatchDifficultyMovesOneStepAndClamps() {
+        let coordinator = isolatedHostCoordinator()
+        let human = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let bot = PlayerInfo(
+            id: top, displayName: "Bot", colorHex: "#FF4FD8", kind: .bot
+        )
+        let participants = [human, bot].map {
+            GameParticipant(player: $0, controllerID: ControllerID())
+        }
+        func outcome(winner: PlayerID?) -> GameOutcome {
+            GameOutcome(title: "Done", subtitle: "", winner: winner, playerOutcomes: [], metrics: [])
+        }
+
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: bottom), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .hard)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: bottom), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .hard)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: top), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .normal)
+        coordinator.setBotDifficultyForTesting(.easy)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: top), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .easy)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: nil), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .easy)
+        coordinator.updateBotDifficultyForTesting(
+            outcome: outcome(winner: bottom),
+            participants: [participants[0]]
+        )
+        #expect(coordinator.currentBotDifficulty == .easy)
+    }
+
+    @Test func seededServesReachEveryActiveEdge() throws {
+        for count in [2, 4] {
+            let assignments = PaddleEdge.allCases.prefix(count).enumerated().map {
+                SeatAssignment(playerID: PlayerID(UInt8($0.offset)), edge: $0.element)
+            }
+            var game = PongSimulation(assignments: assignments, seed: 42)
+            var observed: Set<PaddleEdge> = []
+            for _ in 0..<64 {
+                let launchTarget = game.launchTargetForTesting()
+                observed.insert(try #require(launchTarget))
+            }
+            #expect(observed == Set(assignments.map(\.edge)))
+        }
+    }
+
     @Test func seededLongRunMaintainsInvariantsAndScriptedMatchCompletes() {
         var game = PongSimulation(assignments: PaddleEdge.allCases.enumerated().map {
             SeatAssignment(playerID: PlayerID(UInt8($0.offset)), edge: $0.element)
@@ -458,6 +596,156 @@ struct PartyBoxTests {
             #expect(paddleEdge(of: PlayerID(1), coordinator: coordinator) == .top)
             #expect(paddleEdge(of: PlayerID(2), coordinator: coordinator) == .left)
             for client in clients.dropFirst() { await client.disconnect() }
+            await coordinator.stop()
+        }
+    }
+
+    @Test func captainAuthorizationCooldownsAndStrictMajorityReadiness() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let clients = (1...4).map { PartyClient(displayName: "Human \($0)") }
+            for client in clients { await client.connect(host: "127.0.0.1", port: port) }
+            try await waitUntil { coordinator.connectedHumanCount == 4 && coordinator.captainID != nil }
+            let ids = try clients.map { try #require($0.player?.id) }
+            #expect(coordinator.captainID == ids[0])
+            #expect(coordinator.requiredReadyCount == 3)
+
+            let now = ContinuousClock().now
+            coordinator.perform(.select, source: .controller(ids[1]), now: now)
+            #expect(coordinator.phase == .lobby)
+            coordinator.perform(.select, source: .controller(ids[0]), now: now)
+            #expect(coordinator.phase == .gameMenu)
+
+            coordinator.perform(.down, source: .controller(ids[0]), now: now)
+            #expect(coordinator.menuSelection == 1)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .milliseconds(149)))
+            #expect(coordinator.menuSelection == 1)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .milliseconds(150)))
+            #expect(coordinator.menuSelection == 0)
+
+            coordinator.perform(.back, source: .controller(ids[1]), now: now.advanced(by: .seconds(1)))
+            #expect(coordinator.phase == .gameMenu)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1)))
+            #expect(coordinator.readyCount == 2)
+            #expect(coordinator.phase == .gameMenu)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1.749)))
+            #expect(coordinator.readyCount == 2)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1.750)))
+            #expect(coordinator.readyCount == 1)
+
+            coordinator.perform(.down, source: .controller(ids[0]), now: now.advanced(by: .seconds(2)))
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .seconds(2.2)))
+            #expect(coordinator.menuSelection == 0)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(3)))
+            #expect(coordinator.readyCount == 2)
+
+            let newcomer = PartyClient(displayName: "Human 5")
+            await newcomer.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 5 }
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            #expect(coordinator.requiredReadyCount == 3)
+            #expect(coordinator.phase == .gameMenu)
+
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(4)))
+            coordinator.perform(.select, source: .controller(ids[2]), now: now.advanced(by: .seconds(4)))
+            #expect(coordinator.phase == .playing)
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+
+            await newcomer.stop()
+            for client in clients { await client.stop() }
+            await coordinator.stop()
+        }
+    }
+
+    @Test func captainTransfersOnInterruptionAndPromotionSurvivesReconnect() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let first = PartyClient(displayName: "First")
+            let second = PartyClient(displayName: "Second")
+            let third = PartyClient(displayName: "Third")
+            let fourth = PartyClient(displayName: "Fourth")
+            await first.connect(host: "127.0.0.1", port: port)
+            await second.connect(host: "127.0.0.1", port: port)
+            await third.connect(host: "127.0.0.1", port: port)
+            await fourth.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 4 }
+            let firstID = try #require(first.player?.id)
+            let secondID = try #require(second.player?.id)
+            #expect(coordinator.captainID == firstID)
+
+            coordinator.perform(.select)
+            coordinator.perform(.select, source: .controller(secondID), now: ContinuousClock().now)
+            #expect(coordinator.readyPlayerIDs == [secondID])
+
+            await first.interruptForTesting()
+            try await waitUntil { coordinator.captainID == secondID }
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            first.reconnectAfterForeground()
+            try await waitUntil(timeout: .seconds(5)) {
+                if case .connected = first.state { return true }
+                return false
+            }
+            #expect(coordinator.captainID == secondID)
+
+            await first.stop()
+            await second.stop()
+            await third.stop()
+            await fourth.stop()
+            await coordinator.stop()
+        }
+    }
+
+    @Test func releaseBotsFillSafelyAndSendRealInputFrames() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let captain = PartyClient(displayName: "Captain")
+            await captain.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.captainID == captain.player?.id }
+
+            let botCommand = try PartyBoxWireCodec.encode(
+                ControllerCommand.lobby(.setBotFillTarget(3))
+            )
+            #expect(await captain.sendApplication(botCommand))
+            try await waitUntil(timeout: .seconds(5)) { coordinator.activeBotCount == 3 }
+            #expect(Set(coordinator.host.players.map(\.mark)).count == coordinator.host.players.count)
+            #expect(coordinator.connectedHumanCount == 1)
+            #expect(coordinator.requiredReadyCount == 1)
+
+            let framesBeforeMatch = coordinator.botInputFramesSentForTesting
+            coordinator.perform(.select)
+            coordinator.perform(.select)
+            #expect(coordinator.phase == .playing)
+            try await waitUntil(timeout: .seconds(5)) {
+                coordinator.botInputFramesSentForTesting > framesBeforeMatch
+            }
+
+            let newcomer = PartyClient(displayName: "New Human")
+            await newcomer.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 2 }
+            #expect(coordinator.activeBotCount == 3)
+
+            let humanID = try #require(captain.player?.id)
+            await coordinator.finishCurrentMatchForTesting(.init(
+                title: "DONE", subtitle: "", winner: humanID,
+                playerOutcomes: [.init(playerID: humanID, outcome: .won)], metrics: []
+            ))
+            try await waitUntil(timeout: .seconds(5)) { coordinator.activeBotCount == 2 }
+
+            await newcomer.stop()
+            await captain.stop()
             await coordinator.stop()
         }
     }

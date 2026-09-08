@@ -4,15 +4,18 @@ public struct Hello: Codable, Equatable, Sendable {
     public let protocolVersion: UInt16
     public let controllerID: ControllerID
     public let displayName: String
+    public let preferredMark: PlayerMark?
 
     public init(
         protocolVersion: UInt16 = PartyNetConstants.protocolVersion,
         controllerID: ControllerID,
-        displayName: String
+        displayName: String,
+        preferredMark: PlayerMark? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.controllerID = controllerID
         self.displayName = displayName
+        self.preferredMark = preferredMark
     }
 }
 

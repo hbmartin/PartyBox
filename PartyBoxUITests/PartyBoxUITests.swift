@@ -24,6 +24,16 @@ final class PartyBoxUITests: XCTestCase {
         ] {
             let app = launch(scenario: scenario)
             XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
+            if scenario == "four-player-lobby" {
+                XCTAssertTrue(element("host.lobby.captain", in: app).exists)
+                XCTAssertTrue(element("host.lobby.botStatus", in: app).exists)
+                XCTAssertTrue(element("host.lobby.botDifficulty", in: app).exists)
+            } else if scenario == "menu" {
+                XCTAssertTrue(element("host.ready.status", in: app).exists)
+            } else if scenario == "game-over" {
+                XCTAssertTrue(element("host.gameOver.botDifficulty", in: app).exists)
+                XCTAssertTrue(element("host.ready.status", in: app).exists)
+            }
             let attachment = XCTAttachment(screenshot: app.screenshot())
             attachment.name = "Host-\(scenario)"
             attachment.lifetime = .keepAlways
