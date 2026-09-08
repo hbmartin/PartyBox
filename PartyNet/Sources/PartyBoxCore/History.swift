@@ -138,6 +138,24 @@ public enum HistoryAggregation {
     }
 }
 
+public enum JSONRecordAppendResult: Equatable, Sendable {
+    case duplicate
+    case inserted
+    case insertedWithPersistenceFailure(errorDescription: String)
+
+    public var wasInserted: Bool {
+        switch self {
+        case .duplicate: false
+        case .inserted, .insertedWithPersistenceFailure: true
+        }
+    }
+
+    public var persistenceErrorDescription: String? {
+        guard case .insertedWithPersistenceFailure(let errorDescription) = self else { return nil }
+        return errorDescription
+    }
+}
+
 public actor JSONRecordStore<Record: Codable & Identifiable & Sendable> where Record.ID == UUID {
     private struct Archive: Codable {
         let version: Int
@@ -171,12 +189,15 @@ public actor JSONRecordStore<Record: Codable & Identifiable & Sendable> where Re
 
     public func all() -> [Record] { records }
 
-    @discardableResult
-    public func append(_ record: Record) throws -> Bool {
-        guard !records.contains(where: { $0.id == record.id }) else { return false }
+    public func append(_ record: Record) -> JSONRecordAppendResult {
+        guard !records.contains(where: { $0.id == record.id }) else { return .duplicate }
         records.append(record)
-        try persist()
-        return true
+        do {
+            try persist()
+            return .inserted
+        } catch {
+            return .insertedWithPersistenceFailure(errorDescription: error.localizedDescription)
+        }
     }
 
     public func clear() throws {

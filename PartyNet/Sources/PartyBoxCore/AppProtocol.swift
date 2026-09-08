@@ -47,6 +47,13 @@ public struct GameLayoutEnvelope: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.payload = payload
     }
+
+    public var validatedControllerScreen: ControllerScreen? {
+        guard schemaVersion == ControllerScreen.schemaVersion,
+              let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: payload),
+              screen.isValid else { return nil }
+        return screen
+    }
 }
 
 public struct GameActionEnvelope: Codable, Equatable, Sendable {

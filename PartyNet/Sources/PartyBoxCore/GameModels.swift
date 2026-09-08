@@ -116,12 +116,12 @@ public struct TurnOrder: Equatable, Sendable {
     }
 
     public mutating func rotateAfterMatch(active: [PlayerID], winner: PlayerID?) {
+        let knownPlayers = Set(players)
+        let active = active.filter { knownPlayers.contains($0) }
         let activeSet = Set(active)
         let waiting = players.filter { !activeSet.contains($0) }
         if let winner, activeSet.contains(winner) {
             players = [winner] + waiting + active.filter { $0 != winner }
-        } else if waiting.isEmpty, active.count == 1 {
-            players = active
         } else {
             players = waiting + active
         }

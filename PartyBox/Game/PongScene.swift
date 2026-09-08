@@ -52,13 +52,13 @@ final class PongScene: SKScene {
         }
     }
 
-    func forfeit(_ playerID: PlayerID) {
+    func forfeit(_ playerID: PlayerID, onAccepted: () -> Void) {
         let events = simulation.forfeit(playerID)
+        guard !events.isEmpty else { return }
+        onAccepted()
         syncNodes()
-        if !events.isEmpty {
-            animate(events)
-            onEvents(events)
-        }
+        animate(events)
+        onEvents(events)
     }
 
     func edge(for playerID: PlayerID) -> PaddleEdge? {

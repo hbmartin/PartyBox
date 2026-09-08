@@ -16,6 +16,7 @@ final class ControllerCoordinator {
     private(set) var roster: [PlayerInfo] = []
     private(set) var layout: PartyBoxCore.ControllerLayout = .lobby
     private(set) var personalHistory: [PersonalMatchRecord] = []
+    private(set) var historyPersistenceError: String?
 
     var personalStatistics: HistoryStatistics { HistoryAggregation.personal(personalHistory) }
 
@@ -208,7 +209,7 @@ final class ControllerCoordinator {
                 updateMotionCapture()
             case .haptic(let pattern): play(pattern)
             case .matchCompleted(let record):
-                if (try? await historyStore.append(record)) == true { personalHistory.insert(record, at: 0) }
+                await appendPersonalHistory(record)
             }
         case let .hostsChanged(hosts):
             if hosts.isEmpty {
@@ -234,9 +235,21 @@ final class ControllerCoordinator {
 
     private var requestedInputs: RequestedInputs {
         guard case .game(let envelope) = layout,
-              let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: envelope.payload),
-              screen.isValid else { return [] }
+              let screen = envelope.validatedControllerScreen else { return [] }
         return screen.requestedInputs
+    }
+
+    private func appendPersonalHistory(_ record: PersonalMatchRecord) async {
+        let result = await historyStore.append(record)
+        guard result.wasInserted else { return }
+        if !personalHistory.contains(where: { $0.id == record.id }) {
+            personalHistory.insert(record, at: 0)
+        }
+        if let error = result.persistenceErrorDescription {
+            historyPersistenceError = "This match is available for this session but could not be saved: \(error)"
+        } else {
+            historyPersistenceError = nil
+        }
     }
 
     private func updateMotionCapture() {
@@ -250,7 +263,7 @@ final class ControllerCoordinator {
         motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let quaternion = motion?.attitude.quaternion else { return }
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 self?.client.setOrientation(.init(
                     x: Float(quaternion.x), y: Float(quaternion.y),
                     z: Float(quaternion.z), w: Float(quaternion.w)
@@ -309,6 +322,10 @@ final class ControllerCoordinator {
     }
 
 #if DEBUG
+    func appendPersonalHistoryForTesting(_ record: PersonalMatchRecord) async {
+        await appendPersonalHistory(record)
+    }
+
     private func applyFixture(scenario: String) {
         let players = (0..<4).map { index in
             let id = PlayerID(UInt8(index))

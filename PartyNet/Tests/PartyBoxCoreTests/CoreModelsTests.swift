@@ -19,7 +19,14 @@ struct CoreModelsTests {
             ]
         )
         let screenData = try PartyBoxWireCodec.encode(screen)
-        let presentation = HostPresentation.layout(.game(.init(gameID: "motion-game", payload: screenData)))
+        let envelope = GameLayoutEnvelope(gameID: "motion-game", payload: screenData)
+        #expect(envelope.validatedControllerScreen == screen)
+        #expect(GameLayoutEnvelope(
+            gameID: "motion-game",
+            schemaVersion: ControllerScreen.schemaVersion + 1,
+            payload: screenData
+        ).validatedControllerScreen == nil)
+        let presentation = HostPresentation.layout(.game(envelope))
         let encoded = try PartyBoxWireCodec.encode(presentation)
         #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: encoded) == presentation)
 
@@ -44,6 +51,20 @@ struct CoreModelsTests {
             components: (0...32).map { .text(.init(id: "\($0)", text: "x", style: .body)) }
         )
         #expect(!tooMany.isValid)
+
+        for invalidColor in ["#ZZZZZZ", "1234567", "#12345G", " #12345"] {
+            let malformed = ControllerScreen(
+                accessibilityID: "bad-color",
+                accentColorHex: invalidColor,
+                components: []
+            )
+            #expect(!malformed.isValid)
+        }
+        #expect(ControllerScreen(
+            accessibilityID: "lowercase-color",
+            accentColorHex: "#a1b2c3",
+            components: []
+        ).isValid)
     }
 
     @Test func spectatorScreenIncludesCompetitiveReactionsAndSeededVoteState() throws {
@@ -71,14 +92,32 @@ struct CoreModelsTests {
         let record = match(id: UUID(uuidString: "99999999-2222-3333-4444-555555555555")!)
 
         let writer = JSONRecordStore<MatchRecord>(fileURL: url)
-        #expect(try await writer.append(record))
-        #expect(!(try await writer.append(record)))
+        #expect(await writer.append(record) == .inserted)
+        #expect(await writer.append(record) == .duplicate)
 
         let reader = JSONRecordStore<MatchRecord>(fileURL: url)
         #expect(await reader.all() == [record])
         try await reader.clear()
         #expect(await reader.all().isEmpty)
         #expect(await JSONRecordStore<MatchRecord>(fileURL: url).all().isEmpty)
+    }
+
+    @Test func historyAppendDistinguishesDuplicatesFromPersistenceFailures() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blockedParent = directory.appendingPathComponent("not-a-directory")
+        let url = blockedParent.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: blockedParent)
+        let record = match()
+        let store = JSONRecordStore<MatchRecord>(fileURL: url)
+
+        let result = await store.append(record)
+
+        #expect(result.wasInserted)
+        #expect(result.persistenceErrorDescription?.isEmpty == false)
+        #expect(await store.all() == [record])
+        #expect(await store.append(record) == .duplicate)
     }
 
     @Test func malformedHistoryIsPreservedAsCorruptBackup() async throws {

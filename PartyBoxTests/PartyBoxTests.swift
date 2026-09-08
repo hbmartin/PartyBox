@@ -1,4 +1,5 @@
 import Dependencies
+import Foundation
 import PartyBoxCore
 import PartyGameRuntime
 import PartyNet
@@ -116,6 +117,55 @@ struct PartyBoxTests {
         }
     }
 
+    @Test func unchangedVotesDoNotRecomputeTalliesAndModifierTitlesAreResolved() {
+        let coordinator = HostCoordinator(configuration: .init(arguments: ["PartyBox", "--disable-effects"]))
+        let playerID = PlayerID(7)
+
+        #expect(coordinator.storeVoteIfChanged("fast-ball", from: playerID))
+        #expect(!coordinator.storeVoteIfChanged("fast-ball", from: playerID))
+        #expect(!coordinator.storeVoteIfChanged("unknown", from: playerID))
+        #expect(coordinator.voteTallies == ["fast-ball": 1])
+        #expect(coordinator.displayedVoteTallies == [
+            VoteTallyPresentation(id: "fast-ball", title: "FAST BALL", count: 1),
+        ])
+    }
+
+    @Test func reactionCoordinatesAreStableForEachBurstIdentity() throws {
+        let id = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        let burst = ReactionBurst(id: id, emoji: "🔥")
+
+        #expect(burst.positionOffsets.horizontal == 66)
+        #expect(burst.positionOffsets.vertical == 5)
+    }
+
+    @Test func hostKeepsMemoryOnlyHistoryVisibleAndReportsPersistenceFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blockedParent = directory.appendingPathComponent("not-a-directory")
+        let url = blockedParent.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: blockedParent)
+        let coordinator = HostCoordinator(
+            configuration: .init(arguments: ["PartyBox", "--disable-effects"]),
+            historyFileURL: url
+        )
+        let record = MatchRecord(
+            gameID: "pong",
+            gameTitle: "Pong",
+            endedAt: Date(timeIntervalSince1970: 10),
+            durationSeconds: 5,
+            modifierTitle: nil,
+            participants: [],
+            metrics: []
+        )
+
+        await coordinator.appendHistoryForTesting(record)
+        await coordinator.appendHistoryForTesting(record)
+
+        #expect(coordinator.historyRecords == [record])
+        #expect(coordinator.historyPersistenceError?.isEmpty == false)
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))
@@ -194,6 +244,32 @@ struct PartyBoxTests {
 
         #expect(events == [.forfeited(top), .gameOver(winner: bottom, rally: 0)])
         #expect(game.players[.top]?.isActive == false)
+    }
+
+    @Test func rejectedForfeitDoesNotChangeTheRecordedPlayerOutcome() throws {
+        let left = PlayerID(2)
+        let players = [bottom, top, left].map {
+            PlayerInfo(id: $0, displayName: "P\($0.rawValue)", colorHex: PlayerPalette.color(for: $0))
+        }
+        let context = GameSessionContext(
+            participants: players.map { .init(player: $0, controllerID: ControllerID()) },
+            inputs: InputStore(),
+            seed: 42,
+            modifierID: nil
+        )
+        var completed: GameOutcome?
+        let session = PongGameSession(context: context) { events in
+            for case .completed(let outcome) in events { completed = outcome }
+        }
+        session.pongScene.forfeit(top, onAccepted: {})
+
+        session.forfeit(top)
+        session.forfeit(left)
+
+        let outcome = try #require(completed)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == top })?.outcome == .lost)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == left })?.outcome == .forfeited)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == bottom })?.outcome == .won)
     }
 
     @Test func pongPublishesItsOwnCapacityControllerLayoutAndModifiers() throws {

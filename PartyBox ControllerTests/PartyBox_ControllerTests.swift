@@ -1,5 +1,6 @@
 import Dependencies
 import Foundation
+import PartyBoxCore
 import PartyNet
 import Testing
 @testable import PartyBox_Controller
@@ -83,6 +84,48 @@ struct PartyBox_ControllerTests {
                     == .disconnected(PartyClientError.invalidAddress.localizedDescription)
             )
             await coordinator.stop()
+        }
+    }
+
+    @Test func controllerKeepsMemoryOnlyHistoryVisibleAndReportsPersistenceFailure() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let blockedParent = directory.appendingPathComponent("not-a-directory")
+            let url = blockedParent.appendingPathComponent("history.json")
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer {
+                defaults.removePersistentDomain(forName: suiteName)
+                try? FileManager.default.removeItem(at: directory)
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("blocked".utf8).write(to: blockedParent)
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: ["PartyBox Controller", "--disable-effects"]),
+                historyFileURL: url
+            )
+            let controllerID = coordinator.client.controllerID
+            let match = MatchRecord(
+                gameID: "pong",
+                gameTitle: "Pong",
+                endedAt: Date(timeIntervalSince1970: 10),
+                durationSeconds: 5,
+                modifierTitle: nil,
+                participants: [
+                    .init(controllerID: controllerID, displayName: "Ada", colorHex: "#32E6FF", outcome: .won),
+                ],
+                metrics: []
+            )
+            let record = PersonalMatchRecord(record: match, controllerID: controllerID)
+
+            await coordinator.appendPersonalHistoryForTesting(record)
+            await coordinator.appendPersonalHistoryForTesting(record)
+
+            #expect(coordinator.personalHistory == [record])
+            #expect(coordinator.historyPersistenceError?.isEmpty == false)
         }
     }
 }

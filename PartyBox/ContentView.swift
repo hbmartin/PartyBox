@@ -27,7 +27,7 @@ struct ContentView: View {
                             .accessibilityLabel("PartyBox game arena")
                             .accessibilityIdentifier("host.arena")
                         ReactionOverlay(bursts: coordinator.reactionBursts)
-                        VoteOverlay(tallies: coordinator.voteTallies)
+                        VoteOverlay(tallies: coordinator.displayedVoteTallies)
                         VStack {
                             Text("Pong match in progress")
                                 .accessibilityIdentifier("host.phase.playing")
@@ -233,13 +233,13 @@ private struct ReactionOverlay: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ForEach(Array(bursts.enumerated()), id: \.element.id) { index, burst in
+            ForEach(bursts) { burst in
                 Text(burst.emoji)
                     .font(.system(size: 64))
                     .shadow(color: .black.opacity(0.7), radius: 8)
                     .position(
-                        x: proxy.size.width * (0.12 + CGFloat((index * 23) % 76) / 100),
-                        y: proxy.size.height * (0.2 + CGFloat((index * 31) % 62) / 100)
+                        x: proxy.size.width * (0.12 + CGFloat(burst.positionOffsets.horizontal) / 100),
+                        y: proxy.size.height * (0.2 + CGFloat(burst.positionOffsets.vertical) / 100)
                     )
                     .transition(.scale.combined(with: .opacity))
             }
@@ -250,7 +250,7 @@ private struct ReactionOverlay: View {
 }
 
 private struct VoteOverlay: View {
-    let tallies: [String: Int]
+    let tallies: [VoteTallyPresentation]
 
     var body: some View {
         if !tallies.isEmpty {
@@ -258,8 +258,8 @@ private struct VoteOverlay: View {
                 Text("NEXT ROUND VOTE")
                     .font(.caption.monospaced().weight(.black))
                     .foregroundStyle(PartyTheme.cyan)
-                ForEach(tallies.keys.sorted(), id: \.self) { key in
-                    Text("\(key.uppercased()): \(tallies[key, default: 0])")
+                ForEach(tallies) { tally in
+                    Text("\(tally.title): \(tally.count)")
                         .font(.caption.monospaced().weight(.bold))
                 }
             }
@@ -280,6 +280,12 @@ private struct HistoryView: View {
         ScrollView {
             VStack(spacing: 24) {
                 PartyWordmark(kicker: "THE NIGHT SO FAR", title: "HISTORY")
+                if let error = coordinator.historyPersistenceError {
+                    Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: 900)
+                }
                 if coordinator.leaderboard.isEmpty {
                     Text("No multiplayer matches yet")
                         .font(.title2.monospaced().weight(.bold))

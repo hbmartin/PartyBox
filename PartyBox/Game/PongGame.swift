@@ -102,8 +102,7 @@ final class PongGameSession: PartyGameSession {
     func handle(action: ControllerAction, from playerID: PlayerID) {}
 
     func forfeit(_ playerID: PlayerID) {
-        forfeited.insert(playerID)
-        pongScene.forfeit(playerID)
+        pongScene.forfeit(playerID) { forfeited.insert(playerID) }
     }
 
     private func handle(_ events: [PongEvent]) {

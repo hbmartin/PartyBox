@@ -324,7 +324,7 @@ private struct GameControllerView: View {
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        if let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: envelope.payload), screen.isValid {
+        if let screen = envelope.validatedControllerScreen {
             ScrollView {
                 VStack(spacing: 20) {
                     Spacer(minLength: 12)
@@ -533,6 +533,12 @@ private struct PersonalHistoryView: View {
                     }
                     Text("Only multiplayer rounds count toward these totals.")
                         .font(.caption).foregroundStyle(.white.opacity(0.55))
+
+                    if let error = coordinator.historyPersistenceError {
+                        Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     if coordinator.personalHistory.isEmpty {
                         ContentUnavailableView("No matches yet", systemImage: "trophy", description: Text("Matches played with this phone will appear here."))

@@ -19,8 +19,26 @@ enum HostInputSource: Equatable {
 }
 
 struct ReactionBurst: Identifiable, Equatable {
-    let id = UUID()
+    let id: UUID
     let emoji: String
+
+    init(id: UUID = UUID(), emoji: String) {
+        self.id = id
+        self.emoji = emoji
+    }
+
+    var positionOffsets: (horizontal: Int, vertical: Int) {
+        let bytes = id.uuid
+        let horizontalSeed = (Int(bytes.0) << 8) | Int(bytes.1)
+        let verticalSeed = (Int(bytes.8) << 8) | Int(bytes.9)
+        return (horizontalSeed % 76, verticalSeed % 62)
+    }
+}
+
+struct VoteTallyPresentation: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let count: Int
 }
 
 @MainActor
@@ -36,6 +54,7 @@ final class HostCoordinator {
     private(set) var reactionBursts: [ReactionBurst] = []
     private(set) var voteTallies: [String: Int] = [:]
     private(set) var historyRecords: [MatchRecord] = []
+    private(set) var historyPersistenceError: String?
     private(set) var historySelection = 0
     private(set) var confirmsHistoryClear = false
 
@@ -60,6 +79,16 @@ final class HostCoordinator {
     var menuItems: [String] { games.map { $0.descriptor.title } + ["HISTORY & LEADERBOARD"] }
     var menuDetails: [String] { games.map { $0.descriptor.summary } + ["All-time results and match details"] }
     var leaderboard: [LeaderboardEntry] { HistoryAggregation.leaderboard(historyRecords) }
+    var displayedVoteTallies: [VoteTallyPresentation] {
+        let modifiers = games.indices.contains(menuSelection) ? games[menuSelection].descriptor.modifiers : []
+        return voteTallies.keys.sorted().map { modifierID in
+            VoteTallyPresentation(
+                id: modifierID,
+                title: modifiers.first(where: { $0.id == modifierID })?.title ?? modifierID,
+                count: voteTallies[modifierID, default: 0]
+            )
+        }
+    }
     var connectedCount: Int { host.players.filter(\.isConnected).count }
     var canStart: Bool {
         if phase == .lobby { return connectedCount > 0 }
@@ -264,10 +293,7 @@ final class HostCoordinator {
             switch action {
             case .reaction(let emoji): addReaction(emoji, from: playerID)
             case .vote(let modifierID):
-                guard games.indices.contains(menuSelection),
-                      games[menuSelection].descriptor.modifiers.contains(where: { $0.id == modifierID }) else { return }
-                votes[playerID] = modifierID
-                updateVoteTallies()
+                guard storeVoteIfChanged(modifierID, from: playerID) else { return }
                 await sendLayouts()
             }
         }
@@ -344,7 +370,7 @@ final class HostCoordinator {
             participants: participantRecords,
             metrics: outcome.metrics
         )
-        if (try? await historyStore.append(record)) == true { historyRecords.insert(record, at: 0) }
+        await appendHistory(record)
         for participant in currentParticipants where host.players.contains(where: { $0.id == participant.player.id && $0.isConnected }) {
             await send(.matchCompleted(PersonalMatchRecord(record: record, controllerID: participant.controllerID)), to: participant.player.id)
         }
@@ -388,6 +414,29 @@ final class HostCoordinator {
 
     private func updateVoteTallies() {
         voteTallies = Dictionary(grouping: votes.values, by: { $0 }).mapValues(\.count)
+    }
+
+    @discardableResult
+    func storeVoteIfChanged(_ modifierID: String, from playerID: PlayerID) -> Bool {
+        guard games.indices.contains(menuSelection),
+              games[menuSelection].descriptor.modifiers.contains(where: { $0.id == modifierID }),
+              votes[playerID] != modifierID else { return false }
+        votes[playerID] = modifierID
+        updateVoteTallies()
+        return true
+    }
+
+    private func appendHistory(_ record: MatchRecord) async {
+        let result = await historyStore.append(record)
+        guard result.wasInserted else { return }
+        if !historyRecords.contains(where: { $0.id == record.id }) {
+            historyRecords.insert(record, at: 0)
+        }
+        if let error = result.persistenceErrorDescription {
+            historyPersistenceError = "This match is available for this session but could not be saved: \(error)"
+        } else {
+            historyPersistenceError = nil
+        }
     }
 
     private func layout(for playerID: PlayerID) -> PartyBoxCore.ControllerLayout {
@@ -504,6 +553,10 @@ final class HostCoordinator {
 
     func simulateHostEventStreamEndingForTesting() async {
         await host.simulateTransportEventStreamOverflowForTesting()
+    }
+
+    func appendHistoryForTesting(_ record: MatchRecord) async {
+        await appendHistory(record)
     }
 
     private func applyFixture(scenario: String) {
