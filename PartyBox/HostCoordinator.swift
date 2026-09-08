@@ -121,13 +121,28 @@ final class HostCoordinator {
                 if let port = host.port { await bot.connect(host: "127.0.0.1", port: port) }
             }
         } catch {
-            guard lifecycleGeneration == generation else { return }
-            isStarted = false
-            hostEventsTask?.cancel()
-            hostEventsTask = nil
-            await host.stop()
-            if !Task.isCancelled { statusMessage = "Could not start: \(error.localizedDescription)" }
+            await handleStartFailure(error, generation: generation) { [host] in
+                await host.stop()
+            }
         }
+    }
+
+    private func handleStartFailure(
+        _ error: any Error,
+        generation: UUID,
+        cleanup: @MainActor () async -> Void
+    ) async {
+        guard lifecycleGeneration == generation else { return }
+        isStarted = false
+        let failureGeneration = UUID()
+        lifecycleGeneration = failureGeneration
+        hostEventsTask?.cancel()
+        hostEventsTask = nil
+        await cleanup()
+        guard !Task.isCancelled,
+              !isStarted,
+              lifecycleGeneration == failureGeneration else { return }
+        statusMessage = "Could not start: \(error.localizedDescription)"
     }
 
     func stop() async {
@@ -470,8 +485,25 @@ final class HostCoordinator {
     }
 
 #if DEBUG
+    private struct SimulatedStartFailure: LocalizedError {
+        var errorDescription: String? { "Simulated start failure" }
+    }
+
+    func simulateSuspendedStartFailureForTesting(
+        cleanup: @escaping @MainActor () async -> Void
+    ) async {
+        let generation = UUID()
+        lifecycleGeneration = generation
+        isStarted = true
+        await handleStartFailure(
+            SimulatedStartFailure(),
+            generation: generation,
+            cleanup: cleanup
+        )
+    }
+
     func simulateHostEventStreamEndingForTesting() async {
-        await recoverFromHostEventStreamEnding(generation: lifecycleGeneration, cancelConsumer: true)
+        await host.simulateTransportEventStreamOverflowForTesting()
     }
 
     private func applyFixture(scenario: String) {

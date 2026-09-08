@@ -11,6 +11,22 @@ struct PartyBoxTests {
     private let bottom = PlayerID(0)
     private let top = PlayerID(1)
 
+    @MainActor
+    private final class CleanupGate {
+        private(set) var isWaiting = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            isWaiting = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     @Test func hostLaunchArgumentsAreDeterministicAndBounded() {
         let configuration = HostLaunchConfiguration(arguments: [
             "PartyBox", "--ui-testing", "--scenario", "four-way-match",
@@ -66,8 +82,35 @@ struct PartyBoxTests {
 
             await coordinator.simulateHostEventStreamEndingForTesting()
 
+            try await waitUntil {
+                coordinator.host.port != nil
+                    && coordinator.host.hostInstanceID != originalInstanceID
+            }
+            #expect(coordinator.statusMessage == "Ready for controllers")
+            await coordinator.stop()
+        }
+    }
+
+    @Test func staleStartFailureCannotOverwriteANewerSuccessfulStart() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = HostCoordinator()
+            let gate = CleanupGate()
+            let staleFailure = Task {
+                await coordinator.simulateSuspendedStartFailureForTesting {
+                    await gate.wait()
+                }
+            }
+            defer { staleFailure.cancel() }
+            try await waitUntil { gate.isWaiting }
+
+            await coordinator.start()
             #expect(coordinator.host.port != nil)
-            #expect(coordinator.host.hostInstanceID != originalInstanceID)
+            #expect(coordinator.statusMessage == "Ready for controllers")
+
+            gate.release()
+            await staleFailure.value
             #expect(coordinator.statusMessage == "Ready for controllers")
             await coordinator.stop()
         }

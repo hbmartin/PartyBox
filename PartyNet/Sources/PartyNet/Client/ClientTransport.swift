@@ -115,6 +115,7 @@ actor ClientTransport {
   private var receiveTasks: [UUID: Task<Void, Never>] = [:]
   private var sessions: [UUID: Session] = [:]
   private var pendingHandshakes: [UUID: PendingHandshake] = [:]
+  private var leaveTasks: [UUID: Task<Void, Never>] = [:]
 
   init(
     inputSendInterval: Duration = .milliseconds(16),
@@ -134,6 +135,7 @@ actor ClientTransport {
     browserTask?.cancel()
     pendingHandshakes.values.forEach { $0.task.cancel() }
     receiveTasks.values.forEach { $0.cancel() }
+    leaveTasks.values.forEach { $0.cancel() }
     for session in sessions.values {
       session.inputTask?.cancel()
       session.pingTask?.cancel()
@@ -172,7 +174,7 @@ actor ClientTransport {
   func connect(to host: DiscoveredHost, hello: Hello, attemptID: UUID) async throws -> (UUID, Welcome) {
     guard host.isCompatible else { throw PartyClientError.incompatibleHost }
     await cancelAllPendingHandshakes()
-    await disconnectAllSessions()
+    disconnectAllSessions()
     let connection: ClientControlConnection
     switch host.target {
     case .bonjour(let endpoint):
@@ -301,9 +303,7 @@ actor ClientTransport {
         operation: "sending a client message"
       )
     } catch {
-      if isTerminalControlWriteError(error) {
-        endSession(connectionID, reason: error.localizedDescription)
-      }
+      handleControlWriteFailure(error, connectionID: connectionID)
       throw error
     }
   }
@@ -328,21 +328,24 @@ actor ClientTransport {
   }
 
   func disconnect(connectionID: UUID, sendLeave: Bool = true) async {
-    guard let session = sessions[connectionID] else { return }
+    guard let departure = detachSessionForLeave(connectionID) else { return }
     if sendLeave {
-      try? await sendControl(
-        .leave,
-        over: session.tcp,
+      scheduleLeave(
+        over: departure.connection,
+        receiveTask: departure.receiveTask,
         operation: "leaving the host"
       )
+    } else {
+      departure.receiveTask?.cancel()
     }
-    removeSession(connectionID)
   }
 
   func stop() {
     stopBrowsing()
     pendingHandshakes.values.forEach { $0.task.cancel() }
     pendingHandshakes.removeAll()
+    leaveTasks.values.forEach { $0.cancel() }
+    leaveTasks.removeAll()
     receiveTasks.values.forEach { $0.cancel() }
     receiveTasks.removeAll()
     for session in sessions.values {
@@ -367,23 +370,14 @@ actor ClientTransport {
     browser = nil
   }
 
-  private func disconnectAllSessions() async {
-    let currentSessions = Array(sessions)
-    await withTaskGroup(of: Void.self) { group in
-      for (_, session) in currentSessions {
-        group.addTask { [clock, controlSender] in
-          _ = try? await withTimeout(
-            PartyNetConstants.helloTimeout,
-            clock: clock,
-            operationName: "leaving a previous host"
-          ) {
-            try await controlSender(session.tcp, .leave)
-          }
-        }
-      }
-    }
-    for (connectionID, _) in currentSessions {
-      removeSession(connectionID)
+  private func disconnectAllSessions() {
+    let departures = Array(sessions.keys).compactMap(detachSessionForLeave)
+    for departure in departures {
+      scheduleLeave(
+        over: departure.connection,
+        receiveTask: departure.receiveTask,
+        operation: "leaving a previous host"
+      )
     }
   }
 
@@ -496,7 +490,7 @@ actor ClientTransport {
       eventHub.yield(.inputSent(connectionID: connectionID))
       return true
     } catch {
-      endSession(connectionID, reason: error.localizedDescription)
+      handleControlWriteFailure(error, connectionID: connectionID)
       return false
     }
   }
@@ -555,7 +549,7 @@ actor ClientTransport {
       )
       return true
     } catch {
-      endSession(connectionID, reason: error.localizedDescription)
+      handleControlWriteFailure(error, connectionID: connectionID)
       return false
     }
   }
@@ -574,7 +568,42 @@ actor ClientTransport {
     receiveTasks.removeValue(forKey: connectionID)?.cancel()
   }
 
-  private func sendControl(
+  private func detachSessionForLeave(
+    _ connectionID: UUID
+  ) -> (connection: ClientControlConnection, receiveTask: Task<Void, Never>?)? {
+    guard let session = sessions.removeValue(forKey: connectionID) else { return nil }
+    session.inputTask?.cancel()
+    session.pingTask?.cancel()
+    return (session.tcp, receiveTasks.removeValue(forKey: connectionID))
+  }
+
+  private func handleControlWriteFailure(_ error: any Error, connectionID: UUID) {
+    guard isTerminalControlWriteError(error) else { return }
+    endSession(connectionID, reason: error.localizedDescription)
+  }
+
+  private func scheduleLeave(
+    over connection: ClientControlConnection,
+    receiveTask: Task<Void, Never>?,
+    operation: String
+  ) {
+    let taskID = UUID()
+    leaveTasks[taskID] = Task { [weak self, receiveTask] in
+      guard let self else {
+        receiveTask?.cancel()
+        return
+      }
+      _ = try? await self.sendControl(.leave, over: connection, operation: operation)
+      receiveTask?.cancel()
+      await self.finishLeaveTask(taskID)
+    }
+  }
+
+  private func finishLeaveTask(_ taskID: UUID) {
+    leaveTasks.removeValue(forKey: taskID)
+  }
+
+  private nonisolated func sendControl(
     _ message: ClientMessage,
     over connection: ClientControlConnection,
     operation: String
@@ -589,7 +618,9 @@ actor ClientTransport {
     }
   }
 
-  private func isTerminalControlWriteError(_ error: any Error) -> Bool {
-    !(error is CancellationError) && !(error is EncodingError)
+#if DEBUG
+  func simulateEventOverflowForTesting() {
+    eventHub.simulateOverflowForTesting()
   }
+#endif
 }

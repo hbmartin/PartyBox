@@ -303,12 +303,9 @@ public final class PartyHost {
         self.players = players
     }
 
-    func simulateTransportEventStreamOverflowForTesting() async {
+    public func simulateTransportEventStreamOverflowForTesting() async {
         guard let transport else { return }
-        await transportEventStreamOverwhelmed(
-            transport,
-            generation: lifecycleGeneration
-        )
+        await transport.simulateEventOverflowForTesting()
     }
 #endif
 
