@@ -60,4 +60,8 @@ public final class FaultRig {
         await proxy.stop()
         await host.stop()
     }
+
+    public func hostInputActivity() -> [InputActivity] {
+        host.inputs.activitySnapshot()
+    }
 }

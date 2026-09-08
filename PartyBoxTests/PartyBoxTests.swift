@@ -401,7 +401,42 @@ struct PartyBoxTests {
         let screen = session.controllerScreen(for: bottom)
         #expect(screen.isValid)
         #expect(screen.accessibilityID == "controller.layout.paddle.bottom")
+        #expect(screen.requestedInputs == .orientation)
         #expect(screen.components.contains { if case .axisSurface = $0 { true } else { false } })
+    }
+
+    @Test func pongUsesMotionTiltWithTouchAsTheUnavailableFallback() throws {
+        let inputs = InputStore()
+        let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let scene = PongScene(
+            assignments: [.init(playerID: bottom, edge: .bottom)],
+            players: [player],
+            inputs: inputs,
+            seed: 42
+        ) { _ in }
+
+        #expect(inputs.update(
+            InputFrame(token: 1, sequence: 1, clientTimeMs: 0, axisX: -0.6, axisY: 0),
+            for: bottom
+        ))
+        scene.update(0)
+        #expect(abs(try #require(scene.paddlePosition(for: bottom)) + 0.6) < 0.001)
+
+        let halfAngle = Float.pi / 12
+        #expect(inputs.update(
+            InputFrame(
+                token: 1,
+                sequence: 2,
+                clientTimeMs: 1,
+                axisX: -0.9,
+                axisY: 0,
+                orientation: .init(x: 0, y: sin(halfAngle), z: 0, w: cos(halfAngle)),
+                flags: .motionAvailable
+            ),
+            for: bottom
+        ))
+        scene.update(1.0 / 60.0)
+        #expect(abs(try #require(scene.paddlePosition(for: bottom)) - 0.75) < 0.001)
     }
 
     @Test func pongModifiersApplyTheSpecifiedRuleChanges() {

@@ -218,25 +218,29 @@ soak() {
         run_logged "partynet-soak-$iteration" swift test --package-path "$ROOT_DIR/PartyNet"
     done
     run_logged partyload-stable "$ROOT_DIR/PartyNet/.build/debug/partyload" \
-        --address "$FAULT_ADDRESS" --count 8 --hz 60 --seconds "$seconds" \
+        --address "$FAULT_ADDRESS" --control-address "$CONTROL_ADDRESS" \
+        --count 8 --hz 60 --seconds "$seconds" \
         --expect-transport udp
 
     fault_control udp --drop 1 --delay-ms 0 --jitter-ms 0 --reorder-window 1 \
         >"$ARTIFACT_DIR/fault-udp-loss.json"
     run_logged partyload-udp-loss "$ROOT_DIR/PartyNet/.build/debug/partyload" \
-        --address "$FAULT_ADDRESS" --count 8 --hz 60 --seconds "$fault_seconds" \
+        --address "$FAULT_ADDRESS" --control-address "$CONTROL_ADDRESS" \
+        --count 8 --hz 60 --seconds "$fault_seconds" \
         --expect-transport fallback
     fault_control metrics >"$ARTIFACT_DIR/fault-udp-loss-metrics.json"
     fault_control reset >"$ARTIFACT_DIR/fault-recovery.json"
     run_logged partyload-recovery "$ROOT_DIR/PartyNet/.build/debug/partyload" \
-        --address "$FAULT_ADDRESS" --count 8 --hz 60 --seconds "$fault_seconds" \
+        --address "$FAULT_ADDRESS" --control-address "$CONTROL_ADDRESS" \
+        --count 8 --hz 60 --seconds "$fault_seconds" \
         --expect-transport udp
     fault_control metrics >"$ARTIFACT_DIR/fault-recovery-metrics.json"
     fault_control reset >/dev/null
     fault_control udp --drop 0.15 --delay-ms 12 --jitter-ms 7 --reorder-window 2 \
         >"$ARTIFACT_DIR/fault-seeded.json"
     run_logged partyload-seeded-faults "$ROOT_DIR/PartyNet/.build/debug/partyload" \
-        --address "$FAULT_ADDRESS" --count 8 --hz 60 --seconds "$fault_seconds"
+        --address "$FAULT_ADDRESS" --control-address "$CONTROL_ADDRESS" \
+        --count 8 --hz 60 --seconds "$fault_seconds"
     fault_control metrics >"$ARTIFACT_DIR/fault-seeded-metrics.json"
 
     run_logged partynet-tcp-cut swift test --package-path "$ROOT_DIR/PartyNet" \

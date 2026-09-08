@@ -526,7 +526,7 @@ private struct AxisSurface: View {
                         }
                     }
                         .position(
-                            x: (CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * max(width - 70, 0) + 35,
+                            x: (CGFloat(coordinator.displayedInputAxisX) + 1) * 0.5 * max(width - 70, 0) + 35,
                             y: component.binding == .twoDimensional
                                 ? (CGFloat(coordinator.client.inputAxisY) + 1) * 0.5 * max(height - 70, 0) + 35
                                 : height / 2
@@ -540,7 +540,7 @@ private struct AxisSurface: View {
                     coordinator.client.setInput(axisX: x, axisY: y)
                 })
                 .accessibilityIdentifier(component.id)
-                .accessibilityValue(String(format: "%.3f, %.3f", coordinator.client.inputAxisX, coordinator.client.inputAxisY))
+                .accessibilityValue(String(format: "%.3f, %.3f", coordinator.displayedInputAxisX, coordinator.client.inputAxisY))
             }
             .frame(height: component.binding == .twoDimensional ? 250 : 170)
             Text(component.instruction).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.48))

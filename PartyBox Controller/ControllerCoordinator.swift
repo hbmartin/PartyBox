@@ -24,6 +24,11 @@ final class ControllerCoordinator {
         guard let welcomedPlayer = client.player else { return nil }
         return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
     }
+    var displayedInputAxisX: Float {
+        guard requestedInputs.contains(.orientation),
+              client.inputFlags.contains(.motionAvailable) else { return client.inputAxisX }
+        return client.inputOrientation.horizontalTiltAxis()
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>

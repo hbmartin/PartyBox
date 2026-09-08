@@ -64,6 +64,26 @@ struct InputStoreTests {
         #expect(!store.update(frame(token: 7, sequence: 11, x: 0.9), for: player))
     }
 
+    @Test func activityCountsOnlyAcceptedChangingFramesAndClearsWithThePlayer() throws {
+        let store = InputStore()
+        let player = PlayerID(2)
+        #expect(store.update(frame(token: 4, sequence: 1, x: -0.75), for: player))
+        #expect(!store.update(frame(token: 4, sequence: 1, x: 0.9), for: player))
+        #expect(store.update(frame(token: 4, sequence: 2, x: 0.6), for: player))
+
+        let activity = try #require(store.activitySnapshot().first)
+        #expect(activity.playerID == player)
+        #expect(activity.acceptedFrameCount == 2)
+        #expect(activity.minimumAxisX == -0.75)
+        #expect(activity.maximumAxisX == 0.6)
+        #expect(activity.latestSequence == 2)
+
+        store.neutralize()
+        #expect(store.activitySnapshot() == [activity])
+        store.remove(player)
+        #expect(store.activitySnapshot().isEmpty)
+    }
+
     private func frame(token: UInt64, sequence: UInt32, x: Float) -> InputFrame {
         InputFrame(token: token, sequence: sequence, clientTimeMs: 0, axisX: x, axisY: 0)
     }
