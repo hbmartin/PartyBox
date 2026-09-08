@@ -47,7 +47,7 @@ final class ArcadeSoundPlayer {
         _ = ensureEngineRunning()
     }
 
-    deinit {
+    isolated deinit {
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 

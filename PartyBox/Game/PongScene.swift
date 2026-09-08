@@ -14,6 +14,7 @@ final class PongScene: SKScene {
     private let countdownLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
     private var paddleNodes: [PaddleEdge: SKShapeNode] = [:]
     private var lifeLabels: [PaddleEdge: SKLabelNode] = [:]
+    private let trailNode = SKNode()
 
     init(
         assignments: [SeatAssignment],
@@ -52,18 +53,45 @@ final class PongScene: SKScene {
         }
     }
 
-    func forfeit(_ playerID: PlayerID) {
+    func forfeit(_ playerID: PlayerID, onAccepted: () -> Void) {
         let events = simulation.forfeit(playerID)
+        guard !events.isEmpty else { return }
+        onAccepted()
         syncNodes()
-        if !events.isEmpty {
-            animate(events)
-            onEvents(events)
-        }
+        animate(events)
+        onEvents(events)
     }
 
     func edge(for playerID: PlayerID) -> PaddleEdge? {
         simulation.edge(for: playerID)
     }
+
+    func botTarget(for playerID: PlayerID) -> Double? {
+        simulation.botTarget(for: playerID)
+    }
+
+    func paddlePosition(for playerID: PlayerID) -> Double? {
+        simulation.paddlePosition(for: playerID)
+    }
+
+#if DEBUG
+    func setBallForTesting(position: PongPoint, velocity: PongPoint) {
+        simulation.setBallForTesting(position: position, velocity: velocity)
+        syncNodes()
+    }
+
+    var paddleMarkCountForTesting: Int {
+        paddleNodes.values.reduce(0) { total, paddle in
+            total + paddle.children.count { $0.name?.hasPrefix("paddle-mark-") == true }
+        }
+    }
+
+    var hasActiveTrailForTesting: Bool {
+        trailNode.action(forKey: "ball-mark-trail") != nil || !trailNode.children.isEmpty
+    }
+
+    func animateForTesting(_ events: [PongEvent]) { animate(events) }
+#endif
 
     private func buildScene(assignments: [SeatAssignment]) {
         let grid = SKNode()
@@ -101,6 +129,18 @@ final class PongScene: SKScene {
             paddle.strokeColor = .white.withAlphaComponent(0.8)
             paddle.lineWidth = 2
             paddle.glowWidth = 18
+            if let info {
+                let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                mark.name = "paddle-mark-\(info.mark.rawValue)"
+                mark.text = info.mark.glyph
+                mark.fontSize = 21
+                mark.fontColor = .black.withAlphaComponent(0.82)
+                mark.horizontalAlignmentMode = .center
+                mark.verticalAlignmentMode = .center
+                mark.position = CGPoint(x: 0, y: -1)
+                mark.zPosition = 2
+                paddle.addChild(mark)
+            }
             addChild(paddle)
             paddleNodes[assignment.edge] = paddle
 
@@ -124,6 +164,9 @@ final class PongScene: SKScene {
             addChild(lives)
             lifeLabels[assignment.edge] = lives
         }
+
+        trailNode.zPosition = 4
+        addChild(trailNode)
 
         ballNode.fillColor = .white
         ballNode.strokeColor = SKColor(red: 0.35, green: 0.95, blue: 1, alpha: 1)
@@ -179,19 +222,66 @@ final class PongScene: SKScene {
                     .fadeAlpha(to: 0.35, duration: 0.025),
                     .fadeAlpha(to: 1, duration: 0.07),
                 ]))
+                startTrail(for: playerID)
             case let .lostLife(playerID, _):
+                clearTrail()
                 guard let edge = simulation.edge(for: playerID) else { continue }
                 lifeLabels[edge]?.run(.sequence([
                     .scale(to: 1.45, duration: 0.08),
                     .scale(to: 1, duration: 0.18),
                 ]))
             case let .eliminated(playerID), let .forfeited(playerID):
+                clearTrail()
                 guard let edge = simulation.edge(for: playerID) else { continue }
                 lifeLabels[edge]?.run(.fadeAlpha(to: 0.2, duration: 0.25))
             case .gameOver:
-                break
+                clearTrail()
             }
         }
+    }
+
+    private func startTrail(for playerID: PlayerID) {
+        clearTrail()
+        guard let info = playerInfo[playerID] else { return }
+        let emit = SKAction.run { [weak self] in self?.addTrailAfterimage(for: info) }
+        let wait = SKAction.wait(forDuration: 0.4 / 12.0)
+        trailNode.run(.repeat(.sequence([emit, wait]), count: 12), withKey: "ball-mark-trail")
+    }
+
+    private func addTrailAfterimage(for player: PlayerInfo) {
+        let container = SKNode()
+        container.position = ballNode.position
+        container.zPosition = 4
+
+        let edge = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        edge.text = player.mark.glyph
+        edge.fontSize = 24
+        edge.fontColor = .black.withAlphaComponent(0.92)
+        edge.horizontalAlignmentMode = .center
+        edge.verticalAlignmentMode = .center
+        container.addChild(edge)
+
+        let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        mark.text = player.mark.glyph
+        mark.fontSize = 19
+        mark.fontColor = .partyHex(player.colorHex)
+        mark.horizontalAlignmentMode = .center
+        mark.verticalAlignmentMode = .center
+        mark.zPosition = 1
+        container.addChild(mark)
+        trailNode.addChild(container)
+        container.run(.sequence([
+            .group([
+                .fadeOut(withDuration: 0.4),
+                .scale(to: 0.45, duration: 0.4),
+            ]),
+            .removeFromParent(),
+        ]))
+    }
+
+    private func clearTrail() {
+        trailNode.removeAction(forKey: "ball-mark-trail")
+        trailNode.removeAllChildren()
     }
 
     private func paddlePosition(for edge: PaddleEdge, tangent: Double) -> CGPoint {

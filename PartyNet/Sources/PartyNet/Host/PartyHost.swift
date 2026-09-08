@@ -7,7 +7,7 @@ public enum HostEvent: Sendable {
     case playerJoined(PlayerInfo)
     case playerReconnected(PlayerInfo)
     case playerDisconnected(PlayerInfo)
-    case playerExpired(PlayerInfo)
+    case playerExpired(PlayerInfo, controllerID: ControllerID)
     case rosterChanged([PlayerInfo])
     case application(playerID: PlayerID, payload: Data)
     case failure(String)
@@ -38,6 +38,8 @@ public final class PartyHost {
         let controllerID: ControllerID
         let playerID: PlayerID
         var displayName: String
+        var mark: PlayerMark
+        let kind: PlayerKind
         var connectionID: UUID?
         var sessionToken: UInt64?
         var isAdmitted: Bool
@@ -52,6 +54,11 @@ public final class PartyHost {
     }
 
     private struct RenameWorker: Sendable {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private struct ConnectionWorker: Sendable {
         let id: UUID
         let task: Task<Void, Never>
     }
@@ -72,8 +79,12 @@ public final class PartyHost {
     private var broadcastTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingRenames: [ControllerID: PendingRename] = [:]
     private var renameWorkers: [ControllerID: RenameWorker] = [:]
+    private var helloWorkers: [UUID: ConnectionWorker] = [:]
+    private var pendingPingResponses: [UUID: UInt64] = [:]
+    private var pingWorkers: [UUID: ConnectionWorker] = [:]
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
+    private var registeredLocalBotIDs: Set<ControllerID> = []
     private var lifecycleGeneration: UInt64 = 0
 
     public convenience init(
@@ -101,18 +112,24 @@ public final class PartyHost {
         transportTask?.cancel()
         broadcastTasks.values.forEach { $0.cancel() }
         renameWorkers.values.forEach { $0.task.cancel() }
+        helloWorkers.values.forEach { $0.task.cancel() }
+        pingWorkers.values.forEach { $0.task.cancel() }
         sessions.values.forEach { $0.graceTask?.cancel() }
     }
 
     @discardableResult
-    public func start(hostName: String, advertise: Bool = true) async throws -> UInt16 {
+    public func start(
+        hostName: String,
+        advertise: Bool = true,
+        hostInstanceID suppliedHostInstanceID: UUID? = nil
+    ) async throws -> UInt16 {
         lifecycleGeneration &+= 1
         let generation = lifecycleGeneration
         let previousTransport = prepareToStop()
         await previousTransport?.stop()
         guard lifecycleGeneration == generation else { throw PartyNetTransportError.stopped }
         self.hostName = hostName
-        let hostInstanceID = UUID()
+        let hostInstanceID = suppliedHostInstanceID ?? UUID()
         self.hostInstanceID = hostInstanceID
         errorMessage = nil
         let transport = transportFactory(inputs)
@@ -174,6 +191,41 @@ public final class PartyHost {
 
     public func controllerID(for playerID: PlayerID) -> ControllerID? {
         sessions.values.first { $0.playerID == playerID && $0.isAdmitted }?.controllerID
+    }
+
+    /// Marks a controller identity as a trusted in-process bot before it connects.
+    /// Remote clients cannot opt into bot privileges through the wire protocol.
+    public func registerLocalBot(controllerID: ControllerID) {
+        registeredLocalBotIDs.insert(controllerID)
+    }
+
+    public func unregisterLocalBot(controllerID: ControllerID) {
+        registeredLocalBotIDs.remove(controllerID)
+    }
+
+    /// Assigns a unique waiting-room mark. Humans can displace a bot, but never
+    /// another human; the displaced bot inherits the human's previous mark.
+    @discardableResult
+    public func assignMark(_ mark: PlayerMark, to playerID: PlayerID) -> Bool {
+        guard let requesterID = sessions.first(where: { $0.value.playerID == playerID })?.key,
+              var requester = sessions[requesterID],
+              requester.isAdmitted else { return false }
+        guard requester.mark != mark else { return true }
+
+        if let holderID = sessions.first(where: {
+            $0.key != requesterID && $0.value.mark == mark
+        })?.key {
+            guard requester.kind == .human,
+                  var holder = sessions[holderID],
+                  holder.kind == .bot else { return false }
+            holder.mark = requester.mark
+            sessions[holderID] = holder
+        }
+
+        requester.mark = mark
+        sessions[requesterID] = requester
+        refreshPlayers()
+        return true
     }
 
     @discardableResult
@@ -280,11 +332,17 @@ public final class PartyHost {
         renameWorkers.values.forEach { $0.task.cancel() }
         renameWorkers.removeAll()
         pendingRenames.removeAll()
+        helloWorkers.values.forEach { $0.task.cancel() }
+        helloWorkers.removeAll()
+        pingWorkers.values.forEach { $0.task.cancel() }
+        pingWorkers.removeAll()
+        pendingPingResponses.removeAll()
         for session in sessions.values {
             session.graceTask?.cancel()
         }
         sessions.removeAll()
         connectionOwners.removeAll()
+        registeredLocalBotIDs.removeAll()
         players.removeAll()
         inputs.removeAll()
         port = nil
@@ -313,7 +371,7 @@ public final class PartyHost {
         guard lifecycleGeneration == generation else { return }
         switch event {
         case let .hello(connectionID, hello):
-            await handleHello(connectionID: connectionID, hello: hello, generation: generation)
+            enqueueHello(connectionID: connectionID, hello: hello, generation: generation)
         case let .message(connectionID, message):
             await handleMessage(connectionID: connectionID, message: message, generation: generation)
         case let .disconnected(connectionID):
@@ -322,6 +380,22 @@ public final class PartyHost {
             errorMessage = message
             eventHub.yield(.failure(message))
         }
+    }
+
+    private func enqueueHello(connectionID: UUID, hello: Hello, generation: UInt64) {
+        helloWorkers.removeValue(forKey: connectionID)?.task.cancel()
+        let workerID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.handleHello(connectionID: connectionID, hello: hello, generation: generation)
+            self.finishHelloWorker(connectionID: connectionID, workerID: workerID)
+        }
+        helloWorkers[connectionID] = ConnectionWorker(id: workerID, task: task)
+    }
+
+    private func finishHelloWorker(connectionID: UUID, workerID: UUID) {
+        guard helloWorkers[connectionID]?.id == workerID else { return }
+        helloWorkers.removeValue(forKey: connectionID)
     }
 
     private func handleHello(connectionID: UUID, hello: Hello, generation: UInt64) async {
@@ -391,10 +465,18 @@ public final class PartyHost {
             }
             fallbackName = "Player \(playerID.rawValue + 1)"
             token = UInt64.random(in: UInt64.min...UInt64.max)
+            let kind: PlayerKind = registeredLocalBotIDs.contains(hello.controllerID) ? .bot : .human
+            let mark = assignInitialMark(
+                preferred: hello.preferredMark,
+                kind: kind,
+                playerID: playerID
+            )
             let created = PlayerSession(
                 controllerID: hello.controllerID,
                 playerID: playerID,
                 displayName: DisplayName.sanitized(hello.displayName, fallback: fallbackName),
+                mark: mark,
+                kind: kind,
                 connectionID: connectionID,
                 sessionToken: token,
                 isAdmitted: false,
@@ -497,14 +579,56 @@ public final class PartyHost {
             guard frame.token == session.sessionToken else { return }
             _ = inputs.update(frame, for: session.playerID)
         case let .ping(value):
-            await send(.pingResponse(value), to: session.playerID)
+            enqueuePingResponse(value, connectionID: connectionID, generation: generation)
         case .leave:
             await expire(controllerID: controllerID, generation: generation)
         }
     }
 
+    private func enqueuePingResponse(_ nonce: UInt64, connectionID: UUID, generation: UInt64) {
+        pendingPingResponses[connectionID] = nonce
+        guard pingWorkers[connectionID] == nil else { return }
+        let workerID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainPingResponses(
+                connectionID: connectionID,
+                workerID: workerID,
+                generation: generation
+            )
+        }
+        pingWorkers[connectionID] = ConnectionWorker(id: workerID, task: task)
+    }
+
+    private func drainPingResponses(connectionID: UUID, workerID: UUID, generation: UInt64) async {
+        defer { finishPingWorker(connectionID: connectionID, workerID: workerID) }
+        while !Task.isCancelled,
+              lifecycleGeneration == generation,
+              pingWorkers[connectionID]?.id == workerID,
+              let nonce = pendingPingResponses.removeValue(forKey: connectionID),
+              let transport {
+            do {
+                try await transport.send(.pingResponse(nonce), to: connectionID)
+            } catch is CancellationError {
+                return
+            } catch {
+                logger.debug(
+                    "Ping response to connection \(connectionID, privacy: .public) failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func finishPingWorker(connectionID: UUID, workerID: UUID) {
+        guard pingWorkers[connectionID]?.id == workerID else { return }
+        pingWorkers.removeValue(forKey: connectionID)
+    }
+
     private func handleDisconnect(connectionID: UUID, generation: UInt64) async {
         guard lifecycleGeneration == generation else { return }
+        helloWorkers.removeValue(forKey: connectionID)?.task.cancel()
+        pingWorkers.removeValue(forKey: connectionID)?.task.cancel()
+        pendingPingResponses.removeValue(forKey: connectionID)
         guard let controllerID = connectionOwners.removeValue(forKey: connectionID),
               var session = sessions[controllerID], session.connectionID == connectionID else { return }
         cancelPendingRename(for: controllerID)
@@ -548,6 +672,7 @@ public final class PartyHost {
               expectedRevision == nil || current.revision == expectedRevision else { return }
         cancelPendingRename(for: controllerID)
         _ = sessions.removeValue(forKey: controllerID)
+        registeredLocalBotIDs.remove(controllerID)
         let session = current
         if let connectionID = session.connectionID {
             connectionOwners.removeValue(forKey: connectionID)
@@ -556,7 +681,10 @@ public final class PartyHost {
         inputs.remove(session.playerID)
         refreshPlayers()
         if session.isAdmitted {
-            eventHub.yield(.playerExpired(info(for: session, connected: false)))
+            eventHub.yield(.playerExpired(
+                info(for: session, connected: false),
+                controllerID: session.controllerID
+            ))
         }
         if let connectionID = session.connectionID {
             await transport?.disconnect(connectionID: connectionID)
@@ -661,17 +789,51 @@ public final class PartyHost {
             .first { !used.contains($0) }
     }
 
+    private func assignInitialMark(
+        preferred: PlayerMark?,
+        kind: PlayerKind,
+        playerID: PlayerID
+    ) -> PlayerMark {
+        if let preferred,
+           let holderID = sessions.first(where: { $0.value.mark == preferred })?.key {
+            if kind == .human,
+               var holder = sessions[holderID],
+               holder.kind == .bot,
+               let replacement = firstAvailableMark(startingAt: holder.playerID) {
+                holder.mark = replacement
+                sessions[holderID] = holder
+                return preferred
+            }
+        } else if let preferred {
+            return preferred
+        }
+
+        return firstAvailableMark(startingAt: playerID)
+            ?? PlayerMark.defaultMark(for: playerID)
+    }
+
+    private func firstAvailableMark(startingAt playerID: PlayerID) -> PlayerMark? {
+        let used = Set(sessions.values.map(\.mark))
+        let marks = PlayerMark.allCases
+        let start = Int(playerID.rawValue) % marks.count
+        return (0..<marks.count)
+            .map { marks[(start + $0) % marks.count] }
+            .first { !used.contains($0) }
+    }
+
     private func info(for session: PlayerSession, connected: Bool) -> PlayerInfo {
         PlayerInfo(
             id: session.playerID,
             displayName: session.displayName,
             colorHex: PlayerPalette.color(for: session.playerID),
-            isConnected: connected
+            isConnected: connected,
+            mark: session.mark,
+            kind: session.kind
         )
     }
 
     private func refreshPlayers() {
-        players = sessions.values
+        let refreshedPlayers = sessions.values
             .filter(\.isAdmitted)
             .map {
                 info(
@@ -680,6 +842,8 @@ public final class PartyHost {
                 )
             }
             .sorted { $0.id < $1.id }
+        guard refreshedPlayers != players else { return }
+        players = refreshedPlayers
         eventHub.yield(.rosterChanged(players))
     }
 }

@@ -150,6 +150,8 @@ public struct ControllerScreen: Codable, Equatable, Sendable {
     public var isValid: Bool {
         guard accessibilityID.count <= 80,
               accentColorHex.count == 7,
+              accentColorHex.hasPrefix("#"),
+              accentColorHex.dropFirst().allSatisfy({ $0.isASCII && $0.isHexDigit }),
               components.count <= 32 else { return false }
         var ids = Set<String>()
         for component in components {

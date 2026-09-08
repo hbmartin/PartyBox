@@ -1,0 +1,41 @@
+name: Static checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  linux-static-checks:
+    name: Linux-safe repository checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+
+      - name: Check Bash syntax
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -type f -name '*.sh' -print0)
+
+      - name: Run ShellCheck
+        run: shellcheck scripts/*.sh
+
+      - name: Validate JSON configuration and test plans
+        run: |
+          while IFS= read -r -d '' document; do
+            jq empty "$document"
+          done < <(find TestPlans .codex -type f \( -name '*.json' -o -name '*.xctestplan' \) -print0)
+
+      - name: Explain platform coverage
+        run: >-
+          echo "These Linux checks validate portable repository inputs only;
+          Apple builds and tests run through scripts/verify.sh on a trusted Mac."

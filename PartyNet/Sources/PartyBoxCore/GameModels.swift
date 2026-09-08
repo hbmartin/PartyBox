@@ -20,7 +20,6 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
     public let minimumPlayers: Int
     public let maximumPlayers: Int
     public let modifiers: [GameModifierDescriptor]
-    public let requestedInputs: RequestedInputs
 
     public init(
         id: String,
@@ -28,8 +27,7 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
         summary: String,
         minimumPlayers: Int,
         maximumPlayers: Int,
-        modifiers: [GameModifierDescriptor] = [],
-        requestedInputs: RequestedInputs = []
+        modifiers: [GameModifierDescriptor] = []
     ) {
         precondition((1...PartyNetConstants.maximumControllers).contains(minimumPlayers))
         precondition((minimumPlayers...PartyNetConstants.maximumControllers).contains(maximumPlayers))
@@ -39,7 +37,6 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
         self.minimumPlayers = minimumPlayers
         self.maximumPlayers = maximumPlayers
         self.modifiers = modifiers
-        self.requestedInputs = requestedInputs
     }
 }
 
@@ -116,12 +113,12 @@ public struct TurnOrder: Equatable, Sendable {
     }
 
     public mutating func rotateAfterMatch(active: [PlayerID], winner: PlayerID?) {
+        let knownPlayers = Set(players)
+        let active = active.filter { knownPlayers.contains($0) }
         let activeSet = Set(active)
         let waiting = players.filter { !activeSet.contains($0) }
         if let winner, activeSet.contains(winner) {
             players = [winner] + waiting + active.filter { $0 != winner }
-        } else if waiting.isEmpty, active.count == 1 {
-            players = active
         } else {
             players = waiting + active
         }

@@ -13,13 +13,17 @@ struct ContentView: View {
             PartyBackdrop()
             switch coordinator.phase {
             case .lobby:
-                LobbyView(coordinator: coordinator)
-                    .accessibilityIdentifier("host.phase.lobby")
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                ZStack {
+                    LobbyView(coordinator: coordinator)
+                    phaseMarker("host.phase.lobby", label: "Lobby")
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .gameMenu:
-                GameMenuView(coordinator: coordinator)
-                    .accessibilityIdentifier("host.phase.menu")
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                ZStack {
+                    GameMenuView(coordinator: coordinator)
+                    phaseMarker("host.phase.menu", label: "Game menu")
+                }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
             case .playing:
                 if let scene = coordinator.currentScene {
                     ZStack {
@@ -27,7 +31,7 @@ struct ContentView: View {
                             .accessibilityLabel("PartyBox game arena")
                             .accessibilityIdentifier("host.arena")
                         ReactionOverlay(bursts: coordinator.reactionBursts)
-                        VoteOverlay(tallies: coordinator.voteTallies)
+                        VoteOverlay(tallies: coordinator.displayedVoteTallies)
                         VStack {
                             Text("Pong match in progress")
                                 .accessibilityIdentifier("host.phase.playing")
@@ -39,13 +43,17 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
             case let .gameOver(result):
-                GameOverView(result: result)
-                    .accessibilityIdentifier("host.phase.gameOver")
-                    .transition(.opacity.combined(with: .scale(scale: 1.04)))
+                ZStack {
+                    GameOverView(result: result, coordinator: coordinator)
+                    phaseMarker("host.phase.gameOver", label: "Game over")
+                }
+                .transition(.opacity.combined(with: .scale(scale: 1.04)))
             case .history:
-                HistoryView(coordinator: coordinator)
-                    .accessibilityIdentifier("host.phase.history")
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                ZStack {
+                    HistoryView(coordinator: coordinator)
+                    phaseMarker("host.phase.history", label: "History")
+                }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
             keyboardButtons
         }
@@ -67,6 +75,14 @@ struct ContentView: View {
         }
         .onExitCommand { coordinator.perform(.back) }
         .onTapGesture { coordinator.perform(.select) }
+    }
+
+    private func phaseMarker(_ identifier: String, label: String) -> some View {
+        Text(label)
+            .accessibilityIdentifier(identifier)
+            .font(.system(size: 1))
+            .foregroundStyle(.white.opacity(0.01))
+            .frame(width: 1, height: 1)
     }
 
     @ViewBuilder
@@ -114,11 +130,29 @@ private struct LobbyView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: 4), spacing: 18) {
                 ForEach(0..<PartyNetConstants.maximumControllers, id: \.self) { index in
                     let player = coordinator.host.players.first { $0.id.rawValue == UInt8(index) }
-                    PlayerCard(number: index + 1, player: player)
+                    PlayerCard(
+                        number: index + 1,
+                        player: player,
+                        isCaptain: player?.id == coordinator.captainID,
+                        isReady: player.map { coordinator.readyPlayerIDs.contains($0.id) } == true
+                    )
                     .accessibilityIdentifier("host.playerSlot.\(index + 1)")
                 }
             }
             .frame(maxWidth: 1_220)
+
+            HStack(spacing: 28) {
+                Label("BOTS \(coordinator.activeBotCount)/\(coordinator.botFillTarget)", systemImage: "cpu")
+                    .accessibilityIdentifier("host.lobby.botStatus")
+                Label("\(coordinator.currentBotDifficulty.title)", systemImage: "gauge.with.dots.needle.50percent")
+                    .accessibilityIdentifier("host.lobby.botDifficulty")
+                if let captain = coordinator.host.players.first(where: { $0.id == coordinator.captainID }) {
+                    Label("\(captain.mark.glyph) \(captain.displayName) CAPTAIN", systemImage: "crown.fill")
+                        .accessibilityIdentifier("host.lobby.captain")
+                }
+            }
+            .font(.headline.monospaced().weight(.bold))
+            .foregroundStyle(.white.opacity(0.75))
 
             HStack(spacing: 18) {
                 Circle().fill(coordinator.canStart ? PartyTheme.lime : .gray).frame(width: 12, height: 12)
@@ -162,6 +196,7 @@ private struct GameMenuView: View {
             Text("SELECT TO PLAY  •  MENU/ESC TO RETURN")
                 .font(.headline.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.72))
+            PartyReadyStatus(coordinator: coordinator)
         }
         .padding(64)
     }
@@ -169,6 +204,7 @@ private struct GameMenuView: View {
 
 private struct GameOverView: View {
     let result: GameOutcome
+    @Bindable var coordinator: HostCoordinator
 
     var body: some View {
         VStack(spacing: 26) {
@@ -184,6 +220,13 @@ private struct GameOverView: View {
             Text(result.subtitle)
                 .font(.title2.monospaced())
                 .foregroundStyle(.white.opacity(0.74))
+            if let change = coordinator.botDifficultyChange {
+                Text(change)
+                    .font(.title3.monospaced().weight(.black))
+                    .foregroundStyle(PartyTheme.cyan)
+                    .accessibilityIdentifier("host.gameOver.botDifficulty")
+            }
+            PartyReadyStatus(coordinator: coordinator)
             Text("SELECT: NEXT MATCH   •   MENU/ESC: GAME SELECT")
                 .accessibilityIdentifier("host.gameOver.controls")
                 .font(.headline.monospaced().weight(.bold))
@@ -197,21 +240,34 @@ private struct GameOverView: View {
 private struct PlayerCard: View {
     let number: Int
     let player: PlayerInfo?
+    let isCaptain: Bool
+    let isReady: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
                 Text("P\(number)").font(.title2.monospaced().weight(.black))
                 Spacer()
-                Circle()
-                    .fill(player.map { Color.partyHex($0.colorHex) } ?? .white.opacity(0.12))
-                    .frame(width: 16, height: 16)
-                    .shadow(color: player.map { Color.partyHex($0.colorHex) } ?? .clear, radius: 10)
+                if let player {
+                    Image(systemName: player.mark.systemImageName)
+                        .foregroundStyle(Color.partyHex(player.colorHex))
+                        .accessibilityLabel(player.mark.title)
+                } else {
+                    Circle().fill(.white.opacity(0.12)).frame(width: 16, height: 16)
+                }
             }
-            Text(player?.displayName ?? "OPEN")
-                .font(.headline.weight(.bold))
-                .lineLimit(1)
-            Text(player == nil ? "AVAILABLE" : "READY")
+            HStack(spacing: 8) {
+                Text(player?.displayName ?? "OPEN")
+                    .font(.headline.weight(.bold))
+                    .lineLimit(1)
+                if player?.kind == .bot {
+                    Text("BOT").font(.caption2.monospaced().weight(.black))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.white.opacity(0.18), in: Capsule())
+                }
+                if isCaptain { Image(systemName: "crown.fill").foregroundStyle(.yellow) }
+            }
+            Text(player == nil ? "AVAILABLE" : (isReady ? "READY" : isCaptain ? "CAPTAIN" : "CONNECTED"))
                 .font(.caption.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.52))
             if let player, !player.isConnected {
@@ -228,18 +284,31 @@ private struct PlayerCard: View {
     }
 }
 
+private struct PartyReadyStatus: View {
+    @Bindable var coordinator: HostCoordinator
+
+    var body: some View {
+        if coordinator.connectedHumanCount > 1 {
+            Text("READY \(coordinator.readyCount)/\(coordinator.requiredReadyCount)  •  CAPTAIN CAN START NOW")
+                .font(.headline.monospaced().weight(.bold))
+                .foregroundStyle(PartyTheme.lime)
+                .accessibilityIdentifier("host.ready.status")
+        }
+    }
+}
+
 private struct ReactionOverlay: View {
     let bursts: [ReactionBurst]
 
     var body: some View {
         GeometryReader { proxy in
-            ForEach(Array(bursts.enumerated()), id: \.element.id) { index, burst in
+            ForEach(bursts) { burst in
                 Text(burst.emoji)
                     .font(.system(size: 64))
                     .shadow(color: .black.opacity(0.7), radius: 8)
                     .position(
-                        x: proxy.size.width * (0.12 + CGFloat((index * 23) % 76) / 100),
-                        y: proxy.size.height * (0.2 + CGFloat((index * 31) % 62) / 100)
+                        x: proxy.size.width * (0.12 + CGFloat(burst.positionOffsets.horizontal) / 100),
+                        y: proxy.size.height * (0.2 + CGFloat(burst.positionOffsets.vertical) / 100)
                     )
                     .transition(.scale.combined(with: .opacity))
             }
@@ -250,7 +319,7 @@ private struct ReactionOverlay: View {
 }
 
 private struct VoteOverlay: View {
-    let tallies: [String: Int]
+    let tallies: [VoteTallyPresentation]
 
     var body: some View {
         if !tallies.isEmpty {
@@ -258,8 +327,8 @@ private struct VoteOverlay: View {
                 Text("NEXT ROUND VOTE")
                     .font(.caption.monospaced().weight(.black))
                     .foregroundStyle(PartyTheme.cyan)
-                ForEach(tallies.keys.sorted(), id: \.self) { key in
-                    Text("\(key.uppercased()): \(tallies[key, default: 0])")
+                ForEach(tallies) { tally in
+                    Text("\(tally.title): \(tally.count)")
                         .font(.caption.monospaced().weight(.bold))
                 }
             }
@@ -280,6 +349,12 @@ private struct HistoryView: View {
         ScrollView {
             VStack(spacing: 24) {
                 PartyWordmark(kicker: "THE NIGHT SO FAR", title: "HISTORY")
+                if let error = coordinator.historyPersistenceError {
+                    Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: 900)
+                }
                 if coordinator.leaderboard.isEmpty {
                     Text("No multiplayer matches yet")
                         .font(.title2.monospaced().weight(.bold))
@@ -309,11 +384,16 @@ private struct HistoryView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text(record.gameTitle).font(.headline.weight(.black))
+                                Text(record.isPartyMatch ? "PARTY" : record.isSoloBotMatch ? "SOLO" : "PRACTICE")
+                                    .font(.caption2.monospaced().weight(.black))
+                                    .foregroundStyle(record.isSoloBotMatch ? PartyTheme.cyan : .white.opacity(0.6))
                                 Spacer()
                                 Text(record.endedAt.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.55))
                             }
-                            Text(record.participants.map { "\($0.displayName) \($0.outcome == .won ? "won" : "lost")" }.joined(separator: "  •  "))
+                            Text(record.participants.map {
+                                "\($0.displayName)\($0.kind == .bot ? " [BOT]" : "") \($0.outcome == .won ? "won" : "lost")"
+                            }.joined(separator: "  •  "))
                                 .font(.subheadline)
                             if let modifier = record.modifierTitle {
                                 Text("Modifier: \(modifier)").font(.caption.monospaced()).foregroundStyle(PartyTheme.lime)

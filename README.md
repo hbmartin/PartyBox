@@ -41,6 +41,27 @@ TestPlans/             Normal / ASan / TSan / Soak test plans for both apps
 scripts/verify.sh      Automated build, test, sanitizer and soak suite
 ```
 
+## Verification automation
+
+GitHub Actions runs portable static checks on pull requests and pushes to `main`: Bash syntax,
+ShellCheck, and JSON validation for test plans and Codex hook configuration. It deliberately does not
+claim to build or test the Apple targets because this project does not use paid GitHub macOS runners.
+
+On a development Mac, `scripts/verify.sh normal` is enforced by the project-local Codex `Stop` hook
+after relevant source, test, project, configuration, asset, or verification-harness edits. A
+`PostToolUse` hook records files changed through `apply_patch`; documentation-only turns are skipped,
+successful working-tree fingerprints are cached, and an unchanged failure can trigger at most one
+automatic continuation. Hook state, logs, and artifacts live under the ignored `.verification/`
+directory.
+
+Project-local hooks are inactive until you use `/hooks` to review and trust their current definition.
+Codex invalidates that trust when the hook definition changes. See the supported
+[Codex Hooks mechanism](https://learn.chatgpt.com/docs/hooks.md) for the review flow and event contract.
+
+The soak, ASan, and TSan profiles remain manual. Run `scripts/verify.sh soak` when you want the load and
+fault-injection soak, or `scripts/verify.sh all` for the complete local acceptance suite; there is no
+scheduled soak job.
+
 ## Docs
 
 - **[QUICKSTART.md](QUICKSTART.md)** — build it, install it, play it, debug the network.

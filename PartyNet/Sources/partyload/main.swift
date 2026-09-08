@@ -2,12 +2,19 @@ import Darwin
 import Foundation
 import PartyNet
 
+private enum ExpectedInputTransport: String {
+    case any
+    case udp
+    case fallback
+}
+
 private struct LoadConfiguration {
     var count = PartyNetConstants.maximumControllers
     var frequency = 60
     var seconds = 30
     var address: String?
     var hostName: String?
+    var expectedInputTransport = ExpectedInputTransport.any
 
     init(arguments: [String]) throws {
         var index = 0
@@ -22,6 +29,11 @@ private struct LoadConfiguration {
             case "--seconds": seconds = Int(value) ?? 0
             case "--address": address = value
             case "--host": hostName = value
+            case "--expect-transport":
+                guard let expected = ExpectedInputTransport(rawValue: value) else {
+                    throw LoadError.invalidExpectedTransport(value)
+                }
+                expectedInputTransport = expected
             default: throw LoadError.unknownOption(option)
             }
             index += 2
@@ -43,10 +55,12 @@ private enum LoadError: Error, LocalizedError {
     case unknownOption(String)
     case invalidNumbers
     case missingHost
+    case invalidExpectedTransport(String)
     case discoveryTimeout(String)
     case invalidAddress
     case connectionFailed(Int, String)
     case unexpectedDisconnect(Int, String)
+    case acceptance(String)
 
     var errorDescription: String? {
         switch self {
@@ -56,16 +70,19 @@ private enum LoadError: Error, LocalizedError {
         case .invalidNumbers:
             "Count must be 1–\(PartyNetConstants.maximumControllers), Hz 1–240, and the run length must be representable."
         case .missingHost: "Provide either --address HOST:PORT or --host BONJOUR-NAME.\n\n\(Self.usage)"
+        case let .invalidExpectedTransport(value):
+            "Unknown expected transport “\(value)”; use any, udp, or fallback."
         case let .discoveryTimeout(name): "Could not discover a compatible host named “\(name)” within 10 seconds."
         case .invalidAddress: "Address must be formatted as HOST:PORT."
         case let .connectionFailed(index, reason): "Controller \(index) failed to connect: \(reason)"
         case let .unexpectedDisconnect(index, reason): "Controller \(index) disconnected during the run: \(reason)"
+        case let .acceptance(reason): "Acceptance failed: \(reason)"
         }
     }
 
     static let usage = """
-    partyload --address HOST:PORT [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30]
-    partyload --host BONJOUR-NAME [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30]
+    partyload --address HOST:PORT [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
+    partyload --host BONJOUR-NAME [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
     """
 }
 
@@ -130,7 +147,10 @@ private struct PartyLoad {
         let totalTicks = configuration.seconds * configuration.frequency
         var rttSamples: [Double] = []
         var lastRTTSampleCounts = clients.map(\.rttSampleCount)
+        let startingRTTSampleCounts = lastRTTSampleCounts
         let startingInputCounts = clients.map(\.inputFramesSent)
+        let startingUDPInputCounts = clients.map(\.udpInputFramesSent)
+        let startingTCPInputCounts = clients.map(\.tcpInputFramesSent)
         let clock = ContinuousClock()
         let started = clock.now
         for tick in 0..<totalTicks {
@@ -152,29 +172,64 @@ private struct PartyLoad {
         try await clock.sleep(for: interval * 2)
         for (index, client) in clients.enumerated() {
             try requireConnected(client, index: index + 1, duringRun: true)
+            if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
+                rttSamples.append(rtt)
+                lastRTTSampleCounts[index] = client.rttSampleCount
+            }
         }
 
         let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
             client.inputFramesSent - startingCount
         }
-        for client in clients { await client.disconnect() }
+        let udpInputSendCounts = zip(clients, startingUDPInputCounts).map { client, startingCount in
+            client.udpInputFramesSent - startingCount
+        }
+        let tcpInputSendCounts = zip(clients, startingTCPInputCounts).map { client, startingCount in
+            client.tcpInputFramesSent - startingCount
+        }
+        let rttSampleCounts = zip(clients, startingRTTSampleCounts).map { client, startingCount in
+            client.rttSampleCount - startingCount
+        }
+        for client in clients { await client.stop() }
         let sorted = rttSamples.sorted()
         let p50 = percentile(0.50, values: sorted)
         let p95 = percentile(0.95, values: sorted)
         let maximum = sorted.last ?? 0
         let minimumSends = inputSendCounts.min() ?? 0
         let maximumSends = inputSendCounts.max() ?? 0
+        let minimumUDPSends = udpInputSendCounts.min() ?? 0
+        let maximumUDPSends = udpInputSendCounts.max() ?? 0
+        let minimumTCPSends = tcpInputSendCounts.min() ?? 0
+        let maximumTCPSends = tcpInputSendCounts.max() ?? 0
         print("Issued \(totalTicks) requested input updates per controller at \(configuration.frequency) Hz for \(configuration.seconds)s")
         print("Observed transport sends per controller: \(minimumSends)–\(maximumSends)")
+        print("UDP sends per controller: \(minimumUDPSends)–\(maximumUDPSends); TCP sends: \(minimumTCPSends)–\(maximumTCPSends)")
         print(String(format: "Ping RTT: p50 %.2f ms  p95 %.2f ms  max %.2f ms  (%d samples)", p50, p95, maximum, sorted.count))
-        if sorted.isEmpty {
-            print("Warning: run was too short to collect a ping sample (pings begin after two seconds).")
-        } else if p95 >= 50 {
-            print("FAIL: p95 RTT is above the 50 ms acceptance target.")
-            exit(EXIT_FAILURE)
-        } else {
-            print("PASS: no unexpected disconnects; p95 RTT is below 50 ms.")
+        if let index = inputSendCounts.firstIndex(of: 0) {
+            throw LoadError.acceptance("controller \(index + 1) sent no input frames")
         }
+        if let index = rttSampleCounts.firstIndex(of: 0) {
+            throw LoadError.acceptance("controller \(index + 1) collected no ping RTT samples")
+        }
+        switch configuration.expectedInputTransport {
+        case .any:
+            break
+        case .udp:
+            if let index = udpInputSendCounts.firstIndex(of: 0) {
+                throw LoadError.acceptance("controller \(index + 1) sent no UDP input frames")
+            }
+            if let index = tcpInputSendCounts.firstIndex(where: { $0 > 0 }) {
+                throw LoadError.acceptance("controller \(index + 1) unexpectedly entered TCP fallback")
+            }
+        case .fallback:
+            if let index = tcpInputSendCounts.firstIndex(of: 0) {
+                throw LoadError.acceptance("controller \(index + 1) never entered TCP fallback")
+            }
+        }
+        guard p95 < 50 else {
+            throw LoadError.acceptance("p95 RTT \(String(format: "%.2f", p95)) ms is above the 50 ms target")
+        }
+        print("PASS: connectedness, input transport, ping sampling, and RTT targets were met.")
     }
 
     @MainActor

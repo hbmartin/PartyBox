@@ -47,6 +47,13 @@ public struct GameLayoutEnvelope: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.payload = payload
     }
+
+    public var validatedControllerScreen: ControllerScreen? {
+        guard schemaVersion == ControllerScreen.schemaVersion,
+              let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: payload),
+              screen.isValid else { return nil }
+        return screen
+    }
 }
 
 public struct GameActionEnvelope: Codable, Equatable, Sendable {
@@ -65,32 +72,123 @@ public struct MenuLayout: Codable, Equatable, Sendable {
     public let items: [String]
     public let details: [String]
     public let selected: Int
+    public let control: PartyControlStatus
 
-    public init(items: [String], details: [String], selected: Int) {
+    public init(
+        items: [String],
+        details: [String],
+        selected: Int,
+        control: PartyControlStatus = .uncontrolled
+    ) {
         self.items = items
         self.details = details
         self.selected = selected
+        self.control = control
     }
+}
+
+public struct PartyControlStatus: Codable, Equatable, Sendable {
+    public let captainID: PlayerID?
+    public let isCaptain: Bool
+    public let isReady: Bool
+    public let readyCount: Int
+    public let requiredReadyCount: Int
+
+    public init(
+        captainID: PlayerID?,
+        isCaptain: Bool,
+        isReady: Bool,
+        readyCount: Int,
+        requiredReadyCount: Int
+    ) {
+        self.captainID = captainID
+        self.isCaptain = isCaptain
+        self.isReady = isReady
+        self.readyCount = max(0, readyCount)
+        self.requiredReadyCount = max(0, requiredReadyCount)
+    }
+
+    public static let uncontrolled = PartyControlStatus(
+        captainID: nil,
+        isCaptain: true,
+        isReady: false,
+        readyCount: 0,
+        requiredReadyCount: 0
+    )
+}
+
+public struct LobbyLayout: Codable, Equatable, Sendable {
+    public let captainID: PlayerID?
+    public let isCaptain: Bool
+    public let botFillTarget: Int
+    public let activeBotCount: Int
+    public let maximumBotCount: Int
+    public let botDifficulty: String
+
+    public init(
+        captainID: PlayerID?,
+        isCaptain: Bool,
+        botFillTarget: Int,
+        activeBotCount: Int,
+        maximumBotCount: Int,
+        botDifficulty: String
+    ) {
+        self.captainID = captainID
+        self.isCaptain = isCaptain
+        self.botFillTarget = max(0, botFillTarget)
+        self.activeBotCount = max(0, activeBotCount)
+        self.maximumBotCount = max(0, maximumBotCount)
+        self.botDifficulty = botDifficulty
+    }
+
+    public static let waiting = LobbyLayout(
+        captainID: nil,
+        isCaptain: false,
+        botFillTarget: 0,
+        activeBotCount: 0,
+        maximumBotCount: 3,
+        botDifficulty: "NORMAL"
+    )
 }
 
 public struct GameOverLayout: Codable, Equatable, Sendable {
     public let title: String
     public let subtitle: String
     public let nextModifier: String?
+    public let control: PartyControlStatus
+    public let botDifficultyChange: String?
 
-    public init(title: String, subtitle: String, nextModifier: String? = nil) {
+    public init(
+        title: String,
+        subtitle: String,
+        nextModifier: String? = nil,
+        control: PartyControlStatus = .uncontrolled,
+        botDifficultyChange: String? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.nextModifier = nextModifier
+        self.control = control
+        self.botDifficultyChange = botDifficultyChange
     }
 }
 
 public enum ControllerLayout: Codable, Equatable, Sendable {
-    case lobby
+    case lobby(LobbyLayout)
     case menu(MenuLayout)
     case game(GameLayoutEnvelope)
     case gameOver(GameOverLayout)
     case historyNavigation
+
+    public var isGame: Bool {
+        if case .game = self { return true }
+        return false
+    }
+}
+
+public enum LobbyAction: Codable, Equatable, Sendable {
+    case selectMark(PlayerMark)
+    case setBotFillTarget(Int)
 }
 
 public enum SpectatorAction: Codable, Equatable, Sendable {
@@ -99,6 +197,7 @@ public enum SpectatorAction: Codable, Equatable, Sendable {
 }
 
 public enum ControllerCommand: Codable, Equatable, Sendable {
+    case lobby(LobbyAction)
     case menu(MenuAction)
     case game(GameActionEnvelope)
     case spectator(SpectatorAction)

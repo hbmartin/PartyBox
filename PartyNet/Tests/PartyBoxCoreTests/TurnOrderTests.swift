@@ -23,6 +23,16 @@ struct TurnOrderTests {
         #expect(order.players == [PlayerID(4), PlayerID(5), PlayerID(0), PlayerID(1), PlayerID(2), PlayerID(3)])
     }
 
+    @Test func departedActivePlayersAreNotReintroducedDuringRotation() {
+        var order = TurnOrder(joinOrder: (0..<6).map { PlayerID(UInt8($0)) })
+        order.left(PlayerID(1))
+
+        order.rotateAfterMatch(active: (0..<4).map { PlayerID(UInt8($0)) }, winner: PlayerID(2))
+
+        #expect(order.players == [PlayerID(2), PlayerID(4), PlayerID(5), PlayerID(0), PlayerID(3)])
+        #expect(!order.players.contains(PlayerID(1)))
+    }
+
     @Test func leavingAndJoiningPreserveFairOrder() {
         var order = TurnOrder(joinOrder: (0..<5).map { PlayerID(UInt8($0)) })
         order.left(PlayerID(1))

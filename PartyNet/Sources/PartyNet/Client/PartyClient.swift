@@ -14,6 +14,7 @@ public enum PartyClientState: Equatable, Sendable {
 public enum ClientEvent: Sendable {
     case application(Data)
     case hostsChanged([DiscoveredHost])
+    case sessionReset
 }
 
 @MainActor
@@ -26,6 +27,8 @@ public final class PartyClient {
     public private(set) var rttMilliseconds: Double?
     public private(set) var rttSampleCount: UInt64 = 0
     public private(set) var inputFramesSent: UInt64 = 0
+    public private(set) var udpInputFramesSent: UInt64 = 0
+    public private(set) var tcpInputFramesSent: UInt64 = 0
     public private(set) var usesTCPFallback = false
     public private(set) var inputAxisX: Float = 0
     public private(set) var inputAxisY: Float = 0
@@ -46,6 +49,7 @@ public final class PartyClient {
 
     public let controllerID: ControllerID
     public private(set) var displayName: String
+    public private(set) var preferredMark: PlayerMark?
 
     private nonisolated let eventHub = EventHub<ClientEvent>()
     private let transport: ClientTransport
@@ -82,10 +86,12 @@ public final class PartyClient {
     public init(
         controllerID: ControllerID = ControllerID(),
         displayName: String,
+        preferredMark: PlayerMark? = nil,
         inputSendInterval: Duration = .milliseconds(16)
     ) {
         self.controllerID = controllerID
         self.displayName = DisplayName.sanitized(displayName, fallback: "Player")
+        self.preferredMark = preferredMark
         transport = ClientTransport(inputSendInterval: inputSendInterval)
     }
 
@@ -152,6 +158,10 @@ public final class PartyClient {
         displayName = DisplayName.sanitized(value, fallback: player.map { "Player \($0.number)" } ?? "Player")
         guard let connectionID else { return }
         try? await transport.send(.rename(displayName), connectionID: connectionID)
+    }
+
+    public func setPreferredMark(_ mark: PlayerMark?) {
+        preferredMark = mark
     }
 
     @discardableResult
@@ -236,7 +246,7 @@ public final class PartyClient {
         transportEventGeneration = nil
         transportTask?.cancel()
         transportTask = nil
-        await transport.stop()
+        await transport.stop(awaitingPendingLeaves: true)
         eventHub.finish()
     }
 
@@ -271,7 +281,7 @@ public final class PartyClient {
         eventHub.yield(.hostsChanged(hosts))
     }
 
-    func interruptForTesting() async {
+    public func interruptForTesting() async {
         guard let connectionID else { return }
         await transport.disconnect(connectionID: connectionID, sendLeave: false)
         self.connectionID = nil
@@ -299,7 +309,11 @@ public final class PartyClient {
         guard connectionAttemptID == attemptID, let host = selectedHost else { return }
         state = reconnecting ? .reconnecting(host.name) : .connecting(host.name)
         do {
-            let hello = Hello(controllerID: controllerID, displayName: displayName)
+            let hello = Hello(
+                controllerID: controllerID,
+                displayName: displayName,
+                preferredMark: preferredMark
+            )
             let (id, welcome) = try await transport.connect(
                 to: host,
                 hello: hello,
@@ -456,9 +470,13 @@ public final class PartyClient {
         case let .message(id, message):
             guard id == connectionID else { return }
             handle(message)
-        case let .inputSent(id):
+        case let .inputSent(id, transport):
             guard id == connectionID else { return }
             inputFramesSent &+= 1
+            switch transport {
+            case .udp: udpInputFramesSent &+= 1
+            case .tcp: tcpInputFramesSent &+= 1
+            }
         case let .transportMode(id, usesTCPFallback):
             guard id == connectionID else { return }
             self.usesTCPFallback = usesTCPFallback
@@ -467,8 +485,7 @@ public final class PartyClient {
             cancelForegroundProbe()
             cancelInputFlush()
             connectionID = nil
-            resetInputPresentation()
-            usesTCPFallback = false
+            resetSessionPresentation()
             guard !isExplicitlyDisconnected else { return }
             beginReconnect(reason: reason)
         case let .discoveryFailed(message):
@@ -598,6 +615,7 @@ public final class PartyClient {
         rttMilliseconds = nil
         rttSampleCount = 0
         usesTCPFallback = false
+        eventHub.yield(.sessionReset)
     }
 
     private func resetInputPresentation() {

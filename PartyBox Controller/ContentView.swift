@@ -191,7 +191,13 @@ private struct ConnectedControllerView: View {
                         .font(.caption.monospaced().weight(.bold))
                         .foregroundStyle(.white.opacity(0.55))
                         .accessibilityIdentifier("controller.state.connected")
-                    Text(playerLabel).font(.headline.weight(.black))
+                    HStack(spacing: 7) {
+                        if let player = coordinator.currentPlayer {
+                            Image(systemName: player.mark.systemImageName)
+                                .foregroundStyle(Color.controllerHex(player.colorHex))
+                        }
+                        Text(playerLabel).font(.headline.weight(.black))
+                    }
                 }
                 Spacer()
                 if let rtt = coordinator.client.rttMilliseconds {
@@ -214,8 +220,8 @@ private struct ConnectedControllerView: View {
             .padding(.bottom, 10)
 
             switch coordinator.layout {
-            case .lobby:
-                LobbyControllerView(coordinator: coordinator)
+            case let .lobby(layout):
+                LobbyControllerView(layout: layout, coordinator: coordinator)
             case let .menu(layout):
                 MenuControllerView(layout: layout, coordinator: coordinator)
             case let .game(envelope):
@@ -234,12 +240,13 @@ private struct ConnectedControllerView: View {
     }
 
     private var playerLabel: String {
-        guard let player = coordinator.client.player else { return coordinator.displayName }
-        return "P\(player.number)  \(player.displayName)"
+        guard let player = coordinator.currentPlayer else { return coordinator.displayName }
+        return "\(player.mark.glyph)  P\(player.number)  \(player.displayName)"
     }
 }
 
 private struct LobbyControllerView: View {
+    let layout: LobbyLayout
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
@@ -253,15 +260,49 @@ private struct LobbyControllerView: View {
                 Text("YOU'RE IN")
                     .font(.system(size: 38, weight: .black, design: .rounded))
                     .accessibilityIdentifier("controller.layout.lobby")
-                Text("Anyone connected can move the party forward.")
+                Text(layout.isCaptain ? "You’re the party captain." : "The captain controls shared navigation.")
                     .foregroundStyle(.white.opacity(0.64))
                     .multilineTextAlignment(.center)
 
-                RosterView(players: coordinator.roster)
+                MarkPicker(coordinator: coordinator)
 
-                Button("OPEN GAME MENU") { Task { await coordinator.sendMenu(.select) } }
-                    .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
-                    .accessibilityIdentifier("controller.lobby.openMenu")
+                RosterView(players: coordinator.roster, captainID: layout.captainID)
+
+                VStack(spacing: 10) {
+                    HStack {
+                        Text("BOTS").font(.caption.monospaced().weight(.black))
+                        Spacer()
+                        Button { Task { await coordinator.setBotFillTarget(layout.botFillTarget - 1) } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .disabled(!layout.isCaptain || layout.botFillTarget == 0)
+                        .accessibilityIdentifier("controller.lobby.bots.decrease")
+                        Text("\(layout.activeBotCount) / \(layout.botFillTarget)")
+                            .font(.headline.monospaced().weight(.black))
+                            .frame(minWidth: 58)
+                        Button { Task { await coordinator.setBotFillTarget(layout.botFillTarget + 1) } } label: {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .disabled(!layout.isCaptain || layout.botFillTarget >= layout.maximumBotCount)
+                        .accessibilityIdentifier("controller.lobby.bots.increase")
+                    }
+                    Text("DIFFICULTY  \(layout.botDifficulty)")
+                        .font(.caption.monospaced().weight(.black))
+                        .foregroundStyle(ControllerTheme.cyan)
+                        .accessibilityIdentifier("controller.lobby.botDifficulty")
+                }
+                .padding(16)
+                .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 16))
+
+                if layout.isCaptain {
+                    Button("OPEN GAME MENU") { Task { await coordinator.sendMenu(.select) } }
+                        .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
+                        .accessibilityIdentifier("controller.lobby.openMenu")
+                } else {
+                    Text("WAITING FOR CAPTAIN")
+                        .font(.headline.monospaced().weight(.black))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
             }
             .padding(24)
         }
@@ -288,18 +329,27 @@ private struct MenuControllerView: View {
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
             }
-            HStack(spacing: 16) {
-                MenuPadButton(symbol: "chevron.up", action: .up, coordinator: coordinator)
-                    .accessibilityIdentifier("controller.menu.up")
-                MenuPadButton(symbol: "chevron.down", action: .down, coordinator: coordinator)
-                    .accessibilityIdentifier("controller.menu.down")
+            ControlStatusView(status: layout.control)
+            if layout.control.isCaptain {
+                HStack(spacing: 16) {
+                    MenuPadButton(symbol: "chevron.up", action: .up, coordinator: coordinator)
+                        .accessibilityIdentifier("controller.menu.up")
+                    MenuPadButton(symbol: "chevron.down", action: .down, coordinator: coordinator)
+                        .accessibilityIdentifier("controller.menu.down")
+                }
+                Button("SELECT") { Task { await coordinator.sendMenu(.select) } }
+                    .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
+                    .accessibilityIdentifier("controller.menu.select")
+                Button("BACK") { Task { await coordinator.sendMenu(.back) } }
+                    .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
+                    .accessibilityIdentifier("controller.menu.back")
+            } else if layout.selected < max(0, layout.items.count - 1) {
+                Button(layout.control.isReady ? "CANCEL READY" : "READY") {
+                    Task { await coordinator.sendMenu(.select) }
+                }
+                .buttonStyle(ArcadeButtonStyle(color: layout.control.isReady ? .orange : ControllerTheme.lime))
+                .accessibilityIdentifier("controller.menu.ready")
             }
-            Button("SELECT") { Task { await coordinator.sendMenu(.select) } }
-                .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
-                .accessibilityIdentifier("controller.menu.select")
-            Button("BACK") { Task { await coordinator.sendMenu(.back) } }
-                .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
-                .accessibilityIdentifier("controller.menu.back")
             Spacer()
         }
         .padding(24)
@@ -324,7 +374,7 @@ private struct GameControllerView: View {
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        if let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: envelope.payload), screen.isValid {
+        if let screen = envelope.validatedControllerScreen {
             ScrollView {
                 VStack(spacing: 20) {
                     Spacer(minLength: 12)
@@ -467,7 +517,14 @@ private struct AxisSurface: View {
                 let height = max(proxy.size.height, 1)
                 ZStack {
                     RoundedRectangle(cornerRadius: 28).fill(.white.opacity(0.1))
-                    Circle().fill(accent).frame(width: 70, height: 70).shadow(color: accent, radius: 20)
+                    ZStack {
+                        Circle().fill(accent).frame(width: 70, height: 70).shadow(color: accent, radius: 20)
+                        if let player = coordinator.currentPlayer {
+                            Image(systemName: player.mark.systemImageName)
+                                .font(.title2.weight(.black))
+                                .foregroundStyle(.black.opacity(0.8))
+                        }
+                    }
                         .position(
                             x: (CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * max(width - 70, 0) + 35,
                             y: component.binding == .twoDimensional
@@ -503,15 +560,26 @@ private struct GameOverControllerView: View {
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("controller.layout.gameOver")
             Text(layout.subtitle).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
+            if let difficulty = layout.botDifficultyChange {
+                Text(difficulty)
+                    .font(.headline.monospaced().weight(.black))
+                    .foregroundStyle(ControllerTheme.cyan)
+                    .accessibilityIdentifier("controller.gameOver.botDifficulty")
+            }
             if let modifier = layout.nextModifier {
                 Text("NEXT: \(modifier)").font(.headline.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
             }
-            Button("NEXT MATCH") { Task { await coordinator.sendMenu(.select) } }
+            ControlStatusView(status: layout.control)
+            Button(layout.control.isCaptain ? "NEXT MATCH" : (layout.control.isReady ? "CANCEL READY" : "READY")) {
+                Task { await coordinator.sendMenu(.select) }
+            }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.lime))
                 .accessibilityIdentifier("controller.gameOver.next")
-            Button("GAME MENU") { Task { await coordinator.sendMenu(.back) } }
-                .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
-                .accessibilityIdentifier("controller.gameOver.menu")
+            if layout.control.isCaptain {
+                Button("GAME MENU") { Task { await coordinator.sendMenu(.back) } }
+                    .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
+                    .accessibilityIdentifier("controller.gameOver.menu")
+            }
             Spacer()
         }
         .padding(24)
@@ -528,11 +596,21 @@ private struct PersonalHistoryView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 16) {
-                        statistic(title: "PLAYED", value: coordinator.personalStatistics.played)
-                        statistic(title: "WON", value: coordinator.personalStatistics.won)
+                        statistic(title: "PARTY", value: coordinator.personalStatistics.played)
+                        statistic(title: "PARTY WINS", value: coordinator.personalStatistics.won)
                     }
-                    Text("Only multiplayer rounds count toward these totals.")
+                    HStack(spacing: 16) {
+                        statistic(title: "SOLO", value: coordinator.soloStatistics.played)
+                        statistic(title: "SOLO WINS", value: coordinator.soloStatistics.won)
+                    }
+                    Text("Party totals require two humans. Solo totals track one-human bot matches.")
                         .font(.caption).foregroundStyle(.white.opacity(0.55))
+
+                    if let error = coordinator.historyPersistenceError {
+                        Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     if coordinator.personalHistory.isEmpty {
                         ContentUnavailableView("No matches yet", systemImage: "trophy", description: Text("Matches played with this phone will appear here."))
@@ -548,7 +626,9 @@ private struct PersonalHistoryView: View {
                                 }
                                 Text(record.endedAt.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.5))
-                                Text(record.participants.map(\.displayName).joined(separator: "  •  "))
+                                Text(record.participants.map {
+                                    "\($0.displayName)\($0.kind == .bot ? " [BOT]" : "")"
+                                }.joined(separator: "  •  "))
                                     .font(.subheadline).foregroundStyle(.white.opacity(0.72))
                                 if let modifier = record.modifierTitle {
                                     Text("Modifier: \(modifier)").font(.caption).foregroundStyle(ControllerTheme.cyan)
@@ -589,16 +669,68 @@ private struct PersonalHistoryView: View {
     }
 }
 
+private struct MarkPicker: View {
+    @Bindable var coordinator: ControllerCoordinator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("YOUR MARK")
+                .font(.caption.monospaced().weight(.black))
+                .foregroundStyle(.white.opacity(0.6))
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 10) {
+                ForEach(PlayerMark.allCases, id: \.self) { mark in
+                    let selected = coordinator.currentPlayer?.mark == mark
+                    Button {
+                        Task { await coordinator.selectMark(mark) }
+                    } label: {
+                        Image(systemName: mark.systemImageName)
+                            .font(.title2.weight(.black))
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(selected ? ControllerTheme.cyan.opacity(0.55) : .black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(mark.title)
+                    .accessibilityIdentifier("controller.mark.\(mark.rawValue)")
+                }
+            }
+        }
+    }
+}
+
+private struct ControlStatusView: View {
+    let status: PartyControlStatus
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Label(status.isCaptain ? "YOU ARE CAPTAIN" : "CAPTAIN CONTROLS NAVIGATION", systemImage: "crown.fill")
+            if status.requiredReadyCount > 1 {
+                Text("READY \(status.readyCount)/\(status.requiredReadyCount)")
+                if !status.isCaptain { Text(status.isReady ? "YOU’RE READY" : "TAP READY TO VOTE") }
+            }
+        }
+        .font(.caption.monospaced().weight(.black))
+        .foregroundStyle(status.isCaptain ? .yellow : .white.opacity(0.62))
+        .multilineTextAlignment(.center)
+        .accessibilityIdentifier("controller.control.status")
+    }
+}
+
 private struct RosterView: View {
     let players: [PlayerInfo]
+    let captainID: PlayerID?
 
     var body: some View {
         VStack(spacing: 10) {
             ForEach(players) { player in
                 HStack {
-                    Circle().fill(Color.controllerHex(player.colorHex)).frame(width: 12, height: 12)
+                    Image(systemName: player.mark.systemImageName)
+                        .foregroundStyle(Color.controllerHex(player.colorHex))
                     Text("P\(player.number)").font(.caption.monospaced().weight(.black))
                     Text(player.displayName).font(.subheadline.weight(.bold)).lineLimit(1)
+                    if player.kind == .bot {
+                        Text("BOT").font(.caption2.monospaced().weight(.black))
+                    }
+                    if player.id == captainID { Image(systemName: "crown.fill").foregroundStyle(.yellow) }
                     Spacer()
                     Text(player.isConnected ? "READY" : "RECONNECTING")
                         .font(.caption2.monospaced().weight(.bold))

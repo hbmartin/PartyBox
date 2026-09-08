@@ -1,4 +1,5 @@
 import Dependencies
+import Foundation
 import PartyBoxCore
 import PartyGameRuntime
 import PartyNet
@@ -75,7 +76,7 @@ struct PartyBoxTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             await coordinator.start()
             let originalInstanceID = coordinator.host.hostInstanceID
             try #require(coordinator.host.port != nil)
@@ -84,18 +85,38 @@ struct PartyBoxTests {
 
             try await waitUntil {
                 coordinator.host.port != nil
-                    && coordinator.host.hostInstanceID != originalInstanceID
+                    && coordinator.host.hostInstanceID == originalInstanceID
             }
             #expect(coordinator.statusMessage == "Ready for controllers")
             await coordinator.stop()
         }
     }
 
+    @Test func stopDuringStartCannotInstallAStaleHostConsumer() async throws {
+        let coordinator = isolatedHostCoordinator()
+        let gate = CleanupGate()
+        coordinator.setStartCheckpointForTesting { await gate.wait() }
+        let start = Task { await coordinator.start() }
+        defer {
+            gate.release()
+            start.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await start.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.host.port == nil)
+        #expect(!coordinator.hasHostEventConsumerForTesting)
+    }
+
     @Test func staleStartFailureCannotOverwriteANewerSuccessfulStart() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             let gate = CleanupGate()
             let staleFailure = Task {
                 await coordinator.simulateSuspendedStartFailureForTesting {
@@ -114,6 +135,147 @@ struct PartyBoxTests {
             #expect(coordinator.statusMessage == "Ready for controllers")
             await coordinator.stop()
         }
+    }
+
+    @Test func unchangedVotesDoNotRecomputeTalliesAndModifierTitlesAreResolved() {
+        let coordinator = isolatedHostCoordinator()
+        let playerID = PlayerID(7)
+        let now = ContinuousClock().now
+
+        #expect(coordinator.storeVoteIfChanged("fast-ball", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged("fast-ball", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged("unknown", from: playerID, now: now))
+        #expect(!coordinator.storeVoteIfChanged(
+            "big-paddles", from: playerID, now: now.advanced(by: .milliseconds(249))
+        ))
+        #expect(coordinator.voteTallies == ["fast-ball": 1])
+        #expect(coordinator.displayedVoteTallies == [
+            VoteTallyPresentation(id: "fast-ball", title: "FAST BALL", count: 1),
+        ])
+
+        #expect(coordinator.storeVoteIfChanged(
+            "big-paddles", from: playerID, now: now.advanced(by: .milliseconds(250))
+        ))
+        #expect(coordinator.displayedVoteTallies == [
+            VoteTallyPresentation(id: "big-paddles", title: "BIG PADDLES", count: 1),
+        ])
+    }
+
+    @Test func reactionCoordinatesAreStableForEachBurstIdentity() throws {
+        let id = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        let burst = ReactionBurst(id: id, emoji: "🔥")
+
+        #expect(burst.positionOffsets.horizontal == 66)
+        #expect(burst.positionOffsets.vertical == 5)
+    }
+
+    @Test func hostKeepsMemoryOnlyHistoryVisibleAndReportsPersistenceFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blockedParent = directory.appendingPathComponent("not-a-directory")
+        let url = blockedParent.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: blockedParent)
+        let coordinator = HostCoordinator(
+            configuration: .init(arguments: ["PartyBox", "--disable-effects"]),
+            historyFileURL: url
+        )
+        let record = MatchRecord(
+            gameID: "pong",
+            gameTitle: "Pong",
+            endedAt: Date(timeIntervalSince1970: 10),
+            durationSeconds: 5,
+            modifierTitle: nil,
+            participants: [],
+            metrics: []
+        )
+
+        await coordinator.appendHistoryForTesting(record)
+        await coordinator.appendHistoryForTesting(record)
+
+        #expect(coordinator.historyRecords == [record])
+        #expect(coordinator.historyPersistenceError?.isEmpty == false)
+
+        coordinator.requestHistoryClear()
+        await coordinator.confirmHistoryClear()
+
+        #expect(coordinator.historyRecords == [record])
+        #expect(coordinator.historyPersistenceError?.contains("could not be cleared") == true)
+    }
+
+    @Test func oversizedNestedControllerLayoutFallsBackToASendableScreen() throws {
+        let coordinator = isolatedHostCoordinator()
+        let oversized = ControllerScreen(
+            accessibilityID: "oversized",
+            accentColorHex: "#32E6FF",
+            components: [.text(.init(
+                id: "oversized.text",
+                text: String(repeating: "x", count: 50_000),
+                style: .body
+            ))]
+        )
+        let screenPayload = try PartyBoxWireCodec.encode(oversized)
+        let layout = PartyBoxCore.ControllerLayout.game(.init(gameID: "oversized-game", payload: screenPayload))
+        #expect(throws: PartyBoxWireError.self) {
+            try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
+        }
+
+        let payload = try #require(coordinator.encodedLayoutPresentation(layout))
+        let presentation = try PartyBoxWireCodec.decode(HostPresentation.self, from: payload)
+        guard case .layout(.game(let envelope)) = presentation else {
+            Issue.record("Expected a game controller fallback")
+            return
+        }
+        #expect(envelope.gameID == "oversized-game")
+        #expect(envelope.validatedControllerScreen?.accessibilityID == "controller.layout.unavailable")
+    }
+
+    @Test func pongTranslationPreservesEveryTVAudioCue() throws {
+        let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let session = try #require(PongGame().makeSession(
+            context: .init(
+                participants: [.init(player: player, controllerID: ControllerID())],
+                inputs: InputStore(), seed: 42, modifierID: nil
+            ),
+            onEvents: { _ in }
+        ) as? PongGameSession)
+
+        let translated = session.translateForTesting([
+            .lostLife(bottom, remaining: 0),
+            .forfeited(bottom),
+            .gameOver(winner: nil, rally: 3),
+        ])
+        let audio = translated.compactMap { event -> HapticPattern? in
+            guard case .audio(let cue) = event else { return nil }
+            return cue
+        }
+        #expect(audio == [.heavyImpact, .error, .success])
+    }
+
+    @Test func stoppedCoordinatorCannotBeRevivedBySuspendedMatchCompletion() async throws {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "four-way-match", "--disable-effects",
+        ]))
+        await coordinator.start()
+        let gate = CleanupGate()
+        coordinator.setFinishMatchCheckpointForTesting { await gate.wait() }
+        let outcome = GameOutcome(
+            title: "MATCH OVER", subtitle: "Done", winner: bottom,
+            playerOutcomes: [.init(playerID: bottom, outcome: .won)], metrics: []
+        )
+        let completion = Task { await coordinator.finishCurrentMatchForTesting(outcome) }
+        defer {
+            gate.release()
+            completion.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await completion.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.currentScene == nil)
     }
 
     @Test func emptyEdgeActsAsWall() {
@@ -196,6 +358,32 @@ struct PartyBoxTests {
         #expect(game.players[.top]?.isActive == false)
     }
 
+    @Test func rejectedForfeitDoesNotChangeTheRecordedPlayerOutcome() throws {
+        let left = PlayerID(2)
+        let players = [bottom, top, left].map {
+            PlayerInfo(id: $0, displayName: "P\($0.rawValue)", colorHex: PlayerPalette.color(for: $0))
+        }
+        let context = GameSessionContext(
+            participants: players.map { .init(player: $0, controllerID: ControllerID()) },
+            inputs: InputStore(),
+            seed: 42,
+            modifierID: nil
+        )
+        var completed: GameOutcome?
+        let session = PongGameSession(context: context) { events in
+            for case .completed(let outcome) in events { completed = outcome }
+        }
+        session.pongScene.forfeit(top, onAccepted: {})
+
+        session.forfeit(top)
+        session.forfeit(left)
+
+        let outcome = try #require(completed)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == top })?.outcome == .lost)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == left })?.outcome == .forfeited)
+        #expect(outcome.playerOutcomes.first(where: { $0.playerID == bottom })?.outcome == .won)
+    }
+
     @Test func pongPublishesItsOwnCapacityControllerLayoutAndModifiers() throws {
         let game = PongGame()
         #expect(game.descriptor.minimumPlayers == 1)
@@ -226,6 +414,124 @@ struct PartyBoxTests {
             rules: PongGame.rules(for: "extra-life")
         )
         #expect(extraLife.players[.bottom]?.lives == 4)
+    }
+
+    @Test func pongBotProjectionIsBoundedDeterministicAndDifficultyControlsSpeed() throws {
+        var simulation = PongSimulation(assignments: [
+            .init(playerID: bottom, edge: .bottom),
+            .init(playerID: top, edge: .top),
+        ])
+        simulation.setBallForTesting(
+            position: PongPoint(x: 300, y: -400),
+            velocity: PongPoint(x: 0, y: -100)
+        )
+        let projected = try #require(simulation.botTarget(for: bottom))
+        #expect(projected > 0.7 && projected < 0.8)
+        #expect(simulation.botTarget(for: top) == nil)
+
+        let human = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let bot = PlayerInfo(
+            id: top, displayName: "Bot", colorHex: "#FF4FD8", mark: .star, kind: .bot
+        )
+        func session() -> PongGameSession {
+            PongGameSession(context: .init(
+                participants: [
+                    .init(player: human, controllerID: ControllerID()),
+                    .init(player: bot, controllerID: ControllerID()),
+                ],
+                inputs: InputStore(), seed: 42, modifierID: nil
+            )) { _ in }
+        }
+        let easy = session()
+        let normal = session()
+        let hard = session()
+        for value in [easy, normal, hard] {
+            value.pongScene.setBallForTesting(
+                position: PongPoint(x: 300, y: 400),
+                velocity: PongPoint(x: 0, y: 100)
+            )
+        }
+        let easyInput = try #require(easy.botInput(for: top, difficulty: .easy, deltaTime: .milliseconds(50)))
+        let normalInput = try #require(normal.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(50)))
+        let hardInput = try #require(hard.botInput(for: top, difficulty: .hard, deltaTime: .milliseconds(50)))
+        #expect(abs(easyInput.axisX) < abs(normalInput.axisX))
+        #expect(abs(normalInput.axisX) < abs(hardInput.axisX))
+        #expect((-1...1).contains(easyInput.axisX))
+        #expect((-1...1).contains(normalInput.axisX))
+        #expect((-1...1).contains(hardInput.axisX))
+
+        let first = session()
+        let second = session()
+        first.pongScene.setBallForTesting(position: PongPoint(x: -250, y: 400), velocity: PongPoint(x: 0, y: 100))
+        second.pongScene.setBallForTesting(position: PongPoint(x: -250, y: 400), velocity: PongPoint(x: 0, y: 100))
+        #expect(
+            first.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(16))
+                == second.botInput(for: top, difficulty: .normal, deltaTime: .milliseconds(16))
+        )
+        #expect(GameBotInput(axisX: .infinity, axisY: -.infinity).axisX == 0)
+    }
+
+    @Test func pongPaddlesCarryMarksAndTrailClearsOnServeResetAndGameOver() {
+        let player = PlayerInfo(
+            id: bottom, displayName: "Ada", colorHex: "#32E6FF", mark: .hexagon
+        )
+        let scene = PongScene(
+            assignments: [.init(playerID: bottom, edge: .bottom)],
+            players: [player], inputs: InputStore(), seed: 42
+        ) { _ in }
+        #expect(scene.paddleMarkCountForTesting == 1)
+        scene.animateForTesting([.paddleHit(bottom)])
+        #expect(scene.hasActiveTrailForTesting)
+        scene.animateForTesting([.lostLife(bottom, remaining: 2)])
+        #expect(!scene.hasActiveTrailForTesting)
+        scene.animateForTesting([.paddleHit(bottom), .gameOver(winner: nil, rally: 1)])
+        #expect(!scene.hasActiveTrailForTesting)
+    }
+
+    @Test func mixedMatchDifficultyMovesOneStepAndClamps() {
+        let coordinator = isolatedHostCoordinator()
+        let human = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
+        let bot = PlayerInfo(
+            id: top, displayName: "Bot", colorHex: "#FF4FD8", kind: .bot
+        )
+        let participants = [human, bot].map {
+            GameParticipant(player: $0, controllerID: ControllerID())
+        }
+        func outcome(winner: PlayerID?) -> GameOutcome {
+            GameOutcome(title: "Done", subtitle: "", winner: winner, playerOutcomes: [], metrics: [])
+        }
+
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: bottom), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .hard)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: bottom), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .hard)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: top), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .normal)
+        coordinator.setBotDifficultyForTesting(.easy)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: top), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .easy)
+        coordinator.updateBotDifficultyForTesting(outcome: outcome(winner: nil), participants: participants)
+        #expect(coordinator.currentBotDifficulty == .easy)
+        coordinator.updateBotDifficultyForTesting(
+            outcome: outcome(winner: bottom),
+            participants: [participants[0]]
+        )
+        #expect(coordinator.currentBotDifficulty == .easy)
+    }
+
+    @Test func seededServesReachEveryActiveEdge() throws {
+        for count in [2, 4] {
+            let assignments = PaddleEdge.allCases.prefix(count).enumerated().map {
+                SeatAssignment(playerID: PlayerID(UInt8($0.offset)), edge: $0.element)
+            }
+            var game = PongSimulation(assignments: assignments, seed: 42)
+            var observed: Set<PaddleEdge> = []
+            for _ in 0..<64 {
+                let launchTarget = game.launchTargetForTesting()
+                observed.insert(try #require(launchTarget))
+            }
+            #expect(observed == Set(assignments.map(\.edge)))
+        }
     }
 
     @Test func seededLongRunMaintainsInvariantsAndScriptedMatchCompletes() {
@@ -261,7 +567,7 @@ struct PartyBoxTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let coordinator = HostCoordinator()
+            let coordinator = isolatedHostCoordinator()
             await coordinator.start()
             let port = try #require(coordinator.host.port)
             let clients = [
@@ -292,6 +598,197 @@ struct PartyBoxTests {
             for client in clients.dropFirst() { await client.disconnect() }
             await coordinator.stop()
         }
+    }
+
+    @Test func captainAuthorizationCooldownsAndStrictMajorityReadiness() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let clients = (1...4).map { PartyClient(displayName: "Human \($0)") }
+            for client in clients { await client.connect(host: "127.0.0.1", port: port) }
+            try await waitUntil { coordinator.connectedHumanCount == 4 && coordinator.captainID != nil }
+            let ids = try clients.map { try #require($0.player?.id) }
+            #expect(coordinator.captainID == ids[0])
+            #expect(coordinator.requiredReadyCount == 3)
+
+            let now = ContinuousClock().now
+            coordinator.perform(.select, source: .controller(ids[1]), now: now)
+            #expect(coordinator.phase == .lobby)
+            coordinator.perform(.select, source: .controller(ids[0]), now: now)
+            #expect(coordinator.phase == .gameMenu)
+
+            coordinator.perform(.down, source: .controller(ids[0]), now: now)
+            #expect(coordinator.menuSelection == 1)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .milliseconds(149)))
+            #expect(coordinator.menuSelection == 1)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .milliseconds(150)))
+            #expect(coordinator.menuSelection == 0)
+
+            coordinator.perform(.back, source: .controller(ids[1]), now: now.advanced(by: .seconds(1)))
+            #expect(coordinator.phase == .gameMenu)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1)))
+            #expect(coordinator.readyCount == 2)
+            #expect(coordinator.phase == .gameMenu)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1.749)))
+            #expect(coordinator.readyCount == 2)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(1.750)))
+            #expect(coordinator.readyCount == 1)
+
+            coordinator.perform(.down, source: .controller(ids[0]), now: now.advanced(by: .seconds(2)))
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            coordinator.perform(.up, source: .controller(ids[0]), now: now.advanced(by: .seconds(2.2)))
+            #expect(coordinator.menuSelection == 0)
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(3)))
+            #expect(coordinator.readyCount == 2)
+
+            let newcomer = PartyClient(displayName: "Human 5")
+            await newcomer.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 5 }
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            #expect(coordinator.requiredReadyCount == 3)
+            #expect(coordinator.phase == .gameMenu)
+
+            coordinator.perform(.select, source: .controller(ids[1]), now: now.advanced(by: .seconds(4)))
+            coordinator.perform(.select, source: .controller(ids[2]), now: now.advanced(by: .seconds(4)))
+            #expect(coordinator.phase == .playing)
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+
+            await newcomer.stop()
+            for client in clients { await client.stop() }
+            await coordinator.stop()
+        }
+    }
+
+    @Test func captainTransfersOnInterruptionAndPromotionSurvivesReconnect() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let first = PartyClient(displayName: "First")
+            let second = PartyClient(displayName: "Second")
+            let third = PartyClient(displayName: "Third")
+            let fourth = PartyClient(displayName: "Fourth")
+            await first.connect(host: "127.0.0.1", port: port)
+            await second.connect(host: "127.0.0.1", port: port)
+            await third.connect(host: "127.0.0.1", port: port)
+            await fourth.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 4 }
+            let firstID = try #require(first.player?.id)
+            let secondID = try #require(second.player?.id)
+            #expect(coordinator.captainID == firstID)
+
+            coordinator.perform(.select)
+            coordinator.perform(.select, source: .controller(secondID), now: ContinuousClock().now)
+            #expect(coordinator.readyPlayerIDs == [secondID])
+
+            await first.interruptForTesting()
+            try await waitUntil { coordinator.captainID == secondID }
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            first.reconnectAfterForeground()
+            try await waitUntil(timeout: .seconds(5)) {
+                if case .connected = first.state { return true }
+                return false
+            }
+            #expect(coordinator.captainID == secondID)
+
+            await first.stop()
+            await second.stop()
+            await third.stop()
+            await fourth.stop()
+            await coordinator.stop()
+        }
+    }
+
+    @Test func releaseBotsFillSafelyAndSendRealInputFrames() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let captain = PartyClient(displayName: "Captain")
+            await captain.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.captainID == captain.player?.id }
+
+            let botCommand = try PartyBoxWireCodec.encode(
+                ControllerCommand.lobby(.setBotFillTarget(3))
+            )
+            #expect(await captain.sendApplication(botCommand))
+            try await waitUntil(timeout: .seconds(5)) { coordinator.activeBotCount == 3 }
+            #expect(Set(coordinator.host.players.map(\.mark)).count == coordinator.host.players.count)
+            #expect(coordinator.connectedHumanCount == 1)
+            #expect(coordinator.requiredReadyCount == 1)
+
+            let framesBeforeMatch = coordinator.botInputFramesSentForTesting
+            coordinator.perform(.select)
+            coordinator.perform(.select)
+            #expect(coordinator.phase == .playing)
+            try await waitUntil(timeout: .seconds(5)) {
+                coordinator.botInputFramesSentForTesting > framesBeforeMatch
+            }
+
+            let newcomer = PartyClient(displayName: "New Human")
+            await newcomer.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 2 }
+            #expect(coordinator.activeBotCount == 3)
+
+            let humanID = try #require(captain.player?.id)
+            await coordinator.finishCurrentMatchForTesting(.init(
+                title: "DONE", subtitle: "", winner: humanID,
+                playerOutcomes: [.init(playerID: humanID, outcome: .won)], metrics: []
+            ))
+            try await waitUntil(timeout: .seconds(5)) { coordinator.activeBotCount == 2 }
+
+            await newcomer.stop()
+            await captain.stop()
+            await coordinator.stop()
+        }
+    }
+
+    @Test func recycledPlayerIDDoesNotAcquireThePreviousControllersMatchIdentity() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let host = PartyHost(reconnectGrace: .zero)
+            let coordinator = HostCoordinator(
+                configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]),
+                host: host
+            )
+            let originalControllerID = ControllerID()
+            let original = PartyClient(controllerID: originalControllerID, displayName: "Original")
+            let replacementControllerID = ControllerID()
+            let replacement = PartyClient(controllerID: replacementControllerID, displayName: "Replacement")
+
+            await coordinator.start()
+            let port = try #require(host.port)
+            await original.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.count == 1 }
+            let player = try #require(host.players.first)
+            let participant = GameParticipant(player: player, controllerID: originalControllerID)
+            #expect(coordinator.isLiveParticipantForTesting(participant))
+
+            await original.disconnect()
+            try await waitUntil { host.players.isEmpty }
+            await replacement.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.count == 1 }
+
+            #expect(host.players.first?.id == player.id)
+            #expect(host.controllerID(for: player.id) == replacementControllerID)
+            #expect(!coordinator.isLiveParticipantForTesting(participant))
+
+            await replacement.disconnect()
+            await coordinator.stop()
+        }
+    }
+
+    @MainActor
+    private func isolatedHostCoordinator() -> HostCoordinator {
+        HostCoordinator(configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]))
     }
 
     @MainActor

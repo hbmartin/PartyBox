@@ -6,10 +6,15 @@ import OSLog
 enum ClientTransportEvent: Sendable {
   case hosts([DiscoveredHost])
   case message(connectionID: UUID, HostMessage)
-  case inputSent(connectionID: UUID)
+  case inputSent(connectionID: UUID, transport: InputTransportMode)
   case transportMode(connectionID: UUID, usesTCPFallback: Bool)
   case disconnected(connectionID: UUID, reason: String)
   case discoveryFailed(String)
+}
+
+enum InputTransportMode: Sendable {
+  case udp
+  case tcp
 }
 
 typealias ClientControlSender = @Sendable (
@@ -58,6 +63,14 @@ struct PingWatchdog: Sendable {
     return true
   }
 
+  mutating func discard(nonce: UInt64) {
+    guard let index = nonceOrder.firstIndex(of: nonce) else { return }
+    outstandingNonces.remove(nonce)
+    sentAtByNonce.removeValue(forKey: nonce)
+    nonceOrder.remove(at: index)
+    oldestUnansweredAt = nonceOrder.first.flatMap { sentAtByNonce[$0] }
+  }
+
   func hasTimedOut(at now: AnyClock<Duration>.Instant, after timeout: Duration) -> Bool {
     oldestUnansweredAt.map { $0.duration(to: now) >= timeout } ?? false
   }
@@ -93,6 +106,7 @@ actor ClientTransport {
     var usesTCPFallback = false
     var fallbackProbeSequenceFloor: UInt32?
     var pingWatchdog = PingWatchdog()
+    var probeNonces: Set<UInt64> = []
     var sequence: UInt32 = 0
     var inputTask: Task<Void, Never>?
     var pingTask: Task<Void, Never>?
@@ -116,6 +130,9 @@ actor ClientTransport {
   private var sessions: [UUID: Session] = [:]
   private var pendingHandshakes: [UUID: PendingHandshake] = [:]
   private var leaveTasks: [UUID: Task<Void, Never>] = [:]
+#if DEBUG
+  private var discoveryFailurePublicationCount = 0
+#endif
 
   init(
     inputSendInterval: Duration = .milliseconds(16),
@@ -154,13 +171,12 @@ actor ClientTransport {
     browserTask = Task { [browser, weak self] in
       do {
         try await browser.run { [weak self] endpoints in
-          await self?.publish(endpoints)
+          await self?.publish(endpoints, generation: generation)
         }
       } catch is CancellationError {
         // Expected on shutdown.
       } catch {
-        self?.eventHub.yield(
-          .discoveryFailed("Discovery failed: \(error.localizedDescription)"))
+        await self?.publishDiscoveryFailure(error, generation: generation)
       }
       await self?.browserDidFinish(generation: generation)
     }
@@ -226,7 +242,8 @@ actor ClientTransport {
         throw PartyClientError.incompatibleHost
       }
 
-      guard let remote = connection.currentPath?.remoteEndpoint ?? connection.remoteEndpoint,
+      guard welcome.udpPort != 0,
+        let remote = connection.currentPath?.remoteEndpoint ?? connection.remoteEndpoint,
         case .hostPort(let hostAddress, _) = remote,
         let udpPort = NWEndpoint.Port(rawValue: welcome.udpPort)
       else {
@@ -296,6 +313,10 @@ actor ClientTransport {
 
   func send(_ message: ClientMessage, connectionID: UUID) async throws {
     guard let session = sessions[connectionID] else { throw PartyNetTransportError.stopped }
+    if case .ping(let nonce) = message, var latest = sessions[connectionID] {
+      latest.probeNonces.insert(nonce)
+      sessions[connectionID] = latest
+    }
     do {
       try await sendControl(
         message,
@@ -303,6 +324,10 @@ actor ClientTransport {
         operation: "sending a client message"
       )
     } catch {
+      if case .ping(let nonce) = message, var latest = sessions[connectionID] {
+        latest.probeNonces.remove(nonce)
+        sessions[connectionID] = latest
+      }
       handleControlWriteFailure(error, connectionID: connectionID)
       throw error
     }
@@ -340,10 +365,15 @@ actor ClientTransport {
     }
   }
 
-  func stop() {
+  func stop(awaitingPendingLeaves: Bool = false) async {
     stopBrowsing()
     pendingHandshakes.values.forEach { $0.task.cancel() }
     pendingHandshakes.removeAll()
+    if awaitingPendingLeaves {
+      disconnectAllSessions()
+      let pendingLeaves = Array(leaveTasks.values)
+      for task in pendingLeaves { await task.value }
+    }
     leaveTasks.values.forEach { $0.cancel() }
     leaveTasks.removeAll()
     receiveTasks.values.forEach { $0.cancel() }
@@ -356,11 +386,20 @@ actor ClientTransport {
     eventHub.finish()
   }
 
-  private func publish(_ endpoints: [Bonjour.Endpoint]) {
+  private func publish(_ endpoints: [Bonjour.Endpoint], generation: UUID) {
+    guard browserGeneration == generation else { return }
     let hosts = endpoints.map(DiscoveredHost.init(endpoint:)).sorted {
       $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
     }
     eventHub.yield(.hosts(hosts))
+  }
+
+  private func publishDiscoveryFailure(_ error: any Error, generation: UUID) {
+    guard browserGeneration == generation else { return }
+#if DEBUG
+    discoveryFailurePublicationCount += 1
+#endif
+    eventHub.yield(.discoveryFailed("Discovery failed: \(error.localizedDescription)"))
   }
 
   private func browserDidFinish(generation: UUID) {
@@ -400,9 +439,11 @@ actor ClientTransport {
       acknowledgeUDP(sequence: sequence, connectionID: connectionID)
       return
     }
-    if case .pingResponse(let nonce) = message,
-      var session = sessions[connectionID], session.pingWatchdog.acknowledge(nonce: nonce)
-    {
+    if case .pingResponse(let nonce) = message {
+      guard var session = sessions[connectionID] else { return }
+      let acknowledgedPeriodicPing = session.pingWatchdog.acknowledge(nonce: nonce)
+      let acknowledgedProbe = session.probeNonces.remove(nonce) != nil
+      guard acknowledgedPeriodicPing || acknowledgedProbe else { return }
       sessions[connectionID] = session
     }
     eventHub.yield(.message(connectionID: connectionID, message))
@@ -467,7 +508,7 @@ actor ClientTransport {
       latest.lastUDPSent = session.desired
       latest.lastUDPSentAt = now
       sessions[connectionID] = latest
-      eventHub.yield(.inputSent(connectionID: connectionID))
+      eventHub.yield(.inputSent(connectionID: connectionID, transport: .udp))
     } catch {
       // A datagram path can fail independently. The acknowledgment deadline drives fallback.
     }
@@ -487,11 +528,10 @@ actor ClientTransport {
       guard var latest = sessions[connectionID] else { return true }
       latest.lastTCPSentAt = now
       sessions[connectionID] = latest
-      eventHub.yield(.inputSent(connectionID: connectionID))
+      eventHub.yield(.inputSent(connectionID: connectionID, transport: .tcp))
       return true
     } catch {
-      handleControlWriteFailure(error, connectionID: connectionID)
-      return false
+      return handleControlWriteFailure(error, connectionID: connectionID)
     }
   }
 
@@ -549,8 +589,11 @@ actor ClientTransport {
       )
       return true
     } catch {
-      handleControlWriteFailure(error, connectionID: connectionID)
-      return false
+      if var latest = sessions[connectionID] {
+        latest.pingWatchdog.discard(nonce: value)
+        sessions[connectionID] = latest
+      }
+      return handleControlWriteFailure(error, connectionID: connectionID)
     }
   }
 
@@ -577,9 +620,11 @@ actor ClientTransport {
     return (session.tcp, receiveTasks.removeValue(forKey: connectionID))
   }
 
-  private func handleControlWriteFailure(_ error: any Error, connectionID: UUID) {
-    guard isTerminalControlWriteError(error) else { return }
+  @discardableResult
+  private func handleControlWriteFailure(_ error: any Error, connectionID: UUID) -> Bool {
+    guard isTerminalControlWriteError(error) else { return sessions[connectionID] != nil }
     endSession(connectionID, reason: error.localizedDescription)
+    return false
   }
 
   private func scheduleLeave(
@@ -621,6 +666,16 @@ actor ClientTransport {
 #if DEBUG
   func simulateEventOverflowForTesting() {
     eventHub.simulateOverflowForTesting()
+  }
+
+  func browserGenerationForTesting() -> UUID? { browserGeneration }
+
+  func simulateDiscoveryFailureForTesting(generation: UUID) {
+    publishDiscoveryFailure(PartyNetTransportError.stopped, generation: generation)
+  }
+
+  func discoveryFailurePublicationCountForTesting() -> Int {
+    discoveryFailurePublicationCount
   }
 #endif
 }
