@@ -1,4 +1,6 @@
 import PartyNet
+import PartyBoxCore
+import PartyGameRuntime
 import SpriteKit
 import SwiftUI
 
@@ -19,11 +21,13 @@ struct ContentView: View {
                     .accessibilityIdentifier("host.phase.menu")
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
             case .playing:
-                if let scene = coordinator.pongScene {
+                if let scene = coordinator.currentScene {
                     ZStack {
                         SpriteView(scene: scene, options: [.ignoresSiblingOrder])
-                            .accessibilityLabel("Four-way Pong arena")
+                            .accessibilityLabel("PartyBox game arena")
                             .accessibilityIdentifier("host.arena")
+                        ReactionOverlay(bursts: coordinator.reactionBursts)
+                        VoteOverlay(tallies: coordinator.voteTallies)
                         VStack {
                             Text("Pong match in progress")
                                 .accessibilityIdentifier("host.phase.playing")
@@ -38,6 +42,10 @@ struct ContentView: View {
                 GameOverView(result: result)
                     .accessibilityIdentifier("host.phase.gameOver")
                     .transition(.opacity.combined(with: .scale(scale: 1.04)))
+            case .history:
+                HistoryView(coordinator: coordinator)
+                    .accessibilityIdentifier("host.phase.history")
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
             keyboardButtons
         }
@@ -106,9 +114,7 @@ private struct LobbyView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: 4), spacing: 18) {
                 ForEach(0..<PartyNetConstants.maximumControllers, id: \.self) { index in
                     let player = coordinator.host.players.first { $0.id.rawValue == UInt8(index) }
-                    PlayerCard(number: index + 1, player: player, isActive: player.map {
-                        coordinator.seatQueue.active.contains($0.id)
-                    } ?? false)
+                    PlayerCard(number: index + 1, player: player)
                     .accessibilityIdentifier("host.playerSlot.\(index + 1)")
                 }
             }
@@ -141,7 +147,7 @@ private struct GameMenuView: View {
                     Text(index == coordinator.menuSelection ? "▶" : "")
                     VStack(alignment: .leading, spacing: 8) {
                         Text(item).font(.system(size: 48, weight: .black, design: .rounded))
-                        Text("1–4 players  •  Three lives  •  Winner stays")
+                        Text(coordinator.menuDetails[index])
                             .font(.title3.monospaced())
                             .foregroundStyle(.white.opacity(0.6))
                     }
@@ -162,7 +168,7 @@ private struct GameMenuView: View {
 }
 
 private struct GameOverView: View {
-    let result: GameResult
+    let result: GameOutcome
 
     var body: some View {
         VStack(spacing: 26) {
@@ -191,7 +197,6 @@ private struct GameOverView: View {
 private struct PlayerCard: View {
     let number: Int
     let player: PlayerInfo?
-    let isActive: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -206,7 +211,7 @@ private struct PlayerCard: View {
             Text(player?.displayName ?? "OPEN")
                 .font(.headline.weight(.bold))
                 .lineLimit(1)
-            Text(player == nil ? "AVAILABLE" : (isActive ? "ACTIVE SEAT" : "SPECTATOR QUEUE"))
+            Text(player == nil ? "AVAILABLE" : "READY")
                 .font(.caption.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.52))
             if let player, !player.isConnected {
@@ -220,6 +225,122 @@ private struct PlayerCard: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(
             player.map { Color.partyHex($0.colorHex).opacity(0.7) } ?? .white.opacity(0.12), lineWidth: 2
         ))
+    }
+}
+
+private struct ReactionOverlay: View {
+    let bursts: [ReactionBurst]
+
+    var body: some View {
+        GeometryReader { proxy in
+            ForEach(Array(bursts.enumerated()), id: \.element.id) { index, burst in
+                Text(burst.emoji)
+                    .font(.system(size: 64))
+                    .shadow(color: .black.opacity(0.7), radius: 8)
+                    .position(
+                        x: proxy.size.width * (0.12 + CGFloat((index * 23) % 76) / 100),
+                        y: proxy.size.height * (0.2 + CGFloat((index * 31) % 62) / 100)
+                    )
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct VoteOverlay: View {
+    let tallies: [String: Int]
+
+    var body: some View {
+        if !tallies.isEmpty {
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("NEXT ROUND VOTE")
+                    .font(.caption.monospaced().weight(.black))
+                    .foregroundStyle(PartyTheme.cyan)
+                ForEach(tallies.keys.sorted(), id: \.self) { key in
+                    Text("\(key.uppercased()): \(tallies[key, default: 0])")
+                        .font(.caption.monospaced().weight(.bold))
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 14))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(24)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct HistoryView: View {
+    @Bindable var coordinator: HostCoordinator
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                PartyWordmark(kicker: "THE NIGHT SO FAR", title: "HISTORY")
+                if coordinator.leaderboard.isEmpty {
+                    Text("No multiplayer matches yet")
+                        .font(.title2.monospaced().weight(.bold))
+                        .foregroundStyle(.white.opacity(0.65))
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("LEADERBOARD").font(.headline.monospaced().weight(.black)).foregroundStyle(PartyTheme.cyan)
+                        ForEach(Array(coordinator.leaderboard.enumerated()), id: \.element.id) { index, entry in
+                            HStack {
+                                Text("#\(index + 1)").font(.title3.monospaced().weight(.black)).frame(width: 50)
+                                Circle().fill(Color.partyHex(entry.colorHex)).frame(width: 14, height: 14)
+                                Text(entry.displayName).font(.headline.weight(.bold))
+                                Spacer()
+                                Text("\(entry.statistics.won) W  /  \(entry.statistics.played) PLAYED")
+                                    .font(.subheadline.monospaced().weight(.bold))
+                            }
+                            .padding(14)
+                            .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    .frame(maxWidth: 900)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("MATCHES").font(.headline.monospaced().weight(.black)).foregroundStyle(PartyTheme.magenta)
+                    ForEach(coordinator.historyRecords) { record in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(record.gameTitle).font(.headline.weight(.black))
+                                Spacer()
+                                Text(record.endedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.55))
+                            }
+                            Text(record.participants.map { "\($0.displayName) \($0.outcome == .won ? "won" : "lost")" }.joined(separator: "  •  "))
+                                .font(.subheadline)
+                            if let modifier = record.modifierTitle {
+                                Text("Modifier: \(modifier)").font(.caption.monospaced()).foregroundStyle(PartyTheme.lime)
+                            }
+                        }
+                        .padding(14)
+                        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: 900)
+
+                if coordinator.confirmsHistoryClear {
+                    HStack {
+                        Text("Clear this TV's complete match history?")
+                        Button("CANCEL") { coordinator.cancelHistoryClear() }
+                        Button("CLEAR") { Task { await coordinator.confirmHistoryClear() } }
+                            .foregroundStyle(.red)
+                    }
+                } else {
+                    Button("CLEAR TV HISTORY") { coordinator.requestHistoryClear() }
+                }
+                Text("MENU/ESC TO RETURN")
+                    .font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
+            }
+            .foregroundStyle(.white)
+            .padding(48)
+        }
     }
 }
 

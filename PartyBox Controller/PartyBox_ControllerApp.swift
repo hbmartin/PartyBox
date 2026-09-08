@@ -29,7 +29,7 @@ struct PartyBox_ControllerApp: App {
                     await coordinator.stop()
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { coordinator.client.reconnectAfterForeground() }
+                    coordinator.scenePhaseChanged(isActive: phase == .active)
                 }
                 .onChange(of: coordinator.client.state) { _, _ in
                     coordinator.updateIdleTimer()

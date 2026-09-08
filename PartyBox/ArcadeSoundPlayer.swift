@@ -1,5 +1,6 @@
 import AVFoundation
 import OSLog
+import PartyBoxCore
 
 @MainActor
 final class ArcadeSoundPlayer {
@@ -50,13 +51,13 @@ final class ArcadeSoundPlayer {
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 
-    func play(_ event: PongEvent) {
+    func play(_ event: HapticPattern) {
         guard ensureEngineRunning() else { return }
         let tone = switch event {
-        case .paddleHit: Tone.paddleHit
-        case .lostLife: Tone.lostLife
-        case .eliminated, .forfeited: Tone.eliminated
-        case .gameOver: Tone.gameOver
+        case .lightImpact: Tone.paddleHit
+        case .heavyImpact: Tone.lostLife
+        case .error: Tone.eliminated
+        case .success: Tone.gameOver
         }
         guard let buffer = toneBuffers[tone] else { return }
         player.scheduleBuffer(buffer)

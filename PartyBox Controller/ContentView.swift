@@ -1,4 +1,5 @@
 import PartyNet
+import PartyBoxCore
 import SwiftUI
 
 struct ContentView: View {
@@ -56,6 +57,7 @@ private func localNetworkPermissionHelp(for message: String) -> String? {
 private struct HostPickerView: View {
     @Bindable var coordinator: ControllerCoordinator
     @FocusState private var editingName: Bool
+    @State private var showingHistory = false
 
     var body: some View {
         ScrollView {
@@ -82,6 +84,10 @@ private struct HostPickerView: View {
                     .padding(16)
                     .background(.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 16))
                 }
+
+                Button("MY HISTORY") { showingHistory = true }
+                    .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
+                    .accessibilityIdentifier("controller.history.open")
 
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
@@ -158,6 +164,9 @@ private struct HostPickerView: View {
             }
             .padding(24)
         }
+        .sheet(isPresented: $showingHistory) {
+            PersonalHistoryView(coordinator: coordinator) { showingHistory = false }
+        }
     }
 
     private var discoveryHelpMessage: String {
@@ -172,6 +181,7 @@ private struct HostPickerView: View {
 private struct ConnectedControllerView: View {
     @Bindable var coordinator: ControllerCoordinator
     let hostName: String
+    @State private var showingHistory = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,6 +199,10 @@ private struct ConnectedControllerView: View {
                         .font(.caption2.monospaced().weight(.bold))
                         .foregroundStyle(rtt < 50 ? ControllerTheme.lime : .orange)
                 }
+                Button { showingHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath").font(.title3).foregroundStyle(.white.opacity(0.55))
+                }
+                .accessibilityIdentifier("controller.history.open")
                 Button {
                     Task { await coordinator.returnToPicker() }
                 } label: {
@@ -199,18 +213,23 @@ private struct ConnectedControllerView: View {
             .padding(.top, 14)
             .padding(.bottom, 10)
 
-            switch coordinator.client.layout {
+            switch coordinator.layout {
             case .lobby:
                 LobbyControllerView(coordinator: coordinator)
-            case let .menu(items, selected):
-                MenuControllerView(items: items, selected: selected, coordinator: coordinator)
-            case let .paddle(layout):
-                PaddleControllerView(layout: layout, coordinator: coordinator)
-            case let .spectator(layout):
-                SpectatorControllerView(layout: layout)
-            case let .gameOver(title, subtitle):
-                GameOverControllerView(title: title, subtitle: subtitle, coordinator: coordinator)
+            case let .menu(layout):
+                MenuControllerView(layout: layout, coordinator: coordinator)
+            case let .game(envelope):
+                GameControllerView(envelope: envelope, coordinator: coordinator)
+            case let .gameOver(layout):
+                GameOverControllerView(layout: layout, coordinator: coordinator)
+            case .historyNavigation:
+                PersonalHistoryView(coordinator: coordinator) {
+                    Task { await coordinator.sendMenu(.back) }
+                }
             }
+        }
+        .sheet(isPresented: $showingHistory) {
+            PersonalHistoryView(coordinator: coordinator) { showingHistory = false }
         }
     }
 
@@ -238,9 +257,9 @@ private struct LobbyControllerView: View {
                     .foregroundStyle(.white.opacity(0.64))
                     .multilineTextAlignment(.center)
 
-                RosterView(players: coordinator.client.roster)
+                RosterView(players: coordinator.roster)
 
-                Button("OPEN GAME MENU") { Task { await coordinator.client.sendMenu(.select) } }
+                Button("OPEN GAME MENU") { Task { await coordinator.sendMenu(.select) } }
                     .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
                     .accessibilityIdentifier("controller.lobby.openMenu")
             }
@@ -250,8 +269,7 @@ private struct LobbyControllerView: View {
 }
 
 private struct MenuControllerView: View {
-    let items: [String]
-    let selected: Int
+    let layout: MenuLayout
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
@@ -261,19 +279,25 @@ private struct MenuControllerView: View {
                 .font(.caption.monospaced().weight(.black))
                 .foregroundStyle(ControllerTheme.cyan)
                 .accessibilityIdentifier("controller.layout.menu")
-            Text(items.indices.contains(selected) ? items[selected] : "PARTYBOX")
+            Text(layout.items.indices.contains(layout.selected) ? layout.items[layout.selected] : "PARTYBOX")
                 .font(.system(size: 34, weight: .black, design: .rounded))
                 .multilineTextAlignment(.center)
+            if layout.details.indices.contains(layout.selected) {
+                Text(layout.details[layout.selected])
+                    .font(.subheadline.monospaced())
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+            }
             HStack(spacing: 16) {
                 MenuPadButton(symbol: "chevron.up", action: .up, coordinator: coordinator)
                     .accessibilityIdentifier("controller.menu.up")
                 MenuPadButton(symbol: "chevron.down", action: .down, coordinator: coordinator)
                     .accessibilityIdentifier("controller.menu.down")
             }
-            Button("SELECT") { Task { await coordinator.client.sendMenu(.select) } }
+            Button("SELECT") { Task { await coordinator.sendMenu(.select) } }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.magenta))
                 .accessibilityIdentifier("controller.menu.select")
-            Button("BACK") { Task { await coordinator.client.sendMenu(.back) } }
+            Button("BACK") { Task { await coordinator.sendMenu(.back) } }
                 .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
                 .accessibilityIdentifier("controller.menu.back")
             Spacer()
@@ -284,111 +308,284 @@ private struct MenuControllerView: View {
 
 private struct MenuPadButton: View {
     let symbol: String
-    let action: MenuAction
+    let action: PartyBoxCore.MenuAction
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        Button { Task { await coordinator.client.sendMenu(action) } } label: {
+        Button { Task { await coordinator.sendMenu(action) } } label: {
             Image(systemName: symbol).font(.title.weight(.black)).frame(width: 70, height: 62)
         }
         .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
     }
 }
 
-private struct PaddleControllerView: View {
-    let layout: PaddleLayout
+private struct GameControllerView: View {
+    let envelope: GameLayoutEnvelope
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            Text(layout.label)
-                .font(.title2.weight(.black))
-                .foregroundStyle(Color.controllerHex(layout.colorHex))
-                .accessibilityIdentifier("controller.layout.paddle.\(layout.edge.rawValue)")
-            Text(edgeInstruction)
-                .font(.caption.monospaced().weight(.bold))
-                .foregroundStyle(.white.opacity(0.56))
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.14)).frame(height: 10)
-                    Capsule()
-                        .fill(Color.controllerHex(layout.colorHex))
-                        .frame(width: 72, height: 150)
-                        .shadow(color: Color.controllerHex(layout.colorHex), radius: 22)
-                        .offset(x: ((CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * (width - 72)))
+        if let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: envelope.payload), screen.isValid {
+            ScrollView {
+                VStack(spacing: 20) {
+                    Spacer(minLength: 12)
+                    ForEach(Array(screen.components.enumerated()), id: \.offset) { _, component in
+                        ControllerComponentView(
+                            component: component,
+                            accent: Color.controllerHex(screen.accentColorHex),
+                            gameID: envelope.gameID,
+                            coordinator: coordinator
+                        )
+                    }
+                    Spacer(minLength: 12)
                 }
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    let axis = Float(min(max((value.location.x / width) * 2 - 1, -1), 1))
-                    coordinator.client.setInput(axisX: axis)
-                })
-                .accessibilityIdentifier("controller.paddle.track")
-                .accessibilityValue(String(format: "%.3f", coordinator.client.inputAxisX))
+                .padding(20)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(screen.accessibilityID)
             }
-            .frame(height: 170)
-            .padding(.horizontal, 4)
-
-            Text("DRAG ANYWHERE ON THE TRACK")
-                .font(.caption.monospaced().weight(.black))
-                .foregroundStyle(.white.opacity(0.45))
-            Spacer()
-        }
-        .padding(.horizontal, 16)
-        .onAppear { coordinator.client.setInput(axisX: coordinator.client.inputAxisX) }
-    }
-
-    private var edgeInstruction: String {
-        switch layout.edge {
-        case .bottom, .top: "LEFT  ←  PADDLE  →  RIGHT"
-        case .left, .right: "BOTTOM  ←  PADDLE  →  TOP"
+        } else {
+            ConnectionView(title: "CONTROLLER UNAVAILABLE", detail: "This game sent an unsupported controller layout.", spinning: false, accessibilityIdentifier: "controller.layout.unsupported")
         }
     }
 }
 
-private struct SpectatorControllerView: View {
-    let layout: SpectatorLayout
+private struct ControllerComponentView: View {
+    let component: ScreenComponent
+    let accent: Color
+    let gameID: String
+    @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            Image(systemName: "person.3.sequence.fill").font(.system(size: 62)).foregroundStyle(ControllerTheme.cyan)
-            Text("SPECTATING")
-                .font(.system(size: 36, weight: .black, design: .rounded))
-                .accessibilityIdentifier("controller.layout.spectator")
-            Text("#\(layout.queuePosition) IN QUEUE").font(.title2.monospaced().weight(.black)).foregroundStyle(ControllerTheme.lime)
-                .accessibilityIdentifier("controller.spectator.position")
-            Text(layout.message).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
-            Spacer()
+        switch component {
+        case .text(let value):
+            Text(value.text)
+                .font(font(for: value.style))
+                .foregroundStyle(color(for: value.tint))
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier(value.id)
+        case .status(let value):
+            HStack {
+                Text(value.label).foregroundStyle(.white.opacity(0.55))
+                Spacer()
+                Text(value.value).fontWeight(.black)
+            }
+            .font(.subheadline.monospaced())
+            .accessibilityIdentifier(value.id)
+        case .axisSurface(let value):
+            AxisSurface(component: value, accent: accent, coordinator: coordinator)
+        case .actionButton(let value):
+            Button(value.label) { trigger(value) }
+                .buttonStyle(ArcadeButtonStyle(color: accent))
+                .accessibilityIdentifier(value.id)
+        case .choiceGroup(let value):
+            VStack(spacing: 10) {
+                Text(value.title).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.6))
+                ForEach(value.choices) { choice in
+                    Button { choose(choice.id, route: value.route) } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(choice.title).font(.headline.weight(.black))
+                                if let detail = choice.detail { Text(detail).font(.caption).foregroundStyle(.white.opacity(0.6)) }
+                            }
+                            Spacer()
+                            if let tally = choice.tally { Text("\(tally)").font(.title3.monospaced().weight(.black)) }
+                            if value.selection == choice.id { Image(systemName: "checkmark.circle.fill") }
+                        }
+                        .padding(14)
+                        .background((value.selection == choice.id ? accent.opacity(0.45) : .black.opacity(0.3)), in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("\(value.id).\(choice.id)")
+                }
+            }
+        case .emojiPalette(let value):
+            VStack(spacing: 9) {
+                Text("SEND A REACTION").font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.6))
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 10) {
+                    ForEach(value.emojis, id: \.self) { emoji in
+                        Button(emoji) { Task { await coordinator.sendSpectator(.reaction(emoji)) } }
+                            .font(.system(size: 34))
+                            .frame(maxWidth: .infinity, minHeight: 58)
+                            .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+                            .accessibilityIdentifier("\(value.id).\(emoji)")
+                    }
+                }
+            }
         }
-        .padding(30)
+    }
+
+    private func trigger(_ button: ActionButtonComponent) {
+        switch button.route {
+        case .game(let actionID):
+            Task { await coordinator.sendGameAction(id: actionID, value: .trigger, gameID: gameID) }
+        case .spectatorVote:
+            Task { await coordinator.sendSpectator(.vote(button.id)) }
+        case .spectatorReaction:
+            Task { await coordinator.sendSpectator(.reaction(button.label)) }
+        }
+    }
+
+    private func choose(_ choiceID: String, route: ActionRoute) {
+        switch route {
+        case .game(let actionID):
+            Task { await coordinator.sendGameAction(id: actionID, value: .choice(choiceID), gameID: gameID) }
+        case .spectatorVote:
+            Task { await coordinator.sendSpectator(.vote(choiceID)) }
+        case .spectatorReaction:
+            Task { await coordinator.sendSpectator(.reaction(choiceID)) }
+        }
+    }
+
+    private func font(for style: ScreenTextStyle) -> Font {
+        switch style {
+        case .title: .system(size: 36, weight: .black, design: .rounded)
+        case .headline: .title2.weight(.black)
+        case .body: .body
+        case .caption: .caption.monospaced().weight(.bold)
+        }
+    }
+
+    private func color(for tint: ScreenTint) -> Color {
+        switch tint {
+        case .accent: accent
+        case .secondary: .white.opacity(0.58)
+        case .success: ControllerTheme.lime
+        case .warning: .orange
+        case .plain: .white
+        }
+    }
+}
+
+private struct AxisSurface: View {
+    let component: AxisSurfaceComponent
+    let accent: Color
+    @Bindable var coordinator: ControllerCoordinator
+
+    var body: some View {
+        VStack(spacing: 12) {
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                let height = max(proxy.size.height, 1)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 28).fill(.white.opacity(0.1))
+                    Circle().fill(accent).frame(width: 70, height: 70).shadow(color: accent, radius: 20)
+                        .position(
+                            x: (CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * max(width - 70, 0) + 35,
+                            y: component.binding == .twoDimensional
+                                ? (CGFloat(coordinator.client.inputAxisY) + 1) * 0.5 * max(height - 70, 0) + 35
+                                : height / 2
+                        )
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    let x = Float(min(max((value.location.x / width) * 2 - 1, -1), 1))
+                    let y = component.binding == .twoDimensional
+                        ? Float(min(max((value.location.y / height) * 2 - 1, -1), 1)) : 0
+                    coordinator.client.setInput(axisX: x, axisY: y)
+                })
+                .accessibilityIdentifier(component.id)
+                .accessibilityValue(String(format: "%.3f, %.3f", coordinator.client.inputAxisX, coordinator.client.inputAxisY))
+            }
+            .frame(height: component.binding == .twoDimensional ? 250 : 170)
+            Text(component.instruction).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.48))
+        }
     }
 }
 
 private struct GameOverControllerView: View {
-    let title: String
-    let subtitle: String
+    let layout: GameOverLayout
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text(title)
+            Text(layout.title)
                 .font(.system(size: 36, weight: .black, design: .rounded))
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("controller.layout.gameOver")
-            Text(subtitle).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
-            Button("NEXT MATCH") { Task { await coordinator.client.sendMenu(.select) } }
+            Text(layout.subtitle).foregroundStyle(.white.opacity(0.62)).multilineTextAlignment(.center)
+            if let modifier = layout.nextModifier {
+                Text("NEXT: \(modifier)").font(.headline.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
+            }
+            Button("NEXT MATCH") { Task { await coordinator.sendMenu(.select) } }
                 .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.lime))
                 .accessibilityIdentifier("controller.gameOver.next")
-            Button("GAME MENU") { Task { await coordinator.client.sendMenu(.back) } }
+            Button("GAME MENU") { Task { await coordinator.sendMenu(.back) } }
                 .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
                 .accessibilityIdentifier("controller.gameOver.menu")
             Spacer()
         }
         .padding(24)
+    }
+}
+
+private struct PersonalHistoryView: View {
+    @Bindable var coordinator: ControllerCoordinator
+    let dismiss: () -> Void
+    @State private var confirmingClear = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 16) {
+                        statistic(title: "PLAYED", value: coordinator.personalStatistics.played)
+                        statistic(title: "WON", value: coordinator.personalStatistics.won)
+                    }
+                    Text("Only multiplayer rounds count toward these totals.")
+                        .font(.caption).foregroundStyle(.white.opacity(0.55))
+
+                    if coordinator.personalHistory.isEmpty {
+                        ContentUnavailableView("No matches yet", systemImage: "trophy", description: Text("Matches played with this phone will appear here."))
+                    } else {
+                        ForEach(coordinator.personalHistory) { record in
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack {
+                                    Text(record.gameTitle).font(.headline.weight(.black))
+                                    Spacer()
+                                    Text(record.ownOutcome.rawValue.uppercased())
+                                        .font(.caption.monospaced().weight(.black))
+                                        .foregroundStyle(record.ownOutcome == .won ? ControllerTheme.lime : .white.opacity(0.6))
+                                }
+                                Text(record.endedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.5))
+                                Text(record.participants.map(\.displayName).joined(separator: "  •  "))
+                                    .font(.subheadline).foregroundStyle(.white.opacity(0.72))
+                                if let modifier = record.modifierTitle {
+                                    Text("Modifier: \(modifier)").font(.caption).foregroundStyle(ControllerTheme.cyan)
+                                }
+                            }
+                            .padding(14)
+                            .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+                        }
+                    }
+
+                    Button("CLEAR MY HISTORY", role: .destructive) { confirmingClear = true }
+                        .buttonStyle(ArcadeButtonStyle(color: .red))
+                }
+                .padding(20)
+            }
+            .background(ControllerBackdrop())
+            .navigationTitle("My PartyBox History")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("DONE", action: dismiss) }
+            }
+            .confirmationDialog("Clear this phone's complete match history?", isPresented: $confirmingClear, titleVisibility: .visible) {
+                Button("Clear History", role: .destructive) { Task { await coordinator.clearPersonalHistory() } }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+        .preferredColorScheme(.dark)
+        .accessibilityIdentifier("controller.layout.history")
+    }
+
+    private func statistic(title: String, value: Int) -> some View {
+        VStack(spacing: 5) {
+            Text("\(value)").font(.system(size: 34, weight: .black, design: .rounded))
+            Text(title).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(18)
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

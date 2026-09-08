@@ -57,26 +57,10 @@ public enum RejectReason: Codable, Equatable, Sendable {
     }
 }
 
-public enum MenuAction: String, Codable, CaseIterable, Sendable {
-    case up
-    case down
-    case left
-    case right
-    case select
-    case back
-}
-
-public enum Feedback: String, Codable, Equatable, Sendable {
-    case paddleHit
-    case lostLife
-    case eliminated
-    case won
-}
-
 public enum ClientMessage: Codable, Equatable, Sendable {
     case hello(Hello)
     case rename(String)
-    case menu(MenuAction)
+    case application(Data)
     case input(InputFrame)
     case ping(UInt64)
     case leave
@@ -85,9 +69,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
 public enum HostMessage: Codable, Equatable, Sendable {
     case welcome(Welcome)
     case rejected(RejectReason)
-    case roster([PlayerInfo])
-    case layout(ControllerLayout)
-    case feedback(Feedback)
+    case application(Data)
     case inputAck(sequence: UInt32)
-    case pong(UInt64)
+    case pingResponse(UInt64)
 }

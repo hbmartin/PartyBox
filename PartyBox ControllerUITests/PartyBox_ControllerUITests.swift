@@ -44,6 +44,7 @@ final class PartyBox_ControllerUITests: XCTestCase {
             ("paddle-right", "controller.layout.paddle.right"),
             ("spectator", "controller.layout.spectator"),
             ("game-over", "controller.layout.gameOver"),
+            ("history", "controller.layout.history"),
             ("connecting", "controller.state.connecting"),
             ("reconnecting", "controller.state.reconnecting"),
             ("full-rejection", "controller.state.rejected"),

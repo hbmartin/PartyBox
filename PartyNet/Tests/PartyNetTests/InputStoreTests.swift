@@ -44,7 +44,10 @@ struct InputStoreTests {
         let store = InputStore()
         let player = PlayerID(0)
         #expect(store.update(
-            InputFrame(token: 7, sequence: 12, clientTimeMs: 34, axisX: 0.8, axisY: -0.4, buttons: .primary),
+            InputFrame(
+                token: 7, sequence: 12, clientTimeMs: 34, axisX: 0.8, axisY: -0.4,
+                buttons: .primary, orientation: .init(x: 0, y: 1, z: 0, w: 0), flags: .motionAvailable
+            ),
             for: player
         ))
 
@@ -54,6 +57,8 @@ struct InputStoreTests {
         #expect(neutral?.axisX == 0)
         #expect(neutral?.axisY == 0)
         #expect(neutral?.buttons == [])
+        #expect(neutral?.orientation == OrientationQuaternion(x: 0, y: 1, z: 0, w: 0))
+        #expect(neutral?.flags == .motionAvailable)
         #expect(neutral?.token == 7)
         #expect(neutral?.sequence == 12)
         #expect(!store.update(frame(token: 7, sequence: 11, x: 0.9), for: player))

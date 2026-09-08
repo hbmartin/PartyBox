@@ -1,5 +1,7 @@
+import CoreMotion
 import Foundation
 import Observation
+import PartyBoxCore
 import PartyNet
 import UIKit
 
@@ -11,18 +13,27 @@ final class ControllerCoordinator {
     var displayName: String
     private(set) var savedDisplayName: String
     private(set) var discoveryHelpVisible = false
+    private(set) var roster: [PlayerInfo] = []
+    private(set) var layout: PartyBoxCore.ControllerLayout = .lobby
+    private(set) var personalHistory: [PersonalMatchRecord] = []
 
-    private let defaults: UserDefaults
-    private var eventTask: Task<Void, Never>?
-    private var eventGeneration: UUID?
-    private var discoveryHelpTask: Task<Void, Never>?
-    private var discoveryHelpGeneration: UUID?
-    private var stopOperation: (id: UUID, task: Task<Void, Never>)?
-    private var isStarted = false
+    var personalStatistics: HistoryStatistics { HistoryAggregation.personal(personalHistory) }
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
+    @ObservationIgnored private let motionManager = CMMotionManager()
+    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private var eventGeneration: UUID?
+    @ObservationIgnored private var discoveryHelpTask: Task<Void, Never>?
+    @ObservationIgnored private var discoveryHelpGeneration: UUID?
+    @ObservationIgnored private var stopOperation: (id: UUID, task: Task<Void, Never>)?
+    @ObservationIgnored private var isStarted = false
+    @ObservationIgnored private var isSceneActive = true
 
     init(
         defaults: UserDefaults? = nil,
-        configuration suppliedConfiguration: ControllerLaunchConfiguration? = nil
+        configuration suppliedConfiguration: ControllerLaunchConfiguration? = nil,
+        historyFileURL: URL? = nil
     ) {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
@@ -47,6 +58,10 @@ final class ControllerCoordinator {
         displayName = name
         savedDisplayName = name
         client = PartyClient(controllerID: controllerID, displayName: name)
+        let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("PartyBox Controller", isDirectory: true)
+            .appendingPathComponent("history-\(controllerID.rawValue.uuidString)-v1.json")
+        historyStore = JSONRecordStore(fileURL: configuration.isUITesting ? nil : (historyFileURL ?? defaultURL))
 #if DEBUG
         if let scenario = configuration.scenario { applyFixture(scenario: scenario) }
 #endif
@@ -59,10 +74,12 @@ final class ControllerCoordinator {
         }
         guard !isStarted else { return }
         isStarted = true
+        personalHistory = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
 #if DEBUG
         if let scenario = configuration.scenario {
             applyFixture(scenario: scenario)
             setIdleTimer(connected: isConnected)
+            updateMotionCapture()
             return
         }
 #endif
@@ -97,6 +114,7 @@ final class ControllerCoordinator {
         eventTask?.cancel()
         eventTask = nil
         discoveryHelpVisible = false
+        stopMotionCapture()
         setIdleTimer(connected: false)
         let id = UUID()
         let task = Task { [client] in await client.stop() }
@@ -112,6 +130,7 @@ final class ControllerCoordinator {
         discoveryHelpVisible = false
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
+        updateMotionCapture()
     }
 
     func rename() async {
@@ -122,6 +141,9 @@ final class ControllerCoordinator {
     }
 
     func returnToPicker() async {
+        stopMotionCapture()
+        layout = .lobby
+        roster = []
         await client.disconnect()
         guard isStarted else { return }
         await client.startBrowsing()
@@ -137,8 +159,28 @@ final class ControllerCoordinator {
         armDiscoveryHelp(resetVisibility: true)
     }
 
+    func sendMenu(_ action: PartyBoxCore.MenuAction) async { await send(.menu(action)) }
+
+    func sendGameAction(id: String, value: ControllerActionValue, gameID: String) async {
+        await send(.game(.init(gameID: gameID, action: .init(id: id, value: value))))
+    }
+
+    func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
+
+    func clearPersonalHistory() async {
+        try? await historyStore.clear()
+        personalHistory = []
+    }
+
+    func scenePhaseChanged(isActive: Bool) {
+        isSceneActive = isActive
+        if isActive { client.reconnectAfterForeground() }
+        updateMotionCapture()
+    }
+
     func updateIdleTimer() {
         setIdleTimer(connected: isConnected)
+        updateMotionCapture()
     }
 
     var isConnected: Bool {
@@ -147,24 +189,26 @@ final class ControllerCoordinator {
         return false
     }
 
-    private func setIdleTimer(connected: Bool) {
-        UIApplication.shared.isIdleTimerDisabled = connected
+    private func send(_ command: ControllerCommand) async {
+        guard let payload = try? PartyBoxWireCodec.encode(command) else { return }
+        _ = await client.sendApplication(payload)
     }
 
-    private func handle(_ event: ClientEvent) {
+    private func setIdleTimer(connected: Bool) { UIApplication.shared.isIdleTimerDisabled = connected }
+
+    private func handle(_ event: ClientEvent) async {
         guard isStarted else { return }
         switch event {
-        case let .feedback(feedback):
-            guard !configuration.disableEffects else { return }
-            switch feedback {
-            case .paddleHit:
-                UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
-            case .lostLife:
-                UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
-            case .eliminated:
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
-            case .won:
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case let .application(payload):
+            guard let presentation = try? PartyBoxWireCodec.decode(HostPresentation.self, from: payload) else { return }
+            switch presentation {
+            case .roster(let players): roster = players
+            case .layout(let value):
+                layout = value
+                updateMotionCapture()
+            case .haptic(let pattern): play(pattern)
+            case .matchCompleted(let record):
+                if (try? await historyStore.append(record)) == true { personalHistory.insert(record, at: 0) }
             }
         case let .hostsChanged(hosts):
             if hosts.isEmpty {
@@ -178,33 +222,64 @@ final class ControllerCoordinator {
         }
     }
 
+    private func play(_ pattern: HapticPattern) {
+        guard !configuration.disableEffects else { return }
+        switch pattern {
+        case .lightImpact: UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
+        case .heavyImpact: UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
+        case .error: UINotificationFeedbackGenerator().notificationOccurred(.error)
+        case .success: UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
+    private var requestedInputs: RequestedInputs {
+        guard case .game(let envelope) = layout,
+              let screen = try? PartyBoxWireCodec.decode(ControllerScreen.self, from: envelope.payload),
+              screen.isValid else { return [] }
+        return screen.requestedInputs
+    }
+
+    private func updateMotionCapture() {
+        let shouldRun = isStarted && isSceneActive && isConnected
+            && requestedInputs.contains(.orientation) && motionManager.isDeviceMotionAvailable
+        guard shouldRun else {
+            stopMotionCapture()
+            return
+        }
+        guard !motionManager.isDeviceMotionActive else { return }
+        motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+            guard let quaternion = motion?.attitude.quaternion else { return }
+            Task { @MainActor [weak self] in
+                self?.client.setOrientation(.init(
+                    x: Float(quaternion.x), y: Float(quaternion.y),
+                    z: Float(quaternion.z), w: Float(quaternion.w)
+                ))
+            }
+        }
+    }
+
+    private func stopMotionCapture() {
+        if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
+        client.setOrientation(.identity, available: false)
+    }
+
     private func startEventTask() {
         let generation = UUID()
         eventGeneration = generation
         let stream = client.eventStream { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.restartEventTaskIfNeeded(
-                    generation: generation,
-                    cancelConsumer: true
-                )
-            }
+            Task { @MainActor [weak self] in self?.restartEventTaskIfNeeded(generation: generation, cancelConsumer: true) }
         }
         eventTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
-                self.handle(event)
+                await self.handle(event)
             }
-            self?.restartEventTaskIfNeeded(
-                generation: generation,
-                cancelConsumer: false
-            )
+            self?.restartEventTaskIfNeeded(generation: generation, cancelConsumer: false)
         }
     }
 
-    private func restartEventTaskIfNeeded(
-        generation: UUID,
-        cancelConsumer: Bool
-    ) {
+    private func restartEventTaskIfNeeded(generation: UUID, cancelConsumer: Bool) {
         guard isStarted, eventGeneration == generation else { return }
         eventGeneration = nil
         let consumer = eventTask
@@ -220,18 +295,12 @@ final class ControllerCoordinator {
             discoveryHelpGeneration = nil
             discoveryHelpVisible = false
         }
-        guard isStarted,
-              client.hosts.isEmpty,
-              discoveryHelpTask == nil,
-              !discoveryHelpVisible else { return }
+        guard isStarted, client.hosts.isEmpty, discoveryHelpTask == nil, !discoveryHelpVisible else { return }
         let generation = UUID()
         discoveryHelpGeneration = generation
         discoveryHelpTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
-            guard let self,
-                  !Task.isCancelled,
-                  self.isStarted,
-                  self.discoveryHelpGeneration == generation else { return }
+            guard let self, !Task.isCancelled, self.isStarted, self.discoveryHelpGeneration == generation else { return }
             self.discoveryHelpTask = nil
             self.discoveryHelpGeneration = nil
             guard self.client.hosts.isEmpty else { return }
@@ -243,77 +312,50 @@ final class ControllerCoordinator {
     private func applyFixture(scenario: String) {
         let players = (0..<4).map { index in
             let id = PlayerID(UInt8(index))
-            return PlayerInfo(
-                id: id,
-                displayName: ["Ada", "Grace", "Katherine", "Margaret"][index],
-                colorHex: PlayerPalette.color(for: id),
-                isConnected: index != 2
-            )
+            return PlayerInfo(id: id, displayName: ["Ada", "Grace", "Katherine", "Margaret"][index], colorHex: PlayerPalette.color(for: id), isConnected: index != 2)
         }
         let currentPlayer = players[0]
-        let host = try? DiscoveredHost(
-            host: "127.0.0.1",
-            port: 49_999,
-            name: "Living Room PartyBox",
-            protocolVersion: PartyNetConstants.protocolVersion,
-            instanceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
-        )
-        let incompatible = try? DiscoveredHost(
-            host: "127.0.0.1",
-            port: 49_998,
-            name: "Old PartyBox",
-            protocolVersion: 999,
-            instanceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")
-        )
-
+        let host = try? DiscoveredHost(host: "127.0.0.1", port: 49_999, name: "Living Room PartyBox", protocolVersion: PartyNetConstants.protocolVersion, instanceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        let incompatible = try? DiscoveredHost(host: "127.0.0.1", port: 49_998, name: "Old PartyBox", protocolVersion: 999, instanceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        roster = players
         switch scenario {
-        case "empty-picker":
-            client.configureFixture(state: .browsing)
-        case "populated-picker":
-            client.configureFixture(state: .browsing, hosts: [host, incompatible].compactMap { $0 })
-        case "connecting":
-            client.configureFixture(state: .connecting("Living Room PartyBox"))
+        case "empty-picker": client.configureFixture(state: .browsing)
+        case "populated-picker": client.configureFixture(state: .browsing, hosts: [host, incompatible].compactMap { $0 })
+        case "connecting": client.configureFixture(state: .connecting("Living Room PartyBox"))
         case "menu":
-            client.configureFixture(
-                state: .connected("Living Room PartyBox"), player: currentPlayer, roster: players,
-                layout: .menu(items: ["FOUR-WAY PONG"], selected: 0)
-            )
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            layout = .menu(.init(items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"], details: ["Winner stays", "Your night"], selected: 0))
         case "paddle-bottom", "paddle-top", "paddle-left", "paddle-right":
-            let edge: PaddleEdge = switch scenario {
-            case "paddle-top": .top
-            case "paddle-left": .left
-            case "paddle-right": .right
-            default: .bottom
-            }
-            client.configureFixture(
-                state: .connected("Living Room PartyBox"), player: currentPlayer, roster: players,
-                layout: .paddle(PaddleLayout(edge: edge, colorHex: currentPlayer.colorHex, label: "P1 Ada"))
-            )
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let edge = String(scenario.dropFirst("paddle-".count))
+            let screen = ControllerScreen(accessibilityID: "controller.layout.paddle.\(edge)", accentColorHex: currentPlayer.colorHex, components: [
+                .text(.init(id: "player", text: "P1 Ada", style: .headline)),
+                .axisSurface(.init(id: "controller.paddle.track", binding: .horizontal, instruction: "DRAG TO MOVE")),
+            ])
+            layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
         case "spectator":
-            client.configureFixture(
-                state: .connected("Living Room PartyBox"), player: currentPlayer, roster: players,
-                layout: .spectator(SpectatorLayout(queuePosition: 2))
-            )
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let game = GameDescriptor(id: "pong", title: "Pong", summary: "Winner stays", minimumPlayers: 1, maximumPlayers: 4, modifiers: [
+                .init(id: "fast-ball", title: "Fast Ball", detail: "+25% initial speed")
+            ])
+            let screen = SpectatorScreenFactory.make(game: game, state: .init(role: .waiting(position: 2), choices: game.modifiers, tallies: [:], selection: nil))
+            layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
         case "game-over":
-            client.configureFixture(
-                state: .connected("Living Room PartyBox"), player: currentPlayer, roster: players,
-                layout: .gameOver(title: "P1 ADA WINS", subtitle: "Winner stays")
-            )
-        case "reconnecting":
-            client.configureFixture(state: .reconnecting("Connection interrupted"), player: currentPlayer, roster: players)
-        case "full-rejection":
-            client.configureFixture(state: .rejected(RejectReason.full.message))
-        case "version-rejection":
-            client.configureFixture(state: .rejected(RejectReason.versionMismatch(hostVersion: 999).message))
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            layout = .gameOver(.init(title: "P1 ADA WINS", subtitle: "Winner stays"))
+        case "history":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            layout = .historyNavigation
+        case "reconnecting": client.configureFixture(state: .reconnecting("Connection interrupted"), player: currentPlayer)
+        case "full-rejection": client.configureFixture(state: .rejected(RejectReason.full.message))
+        case "version-rejection": client.configureFixture(state: .rejected(RejectReason.versionMismatch(hostVersion: 999).message))
         case "local-network-denial":
             client.configureFixture(state: .browsing, discoveryErrorMessage: "Local Network policy denied")
             discoveryHelpVisible = true
-        case "connection-loss":
-            client.configureFixture(state: .disconnected("The host is no longer reachable."), player: currentPlayer)
+        case "connection-loss": client.configureFixture(state: .disconnected("The host is no longer reachable."), player: currentPlayer)
         default:
-            client.configureFixture(
-                state: .connected("Living Room PartyBox"), player: currentPlayer, roster: players, layout: .lobby
-            )
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            layout = .lobby
         }
     }
 #endif

@@ -1,6 +1,22 @@
 import Foundation
 import PartyNet
 
+enum PaddleEdge: String, Codable, CaseIterable, Hashable, Sendable {
+    case bottom, top, left, right
+}
+
+struct SeatAssignment: Equatable, Sendable {
+    let playerID: PlayerID
+    let edge: PaddleEdge
+}
+
+struct PongRules: Equatable, Sendable {
+    var startingSpeed = 560.0
+    var maximumSpeed = 1_150.0
+    var paddleLength = 220.0
+    var initialLives = 3
+}
+
 struct PongPoint: Equatable, Sendable {
     var x: Double
     var y: Double
@@ -28,7 +44,7 @@ struct PongPlayer: Equatable, Sendable {
     let playerID: PlayerID
     let edge: PaddleEdge
     var paddlePosition: Double = 0
-    var lives: Int = 3
+    var lives: Int
 
     var isActive: Bool { lives > 0 }
 }
@@ -54,15 +70,22 @@ struct PongSimulation: Sendable {
     private(set) var rallyCount = 0
     private(set) var isFinished = false
 
+    let rules: PongRules
+
     private let multiplayer: Bool
     private var randomState: UInt64
-    private let startingSpeed = 560.0
-    private let maximumSpeed = 1_150.0
+    private let edgeByPlayerID: [PlayerID: PaddleEdge]
 
-    init(assignments: [SeatAssignment], seed: UInt64 = 0x5041_5254_5942_4F58) {
+    init(
+        assignments: [SeatAssignment],
+        seed: UInt64 = 0x5041_5254_5942_4F58,
+        rules: PongRules = PongRules()
+    ) {
+        self.rules = rules
         players = Dictionary(uniqueKeysWithValues: assignments.map {
-            ($0.edge, PongPlayer(playerID: $0.playerID, edge: $0.edge))
+            ($0.edge, PongPlayer(playerID: $0.playerID, edge: $0.edge, lives: rules.initialLives))
         })
+        edgeByPlayerID = Dictionary(uniqueKeysWithValues: assignments.map { ($0.playerID, $0.edge) })
         multiplayer = assignments.count > 1
         randomState = seed == 0 ? 1 : seed
     }
@@ -80,9 +103,11 @@ struct PongSimulation: Sendable {
     }
 
     mutating func setPaddle(for playerID: PlayerID, normalizedPosition: Double) {
-        guard let edge = players.first(where: { $0.value.playerID == playerID })?.key else { return }
+        guard let edge = edgeByPlayerID[playerID] else { return }
         players[edge]?.paddlePosition = min(max(normalizedPosition, -1), 1)
     }
+
+    func edge(for playerID: PlayerID) -> PaddleEdge? { edgeByPlayerID[playerID] }
 
 #if DEBUG
     mutating func setBallForTesting(position: PongPoint, velocity: PongPoint) {
@@ -94,7 +119,7 @@ struct PongSimulation: Sendable {
 
     mutating func forfeit(_ playerID: PlayerID) -> [PongEvent] {
         guard !isFinished,
-              let edge = players.first(where: { $0.value.playerID == playerID && $0.value.isActive })?.key
+              let edge = edgeByPlayerID[playerID], players[edge]?.isActive == true
         else { return [] }
         players[edge]?.lives = 0
         var events: [PongEvent] = [.forfeited(playerID)]
@@ -163,11 +188,11 @@ struct PongSimulation: Sendable {
         }
 
         let tangent = edge == .top || edge == .bottom ? ballPosition.x : ballPosition.y
-        let travel = Self.arenaHalfExtent - (Self.paddleLength / 2)
+        let travel = Self.arenaHalfExtent - (rules.paddleLength / 2)
         let center = player.paddlePosition * travel
         let offset = tangent - center
-        if abs(offset) <= (Self.paddleLength / 2) + Self.ballRadius {
-            reflectFromPaddle(edge, offset: offset / (Self.paddleLength / 2))
+        if abs(offset) <= (rules.paddleLength / 2) + Self.ballRadius {
+            reflectFromPaddle(edge, offset: offset / (rules.paddleLength / 2))
             rallyCount += 1
             events.append(.paddleHit(player.playerID))
         } else {
@@ -192,7 +217,7 @@ struct PongSimulation: Sendable {
             ballVelocity.x *= -1
             ballVelocity.y += offset * abs(ballVelocity.x) * 0.7
         }
-        let accelerated = min(ballVelocity.length * 1.04, maximumSpeed)
+        let accelerated = min(ballVelocity.length * 1.04, rules.maximumSpeed)
         ballVelocity = ballVelocity.normalized() * accelerated
         nudgeInside(edge)
     }
@@ -247,7 +272,7 @@ struct PongSimulation: Sendable {
         case .right: direction = PongPoint(x: 1, y: tangent)
         }
         ballPosition = .zero
-        ballVelocity = direction.normalized() * startingSpeed
+        ballVelocity = direction.normalized() * rules.startingSpeed
         respawnRemaining = 0
     }
 
