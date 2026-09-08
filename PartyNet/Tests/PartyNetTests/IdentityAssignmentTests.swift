@@ -6,6 +6,15 @@ import Testing
 @Suite("Host-owned player identity")
 @MainActor
 struct IdentityAssignmentTests {
+    private actor WelcomeFailure {
+        private var welcomeCount = 0
+
+        func shouldFail() -> Bool {
+            welcomeCount += 1
+            return welcomeCount == 2
+        }
+    }
+
     @Test func marksAreUniqueHumansDisplaceBotsAndBotKindIsTrusted() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
@@ -55,6 +64,68 @@ struct IdentityAssignmentTests {
             await human.stop()
             await contested.stop()
             await untrusted.stop()
+            await bot.stop()
+            await host.stop()
+        }
+    }
+
+    @Test func trustedBotIdentitySurvivesExpirationUntilExplicitlyUnregistered() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let host = PartyHost(reconnectGrace: .milliseconds(50))
+            let port = try await host.start(hostName: "Bot Trust Test", advertise: false)
+            let botID = ControllerID()
+            host.registerLocalBot(controllerID: botID)
+            let first = PartyClient(controllerID: botID, displayName: "Bot 1")
+            await first.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.first?.kind == .bot }
+
+            await first.stop()
+            try await waitUntil { host.players.isEmpty }
+
+            let replacement = PartyClient(controllerID: botID, displayName: "Bot 1 Again")
+            await replacement.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.first?.displayName == "Bot 1 Again" }
+            #expect(host.players.first?.kind == .bot)
+
+            await replacement.stop()
+            host.unregisterLocalBot(controllerID: botID)
+            await host.stop()
+        }
+    }
+
+    @Test func failedHumanHandshakeDoesNotDisplaceAnExistingBotsMark() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let failure = WelcomeFailure()
+            let host = PartyHost(transportFactory: { inputs in
+                HostTransport(
+                    inputs: inputs,
+                    controlSender: { connection, message in
+                        if case .welcome = message, await failure.shouldFail() {
+                            throw CancellationError()
+                        }
+                        try await connection.send(message)
+                    }
+                )
+            })
+            let port = try await host.start(hostName: "Mark Rollback Test", advertise: false)
+            let botID = ControllerID()
+            host.registerLocalBot(controllerID: botID)
+            let bot = PartyClient(controllerID: botID, displayName: "Bot", preferredMark: .circle)
+            await bot.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.first?.mark == .circle }
+
+            let human = PartyClient(displayName: "Human", preferredMark: .circle)
+            await human.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { host.players.count == 1 }
+
+            #expect(host.players.first?.kind == .bot)
+            #expect(host.players.first?.mark == .circle)
+
+            await human.stop()
             await bot.stop()
             await host.stop()
         }

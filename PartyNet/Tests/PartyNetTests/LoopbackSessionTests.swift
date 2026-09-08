@@ -91,6 +91,22 @@ extension NetworkIntegrationTests {
       }
     }
 
+    private actor PingResponseGate {
+      private(set) var isBlocking = false
+      private var continuation: CheckedContinuation<Void, Never>?
+
+      func blockFirstResponse() async {
+        guard !isBlocking else { return }
+        isBlocking = true
+        await withCheckedContinuation { continuation = $0 }
+      }
+
+      func resume() {
+        continuation?.resume()
+        continuation = nil
+      }
+    }
+
     private actor CompletionProbe {
       private(set) var completed = false
 
@@ -514,6 +530,108 @@ extension NetworkIntegrationTests {
       await activeClient.stop()
       await host.stop()
       hostEvents.cancel()
+    }
+
+    @Test func stalledPingWriterPreservesEveryQueuedResponseNonce() async throws {
+      let gate = PingResponseGate()
+      let host = PartyHost(transportFactory: { inputs in
+        HostTransport(
+          inputs: inputs,
+          controlSender: { connection, message in
+            if message == .pingResponse(1) {
+              await gate.blockFirstResponse()
+            }
+            try await connection.send(message)
+          }
+        )
+      })
+      let port = try await host.start(hostName: "Queued Ping Host", advertise: false)
+      let connection = ClientControlConnection(
+        to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+        using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+      )
+      try await connection.send(.hello(Hello(
+        controllerID: ControllerID(),
+        displayName: "Probe Tester"
+      )))
+      guard case .welcome = try await connection.receive().content else {
+        Issue.record("Expected the raw controller to be welcomed")
+        await host.stop()
+        return
+      }
+
+      try await connection.send(.ping(1))
+      try await waitUntilAsync { await gate.isBlocking }
+      try await connection.send(.ping(2))
+      await gate.resume()
+
+      let first = try await withTimeout(.seconds(1), operationName: "receiving first ping echo") {
+        try await connection.receive().content
+      }
+      let second = try await withTimeout(.seconds(1), operationName: "receiving second ping echo") {
+        try await connection.receive().content
+      }
+      #expect(first == .pingResponse(1))
+      #expect(second == .pingResponse(2))
+      await host.stop()
+    }
+
+    @Test func excessControlHandlerIsClosedPromptly() async throws {
+      let transport = HostTransport(inputs: InputStore())
+      let stream = transport.eventStream(onOverflow: {})
+      let eventConsumer = Task {
+        for await _ in stream {}
+      }
+      let port = try await transport.start(
+        hostName: "Handler Capacity Host",
+        hostInstanceID: UUID(),
+        advertise: false
+      )
+      let capacity = await transport.controlHandlerCapacityForTesting
+      var heldConnections: [ClientControlConnection] = []
+      for index in 0..<capacity {
+        let connection = ClientControlConnection(
+          to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+          using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+        )
+        try await connection.send(.hello(Hello(
+          controllerID: ControllerID(),
+          displayName: "Held \(index)"
+        )))
+        heldConnections.append(connection)
+      }
+      try await waitUntilAsync {
+        await transport.controlHandlerCountForTesting == capacity
+      }
+
+      let overflow = ClientControlConnection(
+        to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+        using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+      )
+      try await overflow.send(.hello(Hello(
+        controllerID: ControllerID(),
+        displayName: "Overflow"
+      )))
+      do {
+        _ = try await withTimeout(
+          .seconds(1),
+          operationName: "waiting for an over-capacity connection to close"
+        ) {
+          try await overflow.receive().content
+        }
+        Issue.record("An over-capacity control connection unexpectedly remained usable")
+      } catch let error as PartyNetTransportError {
+        if case .timedOut = error {
+          Issue.record("An over-capacity control connection hung until the test timeout")
+        }
+      } catch {
+        // The rejected flow closed promptly, which is the required behavior.
+      }
+
+      _ = heldConnections
+      await transport.stop()
+      eventConsumer.cancel()
+      await eventConsumer.value
     }
 
     @Test func stalledWelcomeDoesNotBlockAnotherControllerHandshake() async throws {
@@ -979,6 +1097,39 @@ extension NetworkIntegrationTests {
 
       await first.stop()
       await second.stop()
+    }
+
+    @Test func foregroundProbeTrackingKeepsOnlyTheLatestNonce() async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in
+          await server.handle(connection)
+        }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let target = try DiscoveredHost(
+        host: "127.0.0.1",
+        port: try #require(listener.port?.rawValue)
+      )
+      let transport = ClientTransport()
+      let (connectionID, _) = try await transport.connect(
+        to: target,
+        hello: Hello(controllerID: ControllerID(), displayName: "Probe Tracker"),
+        attemptID: UUID()
+      )
+
+      try await transport.send(.ping(11), connectionID: connectionID)
+      try await transport.send(.ping(22), connectionID: connectionID)
+
+      #expect(await transport.explicitProbeNonceForTesting(connectionID: connectionID) == 22)
+      await transport.disconnect(connectionID: connectionID, sendLeave: false)
+      await transport.stop()
     }
 
     @Test func clientControlWriteTimesOutAndRetiresTheSession() async throws {

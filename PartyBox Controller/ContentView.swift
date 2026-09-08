@@ -225,7 +225,11 @@ private struct ConnectedControllerView: View {
             case let .menu(layout):
                 MenuControllerView(layout: layout, coordinator: coordinator)
             case let .game(envelope):
-                GameControllerView(envelope: envelope, coordinator: coordinator)
+                GameControllerView(
+                    gameID: envelope.gameID,
+                    screen: coordinator.controllerScreen,
+                    coordinator: coordinator
+                )
             case let .gameOver(layout):
                 GameOverControllerView(layout: layout, coordinator: coordinator)
             case .historyNavigation:
@@ -370,11 +374,12 @@ private struct MenuPadButton: View {
 }
 
 private struct GameControllerView: View {
-    let envelope: GameLayoutEnvelope
+    let gameID: String
+    let screen: ControllerScreen?
     @Bindable var coordinator: ControllerCoordinator
 
     var body: some View {
-        if let screen = envelope.validatedControllerScreen {
+        if let screen {
             ScrollView {
                 VStack(spacing: 20) {
                     Spacer(minLength: 12)
@@ -382,7 +387,7 @@ private struct GameControllerView: View {
                         ControllerComponentView(
                             component: component,
                             accent: Color.controllerHex(screen.accentColorHex),
-                            gameID: envelope.gameID,
+                            gameID: gameID,
                             coordinator: coordinator
                         )
                     }
@@ -515,10 +520,12 @@ private struct AxisSurface: View {
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
                 let height = max(proxy.size.height, 1)
+                let knobDiameter = AxisSurfaceGeometry.knobDiameter
+                let knobRadius = knobDiameter / 2
                 ZStack {
                     RoundedRectangle(cornerRadius: 28).fill(.white.opacity(0.1))
                     ZStack {
-                        Circle().fill(accent).frame(width: 70, height: 70).shadow(color: accent, radius: 20)
+                        Circle().fill(accent).frame(width: knobDiameter, height: knobDiameter).shadow(color: accent, radius: 20)
                         if let player = coordinator.currentPlayer {
                             Image(systemName: player.mark.systemImageName)
                                 .font(.title2.weight(.black))
@@ -526,17 +533,23 @@ private struct AxisSurface: View {
                         }
                     }
                         .position(
-                            x: (CGFloat(coordinator.displayedInputAxisX) + 1) * 0.5 * max(width - 70, 0) + 35,
+                            x: (CGFloat(coordinator.displayedInputAxisX) + 1) * 0.5 * max(width - knobDiameter, 0) + knobRadius,
                             y: component.binding == .twoDimensional
-                                ? (CGFloat(coordinator.client.inputAxisY) + 1) * 0.5 * max(height - 70, 0) + 35
+                                ? (CGFloat(coordinator.client.inputAxisY) + 1) * 0.5 * max(height - knobDiameter, 0) + knobRadius
                                 : height / 2
                         )
                 }
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    let x = Float(min(max((value.location.x / width) * 2 - 1, -1), 1))
+                    let x = AxisSurfaceGeometry.normalizedCoordinate(
+                        location: value.location.x,
+                        extent: width
+                    )
                     let y = component.binding == .twoDimensional
-                        ? Float(min(max((value.location.y / height) * 2 - 1, -1), 1)) : 0
+                        ? AxisSurfaceGeometry.normalizedCoordinate(
+                            location: value.location.y,
+                            extent: height
+                        ) : 0
                     coordinator.client.setInput(axisX: x, axisY: y)
                 })
                 .accessibilityIdentifier(component.id)
@@ -545,6 +558,22 @@ private struct AxisSurface: View {
             .frame(height: component.binding == .twoDimensional ? 250 : 170)
             Text(component.instruction).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.48))
         }
+    }
+}
+
+enum AxisSurfaceGeometry {
+    static let knobDiameter: CGFloat = 70
+
+    static func normalizedCoordinate(
+        location: CGFloat,
+        extent: CGFloat,
+        knobDiameter: CGFloat = AxisSurfaceGeometry.knobDiameter
+    ) -> Float {
+        let diameter = min(max(knobDiameter, 0), max(extent, 0))
+        let travel = max(extent - diameter, 0)
+        guard travel > 0 else { return 0 }
+        let progress = min(max((location - diameter / 2) / travel, 0), 1)
+        return Float((progress * 2) - 1)
     }
 }
 

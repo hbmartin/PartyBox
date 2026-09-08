@@ -60,7 +60,6 @@ enum PongEvent: Equatable, Sendable {
 struct PongSimulation: Sendable {
     static let arenaHalfExtent = 500.0
     static let ballRadius = 18.0
-    static let paddleLength = 220.0
     static let paddleThickness = 24.0
 
     private(set) var players: [PaddleEdge: PongPlayer]

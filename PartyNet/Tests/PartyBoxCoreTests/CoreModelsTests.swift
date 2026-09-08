@@ -20,6 +20,7 @@ struct CoreModelsTests {
         )
         let screenData = try PartyBoxWireCodec.encode(screen)
         let envelope = GameLayoutEnvelope(gameID: "motion-game", payload: screenData)
+        #expect(envelope.schemaVersion == ControllerScreen.schemaVersion)
         #expect(envelope.validatedControllerScreen == screen)
         #expect(GameLayoutEnvelope(
             gameID: "motion-game",
@@ -34,6 +35,9 @@ struct CoreModelsTests {
             gameID: "motion-game",
             action: .init(id: "boost", value: .trigger)
         ))
+        if case .game(let actionEnvelope) = command {
+            #expect(actionEnvelope.schemaVersion == ControllerScreen.schemaVersion)
+        }
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 

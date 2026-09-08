@@ -94,6 +94,11 @@ actor HostTransport {
 
   var udpPort: UInt16? { boundUDPPort }
 
+#if DEBUG
+  var controlHandlerCapacityForTesting: Int { maximumControlHandlers }
+  var controlHandlerCountForTesting: Int { controlTasks.count }
+#endif
+
   init(
     inputs: InputStore,
     controlSender: @escaping HostControlSender = { connection, message in
@@ -320,9 +325,11 @@ actor HostTransport {
     _ connection: HostControlConnection,
     generation: UInt64
   ) {
-    guard lifecycleGeneration == generation,
-      controlTasks.count < maximumControlHandlers
-    else { return }
+    guard lifecycleGeneration == generation else { return }
+    guard controlTasks.count < maximumControlHandlers else {
+      logger.warning("Dropping a control connection because the handler limit was reached")
+      return
+    }
     let connectionID = UUID()
     let clock = clock
     controlTasks[connectionID] = Task { [connection, weak self] in

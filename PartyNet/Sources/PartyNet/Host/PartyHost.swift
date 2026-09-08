@@ -63,6 +63,17 @@ public final class PartyHost {
         let task: Task<Void, Never>
     }
 
+    private struct PendingMarkDisplacement: Sendable {
+        let botControllerID: ControllerID
+        let previousMark: PlayerMark
+        let replacementMark: PlayerMark
+    }
+
+    private struct InitialMarkAssignment: Sendable {
+        let mark: PlayerMark
+        let displacement: PendingMarkDisplacement?
+    }
+
     private enum BroadcastResult: Sendable {
         case sent
         case cancelled
@@ -80,12 +91,16 @@ public final class PartyHost {
     private var pendingRenames: [ControllerID: PendingRename] = [:]
     private var renameWorkers: [ControllerID: RenameWorker] = [:]
     private var helloWorkers: [UUID: ConnectionWorker] = [:]
-    private var pendingPingResponses: [UUID: UInt64] = [:]
+    private var pendingPingResponses: [UUID: [UInt64]] = [:]
     private var pingWorkers: [UUID: ConnectionWorker] = [:]
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
     private var registeredLocalBotIDs: Set<ControllerID> = []
+    private var pendingMarkDisplacements: [ControllerID: PendingMarkDisplacement] = [:]
+    private var reservedInitialMarks: Set<PlayerMark> = []
     private var lifecycleGeneration: UInt64 = 0
+
+    private static let maximumPendingPingResponsesPerConnection = 16
 
     public convenience init(
         reconnectGrace: Duration = PartyNetConstants.reconnectGrace,
@@ -211,6 +226,10 @@ public final class PartyHost {
               var requester = sessions[requesterID],
               requester.isAdmitted else { return false }
         guard requester.mark != mark else { return true }
+        guard !reservedInitialMarks.contains(mark),
+              !pendingMarkDisplacements.values.contains(where: {
+                  $0.botControllerID == requesterID
+              }) else { return false }
 
         if let holderID = sessions.first(where: {
             $0.key != requesterID && $0.value.mark == mark
@@ -231,13 +250,16 @@ public final class PartyHost {
     @discardableResult
     public func sendApplication(_ payload: Data, to playerID: PlayerID) async -> Bool {
         guard payload.count <= PartyNetConstants.maximumApplicationPayloadBytes else { return false }
+        let generation = lifecycleGeneration
+        guard let transport else { return false }
         guard let session = sessions.values.first(where: {
                   $0.playerID == playerID && $0.isAdmitted && $0.isWelcomedConnection
               }),
-              let connectionID = session.connectionID else { return false }
+              let connectionID = session.connectionID,
+              canBroadcast(generation: generation, over: transport) else { return false }
         do {
-            try await transport?.send(.application(payload), to: connectionID)
-            return true
+            try await transport.send(.application(payload), to: connectionID)
+            return canBroadcast(generation: generation, over: transport)
         } catch {
             logger.debug("Application send to player \(playerID.rawValue) failed: \(error.localizedDescription)")
             return false
@@ -343,6 +365,8 @@ public final class PartyHost {
         sessions.removeAll()
         connectionOwners.removeAll()
         registeredLocalBotIDs.removeAll()
+        pendingMarkDisplacements.removeAll()
+        reservedInitialMarks.removeAll()
         players.removeAll()
         inputs.removeAll()
         port = nil
@@ -466,16 +490,20 @@ public final class PartyHost {
             fallbackName = "Player \(playerID.rawValue + 1)"
             token = UInt64.random(in: UInt64.min...UInt64.max)
             let kind: PlayerKind = registeredLocalBotIDs.contains(hello.controllerID) ? .bot : .human
-            let mark = assignInitialMark(
+            let markAssignment = assignInitialMark(
                 preferred: hello.preferredMark,
                 kind: kind,
                 playerID: playerID
             )
+            if let displacement = markAssignment.displacement {
+                pendingMarkDisplacements[hello.controllerID] = displacement
+                reservedInitialMarks.insert(displacement.replacementMark)
+            }
             let created = PlayerSession(
                 controllerID: hello.controllerID,
                 playerID: playerID,
                 displayName: DisplayName.sanitized(hello.displayName, fallback: fallbackName),
-                mark: mark,
+                mark: markAssignment.mark,
                 kind: kind,
                 connectionID: connectionID,
                 sessionToken: token,
@@ -509,9 +537,11 @@ public final class PartyHost {
             return
         }
         guard var admitted = sessions[hello.controllerID], admitted.connectionID == connectionID else {
+            discardPendingInitialMarkAssignment(for: hello.controllerID)
             await transport.disconnect(connectionID: connectionID)
             return
         }
+        commitPendingInitialMarkAssignment(for: hello.controllerID)
         admitted.isAdmitted = true
         admitted.isWelcomedConnection = true
         sessions[hello.controllerID] = admitted
@@ -537,9 +567,12 @@ public final class PartyHost {
         generation: UInt64
     ) async {
         guard lifecycleGeneration == generation else { return }
-        guard let session = sessions[controllerID], session.connectionID == connectionID else { return }
+        guard let session = sessions[controllerID] else { return }
         if isNewSession {
+            guard session.connectionID == connectionID
+                    || (!session.isAdmitted && session.connectionID == nil) else { return }
             sessions.removeValue(forKey: controllerID)
+            discardPendingInitialMarkAssignment(for: controllerID)
             connectionOwners.removeValue(forKey: connectionID)
             session.graceTask?.cancel()
             inputs.remove(session.playerID)
@@ -547,6 +580,7 @@ public final class PartyHost {
             if let token = session.sessionToken { await transport?.invalidate(token: token) }
             await transport?.disconnect(connectionID: connectionID)
         } else {
+            guard session.connectionID == connectionID else { return }
             await handleDisconnect(connectionID: connectionID, generation: generation)
         }
     }
@@ -586,7 +620,16 @@ public final class PartyHost {
     }
 
     private func enqueuePingResponse(_ nonce: UInt64, connectionID: UUID, generation: UInt64) {
-        pendingPingResponses[connectionID] = nonce
+        var pending = pendingPingResponses[connectionID, default: []]
+        guard !pending.contains(nonce) else { return }
+        guard pending.count < Self.maximumPendingPingResponsesPerConnection else {
+            logger.warning(
+                "Dropping excess ping response for connection \(connectionID, privacy: .public)"
+            )
+            return
+        }
+        pending.append(nonce)
+        pendingPingResponses[connectionID] = pending
         guard pingWorkers[connectionID] == nil else { return }
         let workerID = UUID()
         let task = Task { @MainActor [weak self] in
@@ -605,7 +648,7 @@ public final class PartyHost {
         while !Task.isCancelled,
               lifecycleGeneration == generation,
               pingWorkers[connectionID]?.id == workerID,
-              let nonce = pendingPingResponses.removeValue(forKey: connectionID),
+              let nonce = dequeuePingResponse(for: connectionID),
               let transport {
             do {
                 try await transport.send(.pingResponse(nonce), to: connectionID)
@@ -622,6 +665,20 @@ public final class PartyHost {
     private func finishPingWorker(connectionID: UUID, workerID: UUID) {
         guard pingWorkers[connectionID]?.id == workerID else { return }
         pingWorkers.removeValue(forKey: connectionID)
+    }
+
+    private func dequeuePingResponse(for connectionID: UUID) -> UInt64? {
+        guard var pending = pendingPingResponses[connectionID], !pending.isEmpty else {
+            pendingPingResponses.removeValue(forKey: connectionID)
+            return nil
+        }
+        let nonce = pending.removeFirst()
+        if pending.isEmpty {
+            pendingPingResponses.removeValue(forKey: connectionID)
+        } else {
+            pendingPingResponses[connectionID] = pending
+        }
+        return nonce
     }
 
     private func handleDisconnect(connectionID: UUID, generation: UInt64) async {
@@ -672,7 +729,7 @@ public final class PartyHost {
               expectedRevision == nil || current.revision == expectedRevision else { return }
         cancelPendingRename(for: controllerID)
         _ = sessions.removeValue(forKey: controllerID)
-        registeredLocalBotIDs.remove(controllerID)
+        discardPendingInitialMarkAssignment(for: controllerID)
         let session = current
         if let connectionID = session.connectionID {
             connectionOwners.removeValue(forKey: connectionID)
@@ -793,32 +850,60 @@ public final class PartyHost {
         preferred: PlayerMark?,
         kind: PlayerKind,
         playerID: PlayerID
-    ) -> PlayerMark {
-        if let preferred,
-           let holderID = sessions.first(where: { $0.value.mark == preferred })?.key {
-            if kind == .human,
-               var holder = sessions[holderID],
-               holder.kind == .bot,
-               let replacement = firstAvailableMark(startingAt: holder.playerID) {
-                holder.mark = replacement
-                sessions[holderID] = holder
-                return preferred
+    ) -> InitialMarkAssignment {
+        if let preferred, !reservedInitialMarks.contains(preferred) {
+            let holders = sessions.filter { $0.value.mark == preferred }
+            if holders.isEmpty {
+                return InitialMarkAssignment(mark: preferred, displacement: nil)
             }
-        } else if let preferred {
-            return preferred
+            if kind == .human,
+               holders.count == 1,
+               let holder = holders.first,
+               holder.value.kind == .bot,
+               let replacement = firstAvailableMark(startingAt: holder.value.playerID) {
+                return InitialMarkAssignment(
+                    mark: preferred,
+                    displacement: PendingMarkDisplacement(
+                        botControllerID: holder.key,
+                        previousMark: preferred,
+                        replacementMark: replacement
+                    )
+                )
+            }
         }
 
-        return firstAvailableMark(startingAt: playerID)
-            ?? PlayerMark.defaultMark(for: playerID)
+        return InitialMarkAssignment(
+            mark: firstAvailableMark(startingAt: playerID)
+                ?? PlayerMark.defaultMark(for: playerID),
+            displacement: nil
+        )
     }
 
     private func firstAvailableMark(startingAt playerID: PlayerID) -> PlayerMark? {
-        let used = Set(sessions.values.map(\.mark))
+        let used = Set(sessions.values.map(\.mark)).union(reservedInitialMarks)
         let marks = PlayerMark.allCases
         let start = Int(playerID.rawValue) % marks.count
         return (0..<marks.count)
             .map { marks[(start + $0) % marks.count] }
             .first { !used.contains($0) }
+    }
+
+    private func commitPendingInitialMarkAssignment(for controllerID: ControllerID) {
+        guard let displacement = pendingMarkDisplacements.removeValue(forKey: controllerID) else {
+            return
+        }
+        reservedInitialMarks.remove(displacement.replacementMark)
+        guard var bot = sessions[displacement.botControllerID],
+              bot.mark == displacement.previousMark else { return }
+        bot.mark = displacement.replacementMark
+        sessions[displacement.botControllerID] = bot
+    }
+
+    private func discardPendingInitialMarkAssignment(for controllerID: ControllerID) {
+        guard let displacement = pendingMarkDisplacements.removeValue(forKey: controllerID) else {
+            return
+        }
+        reservedInitialMarks.remove(displacement.replacementMark)
     }
 
     private func info(for session: PlayerSession, connected: Bool) -> PlayerInfo {
