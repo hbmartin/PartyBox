@@ -118,7 +118,7 @@ public final class InputStore: Sendable {
                     clientTimeMs: frame.clientTimeMs,
                     axisX: 0,
                     axisY: 0,
-                    orientation: frame.orientation,
+                    orientation: .identity,
                     flags: frame.flags
                 )
             }

@@ -228,11 +228,11 @@ public final class PartyHost {
         guard requester.mark != mark else { return true }
         guard !reservedInitialMarks.contains(mark),
               !pendingMarkDisplacements.values.contains(where: {
-                  $0.botControllerID == requesterID
+                  $0.botControllerID == requesterID || $0.previousMark == mark
               }) else { return false }
 
         if let holderID = sessions.first(where: {
-            $0.key != requesterID && $0.value.mark == mark
+            $0.key != requesterID && $0.value.isAdmitted && $0.value.mark == mark
         })?.key {
             guard requester.kind == .human,
                   var holder = sessions[holderID],
@@ -470,6 +470,7 @@ public final class PartyHost {
                 )
                 return
             }
+            inputs.remove(existing.playerID)
             if let oldConnection {
                 await transport.replace(connectionID: oldConnection)
             }
@@ -497,6 +498,7 @@ public final class PartyHost {
             )
             if let displacement = markAssignment.displacement {
                 pendingMarkDisplacements[hello.controllerID] = displacement
+                reservedInitialMarks.insert(displacement.previousMark)
                 reservedInitialMarks.insert(displacement.replacementMark)
             }
             let created = PlayerSession(
@@ -892,6 +894,7 @@ public final class PartyHost {
         guard let displacement = pendingMarkDisplacements.removeValue(forKey: controllerID) else {
             return
         }
+        reservedInitialMarks.remove(displacement.previousMark)
         reservedInitialMarks.remove(displacement.replacementMark)
         guard var bot = sessions[displacement.botControllerID],
               bot.mark == displacement.previousMark else { return }
@@ -903,6 +906,7 @@ public final class PartyHost {
         guard let displacement = pendingMarkDisplacements.removeValue(forKey: controllerID) else {
             return
         }
+        reservedInitialMarks.remove(displacement.previousMark)
         reservedInitialMarks.remove(displacement.replacementMark)
     }
 

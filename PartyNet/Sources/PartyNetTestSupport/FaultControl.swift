@@ -32,4 +32,27 @@ public struct FaultControlResponse: Codable, Equatable, Sendable {
         self.metrics = metrics
         self.hostInputActivity = hostInputActivity
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case succeeded
+        case message
+        case metadata
+        case profile
+        case metrics
+        case hostInputActivity
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        succeeded = try container.decode(Bool.self, forKey: .succeeded)
+        message = try container.decode(String.self, forKey: .message)
+        metadata = try container.decodeIfPresent(FaultRigMetadata.self, forKey: .metadata)
+        profile = try container.decodeIfPresent(FaultProfile.self, forKey: .profile)
+        metrics = try container.decode(FaultMetrics.self, forKey: .metrics)
+        hostInputActivity =
+            try container.decodeIfPresent(
+                [InputActivity].self,
+                forKey: .hostInputActivity
+            ) ?? []
+    }
 }

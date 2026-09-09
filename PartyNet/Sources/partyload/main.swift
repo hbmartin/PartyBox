@@ -130,155 +130,165 @@ private struct PartyLoad {
             )
         }
 
-        if let address = configuration.address {
-            guard let endpoint = HostAddress(parsing: address) else { throw LoadError.invalidAddress }
-            for (index, client) in clients.enumerated() {
-                await client.connect(host: endpoint.host, port: endpoint.port)
-                try requireConnected(client, index: index + 1)
-            }
-            print("Connected \(clients.count) controllers to \(endpoint.host):\(endpoint.port)")
-        } else if let requestedName = configuration.hostName {
-            let probe = clients[0]
-            await probe.startBrowsing()
-            let clock = ContinuousClock()
-            let deadline = clock.now.advanced(by: .seconds(10))
-            var discovered: DiscoveredHost?
-            while clock.now < deadline {
-                discovered = probe.hosts.first {
-                    $0.isCompatible && $0.name.localizedCaseInsensitiveCompare(requestedName) == .orderedSame
+        do {
+            if let address = configuration.address {
+                guard let endpoint = HostAddress(parsing: address) else { throw LoadError.invalidAddress }
+                for (index, client) in clients.enumerated() {
+                    await client.connect(host: endpoint.host, port: endpoint.port)
+                    try requireConnected(client, index: index + 1)
                 }
-                if discovered != nil { break }
-                try await Task.sleep(for: .milliseconds(200))
+                print("Connected \(clients.count) controllers to \(endpoint.host):\(endpoint.port)")
+            } else if let requestedName = configuration.hostName {
+                let probe = clients[0]
+                await probe.startBrowsing()
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: .seconds(10))
+                var discovered: DiscoveredHost?
+                while clock.now < deadline {
+                    discovered = probe.hosts.first {
+                        $0.isCompatible && $0.name.localizedCaseInsensitiveCompare(requestedName) == .orderedSame
+                    }
+                    if discovered != nil { break }
+                    try await Task.sleep(for: .milliseconds(200))
+                }
+                guard let discovered else { throw LoadError.discoveryTimeout(requestedName) }
+                await probe.connect(to: discovered)
+                try requireConnected(probe, index: 1)
+                for (index, client) in clients.dropFirst().enumerated() {
+                    await client.connect(to: discovered)
+                    try requireConnected(client, index: index + 2)
+                }
+                print("Connected \(clients.count) controllers to \(discovered.name)")
             }
-            guard let discovered else { throw LoadError.discoveryTimeout(requestedName) }
-            await probe.connect(to: discovered)
-            try requireConnected(probe, index: 1)
-            for (index, client) in clients.dropFirst().enumerated() {
-                await client.connect(to: discovered)
-                try requireConnected(client, index: index + 2)
-            }
-            print("Connected \(clients.count) controllers to \(discovered.name)")
-        }
 
-        let totalTicks = configuration.seconds * configuration.frequency
-        var rttSamples: [Double] = []
-        var lastRTTSampleCounts = clients.map(\.rttSampleCount)
-        let startingRTTSampleCounts = lastRTTSampleCounts
-        let startingInputCounts = clients.map(\.inputFramesSent)
-        let startingUDPInputCounts = clients.map(\.udpInputFramesSent)
-        let startingTCPInputCounts = clients.map(\.tcpInputFramesSent)
-        let clock = ContinuousClock()
-        let started = clock.now
-        for tick in 0..<totalTicks {
-            let elapsed = Double(tick) / Double(configuration.frequency)
+            let totalTicks = configuration.seconds * configuration.frequency
+            var rttSamples: [Double] = []
+            var lastRTTSampleCounts = clients.map(\.rttSampleCount)
+            let startingRTTSampleCounts = lastRTTSampleCounts
+            let startingInputCounts = clients.map(\.inputFramesSent)
+            let startingUDPInputCounts = clients.map(\.udpInputFramesSent)
+            let startingTCPInputCounts = clients.map(\.tcpInputFramesSent)
+            let clock = ContinuousClock()
+            let started = clock.now
+            for tick in 0..<totalTicks {
+                let elapsed = Double(tick) / Double(configuration.frequency)
+                for (index, client) in clients.enumerated() {
+                    let phase = (Double(index) / Double(max(1, clients.count))) * 2 * Double.pi
+                    client.setInput(axisX: Float(sin((elapsed * 2.1) + phase)))
+                    if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
+                        rttSamples.append(rtt)
+                        lastRTTSampleCounts[index] = client.rttSampleCount
+                    }
+                    try requireConnected(client, index: index + 1, duringRun: true)
+                }
+                let target = started.advanced(by: interval * (tick + 1))
+                try await clock.sleep(until: target)
+            }
+
+            // Allow the clients' coalescing input loops to flush the final requested frame.
+            try await clock.sleep(for: interval * 2)
             for (index, client) in clients.enumerated() {
-                let phase = (Double(index) / Double(max(1, clients.count))) * 2 * Double.pi
-                client.setInput(axisX: Float(sin((elapsed * 2.1) + phase)))
+                try requireConnected(client, index: index + 1, duringRun: true)
                 if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
                     rttSamples.append(rtt)
                     lastRTTSampleCounts[index] = client.rttSampleCount
                 }
-                try requireConnected(client, index: index + 1, duringRun: true)
             }
-            let target = started.advanced(by: interval * (tick + 1))
-            try await clock.sleep(until: target)
-        }
 
-        // Allow the clients' coalescing input loops to flush the final requested frame.
-        try await clock.sleep(for: interval * 2)
-        for (index, client) in clients.enumerated() {
-            try requireConnected(client, index: index + 1, duringRun: true)
-            if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
-                rttSamples.append(rtt)
-                lastRTTSampleCounts[index] = client.rttSampleCount
+            let playerIDs = try clients.enumerated().map { index, client in
+                guard let playerID = client.player?.id else {
+                    throw LoadError.unexpectedDisconnect(index + 1, "the host identity disappeared")
+                }
+                return playerID
             }
-        }
-
-        let playerIDs = try clients.enumerated().map { index, client in
-            guard let playerID = client.player?.id else {
-                throw LoadError.unexpectedDisconnect(index + 1, "the host identity disappeared")
-            }
-            return playerID
-        }
-        let hostInputActivity: [InputActivity]?
-        do {
+            let hostInputActivity: [InputActivity]?
             if let controlAddress = configuration.controlAddress {
                 hostInputActivity = try await fetchHostInputActivity(from: controlAddress)
             } else {
                 hostInputActivity = nil
             }
+
+            let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
+                client.inputFramesSent - startingCount
+            }
+            let udpInputSendCounts = zip(clients, startingUDPInputCounts).map { client, startingCount in
+                client.udpInputFramesSent - startingCount
+            }
+            let tcpInputSendCounts = zip(clients, startingTCPInputCounts).map { client, startingCount in
+                client.tcpInputFramesSent - startingCount
+            }
+            let rttSampleCounts = zip(clients, startingRTTSampleCounts).map { client, startingCount in
+                client.rttSampleCount - startingCount
+            }
+            for client in clients { await client.stop() }
+            let sorted = rttSamples.sorted()
+            let p50 = percentile(0.50, values: sorted)
+            let p95 = percentile(0.95, values: sorted)
+            let maximum = sorted.last ?? 0
+            let minimumSends = inputSendCounts.min() ?? 0
+            let maximumSends = inputSendCounts.max() ?? 0
+            let minimumUDPSends = udpInputSendCounts.min() ?? 0
+            let maximumUDPSends = udpInputSendCounts.max() ?? 0
+            let minimumTCPSends = tcpInputSendCounts.min() ?? 0
+            let maximumTCPSends = tcpInputSendCounts.max() ?? 0
+            print(
+                "Issued \(totalTicks) requested input updates per controller at \(configuration.frequency) Hz for \(configuration.seconds)s"
+            )
+            print("Observed transport sends per controller: \(minimumSends)–\(maximumSends)")
+            print(
+                "UDP sends per controller: \(minimumUDPSends)–\(maximumUDPSends); TCP sends: \(minimumTCPSends)–\(maximumTCPSends)"
+            )
+            print(
+                String(
+                    format: "Ping RTT: p50 %.2f ms  p95 %.2f ms  max %.2f ms  (%d samples)", p50, p95, maximum,
+                    sorted.count))
+            if let hostInputActivity {
+                let observations = try requireHostAppliedChangingInputs(hostInputActivity, playerIDs: playerIDs)
+                let counts = observations.map(\.acceptedFrameCount)
+                let spans = observations.map { $0.maximumAxisX - $0.minimumAxisX }
+                print(
+                    String(
+                        format: "Host applied %llu–%llu frames per controller with %.3f–%.3f axis travel",
+                        counts.min() ?? 0,
+                        counts.max() ?? 0,
+                        spans.min() ?? 0,
+                        spans.max() ?? 0
+                    ))
+            }
+            if let index = inputSendCounts.firstIndex(of: 0) {
+                throw LoadError.acceptance("controller \(index + 1) sent no input frames")
+            }
+            if let index = rttSampleCounts.firstIndex(of: 0) {
+                throw LoadError.acceptance("controller \(index + 1) collected no ping RTT samples")
+            }
+            switch configuration.expectedInputTransport {
+            case .any:
+                break
+            case .udp:
+                if let index = udpInputSendCounts.firstIndex(of: 0) {
+                    throw LoadError.acceptance("controller \(index + 1) sent no UDP input frames")
+                }
+                if let index = tcpInputSendCounts.firstIndex(where: { $0 > 0 }) {
+                    throw LoadError.acceptance("controller \(index + 1) unexpectedly entered TCP fallback")
+                }
+            case .fallback:
+                if let index = tcpInputSendCounts.firstIndex(of: 0) {
+                    throw LoadError.acceptance("controller \(index + 1) never entered TCP fallback")
+                }
+            }
+            guard p95 < 50 else {
+                throw LoadError.acceptance("p95 RTT \(String(format: "%.2f", p95)) ms is above the 50 ms target")
+            }
+            if hostInputActivity != nil {
+                print(
+                    "PASS: connectedness, input transport, host input application, ping sampling, and RTT targets were met."
+                )
+            } else {
+                print("PASS: connectedness, client input transmission, ping sampling, and RTT targets were met.")
+            }
         } catch {
             for client in clients { await client.stop() }
             throw error
-        }
-
-        let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
-            client.inputFramesSent - startingCount
-        }
-        let udpInputSendCounts = zip(clients, startingUDPInputCounts).map { client, startingCount in
-            client.udpInputFramesSent - startingCount
-        }
-        let tcpInputSendCounts = zip(clients, startingTCPInputCounts).map { client, startingCount in
-            client.tcpInputFramesSent - startingCount
-        }
-        let rttSampleCounts = zip(clients, startingRTTSampleCounts).map { client, startingCount in
-            client.rttSampleCount - startingCount
-        }
-        for client in clients { await client.stop() }
-        let sorted = rttSamples.sorted()
-        let p50 = percentile(0.50, values: sorted)
-        let p95 = percentile(0.95, values: sorted)
-        let maximum = sorted.last ?? 0
-        let minimumSends = inputSendCounts.min() ?? 0
-        let maximumSends = inputSendCounts.max() ?? 0
-        let minimumUDPSends = udpInputSendCounts.min() ?? 0
-        let maximumUDPSends = udpInputSendCounts.max() ?? 0
-        let minimumTCPSends = tcpInputSendCounts.min() ?? 0
-        let maximumTCPSends = tcpInputSendCounts.max() ?? 0
-        print("Issued \(totalTicks) requested input updates per controller at \(configuration.frequency) Hz for \(configuration.seconds)s")
-        print("Observed transport sends per controller: \(minimumSends)–\(maximumSends)")
-        print("UDP sends per controller: \(minimumUDPSends)–\(maximumUDPSends); TCP sends: \(minimumTCPSends)–\(maximumTCPSends)")
-        print(String(format: "Ping RTT: p50 %.2f ms  p95 %.2f ms  max %.2f ms  (%d samples)", p50, p95, maximum, sorted.count))
-        if let hostInputActivity {
-            let observations = try requireHostAppliedChangingInputs(hostInputActivity, playerIDs: playerIDs)
-            let counts = observations.map(\.acceptedFrameCount)
-            let spans = observations.map { $0.maximumAxisX - $0.minimumAxisX }
-            print(String(
-                format: "Host applied %llu–%llu frames per controller with %.3f–%.3f axis travel",
-                counts.min() ?? 0,
-                counts.max() ?? 0,
-                spans.min() ?? 0,
-                spans.max() ?? 0
-            ))
-        }
-        if let index = inputSendCounts.firstIndex(of: 0) {
-            throw LoadError.acceptance("controller \(index + 1) sent no input frames")
-        }
-        if let index = rttSampleCounts.firstIndex(of: 0) {
-            throw LoadError.acceptance("controller \(index + 1) collected no ping RTT samples")
-        }
-        switch configuration.expectedInputTransport {
-        case .any:
-            break
-        case .udp:
-            if let index = udpInputSendCounts.firstIndex(of: 0) {
-                throw LoadError.acceptance("controller \(index + 1) sent no UDP input frames")
-            }
-            if let index = tcpInputSendCounts.firstIndex(where: { $0 > 0 }) {
-                throw LoadError.acceptance("controller \(index + 1) unexpectedly entered TCP fallback")
-            }
-        case .fallback:
-            if let index = tcpInputSendCounts.firstIndex(of: 0) {
-                throw LoadError.acceptance("controller \(index + 1) never entered TCP fallback")
-            }
-        }
-        guard p95 < 50 else {
-            throw LoadError.acceptance("p95 RTT \(String(format: "%.2f", p95)) ms is above the 50 ms target")
-        }
-        if hostInputActivity != nil {
-            print("PASS: connectedness, input transport, host input application, ping sampling, and RTT targets were met.")
-        } else {
-            print("PASS: connectedness, client input transmission, ping sampling, and RTT targets were met.")
         }
     }
 
