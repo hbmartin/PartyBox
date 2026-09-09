@@ -223,6 +223,9 @@ public enum DisplayName {
     private static func permittedDefaultIgnorables(
         in scalars: [Unicode.Scalar]
     ) -> Set<Int> {
+        guard scalars.contains(where: { $0.properties.isDefaultIgnorableCodePoint }) else {
+            return []
+        }
         var permitted: Set<Int> = []
         let context = defaultIgnorableContext(for: scalars)
         let registeredEmojiIgnorables = UnicodeSequenceData

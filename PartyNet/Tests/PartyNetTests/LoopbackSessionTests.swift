@@ -398,6 +398,54 @@ extension NetworkIntegrationTests {
       await host.stop()
     }
 
+    @Test func reconnectStartsFreshHostInputActivity() async throws {
+      let host = PartyHost(reconnectGrace: .seconds(2))
+      let controllerID = ControllerID()
+      let original = PartyClient(
+        controllerID: controllerID,
+        displayName: "Original",
+        inputSendInterval: .milliseconds(5)
+      )
+      let replacement = PartyClient(
+        controllerID: controllerID,
+        displayName: "Replacement",
+        inputSendInterval: .milliseconds(5)
+      )
+      let port = try await host.start(hostName: "Input Activity Host", advertise: false)
+
+      do {
+        await original.connect(host: "127.0.0.1", port: port)
+        original.setInput(axisX: -0.8)
+        try await waitUntil {
+          host.inputs.activitySnapshot().first?.minimumAxisX == -0.8
+        }
+        original.setInput(axisX: 0.8)
+        try await waitUntil {
+          host.inputs.activitySnapshot().first?.maximumAxisX == 0.8
+        }
+
+        await original.interruptForTesting()
+        try await waitUntil { host.players.first?.isConnected == false }
+        await replacement.connect(host: "127.0.0.1", port: port)
+        try await waitUntil {
+          host.inputs.activitySnapshot().first != nil
+        }
+
+        let activity = try #require(host.inputs.activitySnapshot().first)
+        #expect(activity.minimumAxisX == 0)
+        #expect(activity.maximumAxisX == 0)
+
+        await replacement.stop()
+        await original.stop()
+        await host.stop()
+      } catch {
+        await replacement.stop()
+        await original.stop()
+        await host.stop()
+        throw error
+      }
+    }
+
     @Test func ninthControllerIsRejected() async throws {
       let host = PartyHost()
       let port = try await host.start(hostName: "Capacity Host", advertise: false)
@@ -546,34 +594,43 @@ extension NetworkIntegrationTests {
         )
       })
       let port = try await host.start(hostName: "Queued Ping Host", advertise: false)
-      let connection = ClientControlConnection(
-        to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
-        using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
-      )
-      try await connection.send(.hello(Hello(
-        controllerID: ControllerID(),
-        displayName: "Probe Tester"
-      )))
-      guard case .welcome = try await connection.receive().content else {
-        Issue.record("Expected the raw controller to be welcomed")
+      do {
+        let connection = ClientControlConnection(
+          to: .hostPort(host: "127.0.0.1", port: try #require(.init(rawValue: port))),
+          using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+        )
+        try await connection.send(
+          .hello(
+            Hello(
+              controllerID: ControllerID(),
+              displayName: "Probe Tester"
+            )))
+        guard case .welcome = try await connection.receive().content else {
+          Issue.record("Expected the raw controller to be welcomed")
+          await host.stop()
+          return
+        }
+
+        try await connection.send(.ping(1))
+        try await waitUntilAsync { await gate.isBlocking }
+        try await connection.send(.ping(2))
+        await gate.resume()
+
+        let first = try await withTimeout(.seconds(1), operationName: "receiving first ping echo") {
+          try await connection.receive().content
+        }
+        let second = try await withTimeout(.seconds(1), operationName: "receiving second ping echo") {
+          try await connection.receive().content
+        }
+        #expect(first == .pingResponse(1))
+        #expect(second == .pingResponse(2))
+        await gate.resume()
         await host.stop()
-        return
+      } catch {
+        await gate.resume()
+        await host.stop()
+        throw error
       }
-
-      try await connection.send(.ping(1))
-      try await waitUntilAsync { await gate.isBlocking }
-      try await connection.send(.ping(2))
-      await gate.resume()
-
-      let first = try await withTimeout(.seconds(1), operationName: "receiving first ping echo") {
-        try await connection.receive().content
-      }
-      let second = try await withTimeout(.seconds(1), operationName: "receiving second ping echo") {
-        try await connection.receive().content
-      }
-      #expect(first == .pingResponse(1))
-      #expect(second == .pingResponse(2))
-      await host.stop()
     }
 
     @Test func excessControlHandlerIsClosedPromptly() async throws {

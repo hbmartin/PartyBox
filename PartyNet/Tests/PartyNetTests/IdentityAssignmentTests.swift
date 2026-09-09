@@ -15,6 +15,30 @@ struct IdentityAssignmentTests {
         }
     }
 
+    private actor WelcomeGate {
+        private let blockedWelcome: Int
+        private var welcomeCount = 0
+        private(set) var isBlocking = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        init(blockedWelcome: Int) {
+            self.blockedWelcome = blockedWelcome
+        }
+
+        func pauseIfNeeded() async {
+            welcomeCount += 1
+            guard welcomeCount == blockedWelcome else { return }
+            isBlocking = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func resume() {
+            continuation?.resume()
+            continuation = nil
+            isBlocking = false
+        }
+    }
+
     @Test func marksAreUniqueHumansDisplaceBotsAndBotKindIsTrusted() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
@@ -131,6 +155,68 @@ struct IdentityAssignmentTests {
         }
     }
 
+    @Test func pendingHumanDisplacementReservesTheBotsCurrentMark() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let gate = WelcomeGate(blockedWelcome: 3)
+            let host = PartyHost(transportFactory: { inputs in
+                HostTransport(
+                    inputs: inputs,
+                    controlSender: { connection, message in
+                        if case .welcome = message { await gate.pauseIfNeeded() }
+                        try await connection.send(message)
+                    }
+                )
+            })
+            let port = try await host.start(hostName: "Mark Reservation Test", advertise: false)
+            let botID = ControllerID()
+            let selectorID = ControllerID()
+            host.registerLocalBot(controllerID: botID)
+            let bot = PartyClient(controllerID: botID, displayName: "Bot", preferredMark: .circle)
+            let selector = PartyClient(
+                controllerID: selectorID,
+                displayName: "Selector",
+                preferredMark: .star
+            )
+            let entrant = PartyClient(displayName: "Entrant", preferredMark: .circle)
+            var entrantConnection: Task<Void, Never>?
+
+            do {
+                await bot.connect(host: "127.0.0.1", port: port)
+                await selector.connect(host: "127.0.0.1", port: port)
+                try await waitUntil { host.players.count == 2 }
+                entrantConnection = Task {
+                    await entrant.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntilAsync { await gate.isBlocking }
+
+                let selectorPlayer = try #require(
+                    host.players.first { host.controllerID(for: $0.id) == selectorID }
+                )
+                #expect(!host.assignMark(.circle, to: selectorPlayer.id))
+
+                await gate.resume()
+                await entrantConnection?.value
+                try await waitUntil { host.players.count == 3 }
+                #expect(Set(host.players.map(\.mark)).count == host.players.count)
+
+                await entrant.stop()
+                await selector.stop()
+                await bot.stop()
+                await host.stop()
+            } catch {
+                await gate.resume()
+                await entrantConnection?.value
+                await entrant.stop()
+                await selector.stop()
+                await bot.stop()
+                await host.stop()
+                throw error
+            }
+        }
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(3),
         condition: @escaping @MainActor () -> Bool
@@ -141,5 +227,17 @@ struct IdentityAssignmentTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         try #require(condition())
+    }
+
+    private func waitUntilAsync(
+        timeout: Duration = .seconds(3),
+        condition: @escaping () async -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !(await condition()), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(await condition())
     }
 }

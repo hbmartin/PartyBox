@@ -57,7 +57,7 @@ struct InputStoreTests {
         #expect(neutral?.axisX == 0)
         #expect(neutral?.axisY == 0)
         #expect(neutral?.buttons == [])
-        #expect(neutral?.orientation == OrientationQuaternion(x: 0, y: 1, z: 0, w: 0))
+        #expect(neutral?.orientation == .identity)
         #expect(neutral?.flags == .motionAvailable)
         #expect(neutral?.token == 7)
         #expect(neutral?.sequence == 12)

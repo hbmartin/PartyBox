@@ -23,24 +23,37 @@ final class ArcadeSoundPlayer {
     private let logger = Logger(subsystem: "PartyBox", category: "ArcadeSoundPlayer")
     private var notificationTokens: [NSObjectProtocol] = []
     private var toneBuffers: [Tone: AVAudioPCMBuffer] = [:]
+    private var isShutdown = false
 
     static func prepare() async -> ArcadeSoundPlayer? {
+        guard !Task.isCancelled else { return nil }
         let specifications = toneSpecifications
-        let samples = await Task.detached(priority: .utility) {
-            Dictionary(uniqueKeysWithValues: specifications.map { specification in
-                (
-                    specification.tone,
-                    makeToneSamples(
+        let worker = Task.detached(priority: .utility) { () -> [[Float]]? in
+            var prepared: [[Float]] = []
+            prepared.reserveCapacity(specifications.count)
+            for specification in specifications {
+                guard
+                    let samples = makeToneSamples(
                         sampleRate: 44_100,
                         frequency: specification.frequency,
                         duration: specification.duration,
                         overtone: specification.overtone
                     )
-                )
-            })
-        }.value
-        guard !Task.isCancelled else { return nil }
-        return ArcadeSoundPlayer(samples: samples)
+                else { return nil }
+                prepared.append(samples)
+            }
+            return prepared
+        }
+        let samples = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        guard let samples, !Task.isCancelled else { return nil }
+        let samplesByTone = Dictionary(
+            uniqueKeysWithValues: zip(specifications.map(\.tone), samples)
+        )
+        return ArcadeSoundPlayer(samples: samplesByTone)
     }
 
     private init(samples: [Tone: [Float]]) {
@@ -66,7 +79,26 @@ final class ArcadeSoundPlayer {
     }
 
     isolated deinit {
+        shutdown()
+    }
+
+    func shutdown() {
+        guard !isShutdown else { return }
+        isShutdown = true
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
+        notificationTokens.removeAll()
+        player.stop()
+        engine.stop()
+#if os(tvOS)
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        } catch {
+            logger.error("Audio session teardown failed: \(error.localizedDescription)")
+        }
+#endif
     }
 
     func play(_ event: HapticPattern) {
@@ -94,15 +126,19 @@ final class ArcadeSoundPlayer {
         frequency: Double,
         duration: Double,
         overtone: Double
-    ) -> [Float] {
+    ) -> [Float]? {
         let frameCount = Int(sampleRate * duration)
-        return (0..<frameCount).map { frame in
+        var samples: [Float] = []
+        samples.reserveCapacity(frameCount)
+        for frame in 0..<frameCount {
+            if frame.isMultiple(of: 256), Task.isCancelled { return nil }
             let time = Double(frame) / sampleRate
             let envelope = Float(pow(max(0, 1 - (time / duration)), 2))
             let base = sin(2 * Double.pi * frequency * time)
             let harmonic = sin(2 * Double.pi * frequency * overtone * time) * 0.24
-            return Float(base + harmonic) * envelope * 0.18
+            samples.append(Float(base + harmonic) * envelope * 0.18)
         }
+        return samples
     }
 
     private static func makeToneBuffer(
@@ -123,6 +159,7 @@ final class ArcadeSoundPlayer {
 
     @discardableResult
     private func ensureEngineRunning() -> Bool {
+        guard !isShutdown else { return false }
         if engine.isRunning { return true }
         do {
 #if os(tvOS)

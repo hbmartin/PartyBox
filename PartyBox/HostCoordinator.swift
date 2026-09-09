@@ -361,6 +361,7 @@ final class HostCoordinator {
         botReconciliationTask = nil
         soundPreparationTask?.cancel()
         soundPreparationTask = nil
+        sounds?.shutdown()
         sounds = nil
         let botsToStop = Array(bots.values)
         bots.removeAll()
@@ -1107,6 +1108,7 @@ final class HostCoordinator {
         botReconciliationTask = nil
         soundPreparationTask?.cancel()
         soundPreparationTask = nil
+        sounds?.shutdown()
         sounds = nil
         let botsToStop = Array(bots.values)
         bots.removeAll()
