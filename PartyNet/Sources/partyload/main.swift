@@ -220,7 +220,6 @@ private struct PartyLoad {
             let rttSampleCounts = zip(clients, startingRTTSampleCounts).map { client, startingCount in
                 client.rttSampleCount - startingCount
             }
-            for client in clients { await client.stop() }
             let sorted = rttSamples.sorted()
             let p50 = percentile(0.50, values: sorted)
             let p95 = percentile(0.95, values: sorted)
@@ -286,6 +285,7 @@ private struct PartyLoad {
             } else {
                 print("PASS: connectedness, client input transmission, ping sampling, and RTT targets were met.")
             }
+            for client in clients { await client.stop() }
         } catch {
             for client in clients { await client.stop() }
             throw error

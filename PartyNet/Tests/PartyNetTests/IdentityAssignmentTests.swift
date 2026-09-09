@@ -15,30 +15,6 @@ struct IdentityAssignmentTests {
         }
     }
 
-    private actor WelcomeGate {
-        private let blockedWelcome: Int
-        private var welcomeCount = 0
-        private(set) var isBlocking = false
-        private var continuation: CheckedContinuation<Void, Never>?
-
-        init(blockedWelcome: Int) {
-            self.blockedWelcome = blockedWelcome
-        }
-
-        func pauseIfNeeded() async {
-            welcomeCount += 1
-            guard welcomeCount == blockedWelcome else { return }
-            isBlocking = true
-            await withCheckedContinuation { continuation = $0 }
-        }
-
-        func resume() {
-            continuation?.resume()
-            continuation = nil
-            isBlocking = false
-        }
-    }
-
     @Test func marksAreUniqueHumansDisplaceBotsAndBotKindIsTrusted() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
@@ -159,7 +135,7 @@ struct IdentityAssignmentTests {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
-            let gate = WelcomeGate(blockedWelcome: 3)
+            let gate = NthCallGate(blockedCall: 3)
             let host = PartyHost(transportFactory: { inputs in
                 HostTransport(
                     inputs: inputs,
@@ -182,7 +158,7 @@ struct IdentityAssignmentTests {
             let entrant = PartyClient(displayName: "Entrant", preferredMark: .circle)
             var entrantConnection: Task<Void, Never>?
 
-            do {
+            try await withAsyncCleanup {
                 await bot.connect(host: "127.0.0.1", port: port)
                 await selector.connect(host: "127.0.0.1", port: port)
                 try await waitUntil { host.players.count == 2 }
@@ -196,23 +172,68 @@ struct IdentityAssignmentTests {
                 )
                 #expect(!host.assignMark(.circle, to: selectorPlayer.id))
 
-                await gate.resume()
+                await gate.open()
                 await entrantConnection?.value
                 try await waitUntil { host.players.count == 3 }
                 #expect(Set(host.players.map(\.mark)).count == host.players.count)
-
-                await entrant.stop()
-                await selector.stop()
-                await bot.stop()
-                await host.stop()
-            } catch {
-                await gate.resume()
+            } cleanup: {
+                await gate.open()
                 await entrantConnection?.value
                 await entrant.stop()
                 await selector.stop()
                 await bot.stop()
                 await host.stop()
-                throw error
+            }
+        }
+    }
+
+    @Test func pendingOrdinaryAssignmentBlocksAnAdmittedPlayersMarkChange() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let gate = NthCallGate(blockedCall: 2)
+            let host = PartyHost(transportFactory: { inputs in
+                HostTransport(
+                    inputs: inputs,
+                    controlSender: { connection, message in
+                        if case .welcome = message { await gate.pauseIfNeeded() }
+                        try await connection.send(message)
+                    }
+                )
+            })
+            let port = try await host.start(hostName: "Pending Mark Test", advertise: false)
+            let selectorID = ControllerID()
+            let selector = PartyClient(
+                controllerID: selectorID,
+                displayName: "Selector",
+                preferredMark: .star
+            )
+            let entrant = PartyClient(displayName: "Entrant", preferredMark: .circle)
+            var entrantConnection: Task<Void, Never>?
+
+            try await withAsyncCleanup {
+                await selector.connect(host: "127.0.0.1", port: port)
+                try await waitUntil { host.players.count == 1 }
+                entrantConnection = Task {
+                    await entrant.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntilAsync { await gate.isBlocking }
+
+                let selectorPlayer = try #require(
+                    host.players.first { host.controllerID(for: $0.id) == selectorID }
+                )
+                #expect(!host.assignMark(.circle, to: selectorPlayer.id))
+
+                await gate.open()
+                await entrantConnection?.value
+                try await waitUntil { host.players.count == 2 }
+                #expect(Set(host.players.map(\.mark)).count == host.players.count)
+            } cleanup: {
+                await gate.open()
+                await entrantConnection?.value
+                await entrant.stop()
+                await selector.stop()
+                await host.stop()
             }
         }
     }
@@ -229,15 +250,4 @@ struct IdentityAssignmentTests {
         try #require(condition())
     }
 
-    private func waitUntilAsync(
-        timeout: Duration = .seconds(3),
-        condition: @escaping () async -> Bool
-    ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while !(await condition()), clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        try #require(await condition())
-    }
 }

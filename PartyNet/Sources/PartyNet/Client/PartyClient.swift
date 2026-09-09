@@ -189,13 +189,18 @@ public final class PartyClient {
         _ orientation: OrientationQuaternion,
         available: Bool = true
     ) {
+        let nextOrientation: OrientationQuaternion
+        var nextFlags = inputFlags
         if available, let normalized = orientation.normalized {
-            inputOrientation = normalized
-            inputFlags.insert(.motionAvailable)
+            nextOrientation = normalized
+            nextFlags.insert(.motionAvailable)
         } else {
-            inputOrientation = .identity
-            inputFlags.remove(.motionAvailable)
+            nextOrientation = .identity
+            nextFlags.remove(.motionAvailable)
         }
+        guard inputOrientation != nextOrientation || inputFlags != nextFlags else { return }
+        inputOrientation = nextOrientation
+        inputFlags = nextFlags
         enqueueCurrentInput()
     }
 

@@ -21,9 +21,13 @@ final class ArcadeSoundPlayer {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let logger = Logger(subsystem: "PartyBox", category: "ArcadeSoundPlayer")
+    private let audioSessionUserID = UUID()
     private var notificationTokens: [NSObjectProtocol] = []
     private var toneBuffers: [Tone: AVAudioPCMBuffer] = [:]
     private var isShutdown = false
+#if os(tvOS)
+    private static var audioSessionUsers: Set<UUID> = []
+#endif
 
     static func prepare() async -> ArcadeSoundPlayer? {
         guard !Task.isCancelled else { return nil }
@@ -67,6 +71,7 @@ final class ArcadeSoundPlayer {
             )
         }
 #if os(tvOS)
+        Self.audioSessionUsers.insert(audioSessionUserID)
         do {
             try AVAudioSession.sharedInstance().setCategory(.ambient)
             try AVAudioSession.sharedInstance().setActive(true)
@@ -90,6 +95,8 @@ final class ArcadeSoundPlayer {
         player.stop()
         engine.stop()
 #if os(tvOS)
+        Self.audioSessionUsers.remove(audioSessionUserID)
+        guard Self.audioSessionUsers.isEmpty else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(
                 false,

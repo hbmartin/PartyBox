@@ -207,4 +207,12 @@ struct PartyBox_ControllerTests {
         #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 300, extent: extent) == 1)
         #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 20, extent: 40) == 0)
     }
+
+    @Test func motionRetryDelayBacksOffAndCaps() {
+        #expect(ControllerCoordinator.motionRetryDelay(failureCount: 1) == .seconds(1))
+        #expect(ControllerCoordinator.motionRetryDelay(failureCount: 2) == .seconds(2))
+        #expect(ControllerCoordinator.motionRetryDelay(failureCount: 3) == .seconds(4))
+        #expect(ControllerCoordinator.motionRetryDelay(failureCount: 5) == .seconds(16))
+        #expect(ControllerCoordinator.motionRetryDelay(failureCount: 20) == .seconds(16))
+    }
 }
