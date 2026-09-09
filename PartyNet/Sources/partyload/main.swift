@@ -1,6 +1,20 @@
 import Darwin
 import Foundation
+import Network
 import PartyNet
+import PartyNetTestSupport
+
+private typealias FaultClientProtocol = Coder<
+    FaultControlRequest,
+    FaultControlResponse,
+    NetworkJSONCoder
+>
+
+private func faultClientStack() -> FaultClientProtocol {
+    Coder(sending: FaultControlRequest.self, receiving: FaultControlResponse.self, using: .json) {
+        TCP().noDelay(true).connectionTimeout(5)
+    }
+}
 
 private enum ExpectedInputTransport: String {
     case any
@@ -13,6 +27,7 @@ private struct LoadConfiguration {
     var frequency = 60
     var seconds = 30
     var address: String?
+    var controlAddress: String?
     var hostName: String?
     var expectedInputTransport = ExpectedInputTransport.any
 
@@ -28,6 +43,7 @@ private struct LoadConfiguration {
             case "--hz": frequency = Int(value) ?? 0
             case "--seconds": seconds = Int(value) ?? 0
             case "--address": address = value
+            case "--control-address": controlAddress = value
             case "--host": hostName = value
             case "--expect-transport":
                 guard let expected = ExpectedInputTransport(rawValue: value) else {
@@ -81,8 +97,8 @@ private enum LoadError: Error, LocalizedError {
     }
 
     static let usage = """
-    partyload --address HOST:PORT [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
-    partyload --host BONJOUR-NAME [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
+        partyload --address HOST:PORT [--control-address HOST:PORT] [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
+        partyload --host BONJOUR-NAME [--count \(PartyNetConstants.maximumControllers)] [--hz 60] [--seconds 30] [--expect-transport any|udp|fallback]
     """
 }
 
@@ -178,6 +194,24 @@ private struct PartyLoad {
             }
         }
 
+        let playerIDs = try clients.enumerated().map { index, client in
+            guard let playerID = client.player?.id else {
+                throw LoadError.unexpectedDisconnect(index + 1, "the host identity disappeared")
+            }
+            return playerID
+        }
+        let hostInputActivity: [InputActivity]?
+        do {
+            if let controlAddress = configuration.controlAddress {
+                hostInputActivity = try await fetchHostInputActivity(from: controlAddress)
+            } else {
+                hostInputActivity = nil
+            }
+        } catch {
+            for client in clients { await client.stop() }
+            throw error
+        }
+
         let inputSendCounts = zip(clients, startingInputCounts).map { client, startingCount in
             client.inputFramesSent - startingCount
         }
@@ -205,6 +239,18 @@ private struct PartyLoad {
         print("Observed transport sends per controller: \(minimumSends)–\(maximumSends)")
         print("UDP sends per controller: \(minimumUDPSends)–\(maximumUDPSends); TCP sends: \(minimumTCPSends)–\(maximumTCPSends)")
         print(String(format: "Ping RTT: p50 %.2f ms  p95 %.2f ms  max %.2f ms  (%d samples)", p50, p95, maximum, sorted.count))
+        if let hostInputActivity {
+            let observations = try requireHostAppliedChangingInputs(hostInputActivity, playerIDs: playerIDs)
+            let counts = observations.map(\.acceptedFrameCount)
+            let spans = observations.map { $0.maximumAxisX - $0.minimumAxisX }
+            print(String(
+                format: "Host applied %llu–%llu frames per controller with %.3f–%.3f axis travel",
+                counts.min() ?? 0,
+                counts.max() ?? 0,
+                spans.min() ?? 0,
+                spans.max() ?? 0
+            ))
+        }
         if let index = inputSendCounts.firstIndex(of: 0) {
             throw LoadError.acceptance("controller \(index + 1) sent no input frames")
         }
@@ -229,7 +275,54 @@ private struct PartyLoad {
         guard p95 < 50 else {
             throw LoadError.acceptance("p95 RTT \(String(format: "%.2f", p95)) ms is above the 50 ms target")
         }
-        print("PASS: connectedness, input transport, ping sampling, and RTT targets were met.")
+        if hostInputActivity != nil {
+            print("PASS: connectedness, input transport, host input application, ping sampling, and RTT targets were met.")
+        } else {
+            print("PASS: connectedness, client input transmission, ping sampling, and RTT targets were met.")
+        }
+    }
+
+    private static func fetchHostInputActivity(from address: String) async throws -> [InputActivity] {
+        guard let endpoint = HostAddress(parsing: address), endpoint.port != 0,
+              let port = NWEndpoint.Port(rawValue: endpoint.port) else {
+            throw LoadError.acceptance("fault-control address must be formatted as HOST:PORT")
+        }
+        let connection = NetworkConnection<FaultClientProtocol>(
+            to: .hostPort(host: NWEndpoint.Host(endpoint.host), port: port),
+            using: .parameters { faultClientStack() }.peerToPeerIncluded(false)
+        )
+        let response = try await withTimeout(
+            .seconds(5),
+            operationName: "reading host input activity"
+        ) {
+            try await connection.send(.metrics)
+            return try await connection.receive().content
+        }
+        guard response.succeeded else { throw LoadError.acceptance(response.message) }
+        return response.hostInputActivity
+    }
+
+    private static func requireHostAppliedChangingInputs(
+        _ activity: [InputActivity],
+        playerIDs: [PlayerID]
+    ) throws -> [InputActivity] {
+        let byPlayer = Dictionary(uniqueKeysWithValues: activity.map { ($0.playerID, $0) })
+        var observations: [InputActivity] = []
+        for (index, playerID) in playerIDs.enumerated() {
+            guard let observation = byPlayer[playerID] else {
+                throw LoadError.acceptance("host observed no input for controller \(index + 1)")
+            }
+            guard observation.acceptedFrameCount >= 2 else {
+                throw LoadError.acceptance(
+                    "host applied only \(observation.acceptedFrameCount) input frame(s) for controller \(index + 1)"
+                )
+            }
+            guard observation.maximumAxisX - observation.minimumAxisX >= 0.1 else {
+                throw LoadError.acceptance("host input did not change for controller \(index + 1)")
+            }
+            observations.append(observation)
+        }
+        return observations
     }
 
     @MainActor

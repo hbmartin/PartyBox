@@ -49,6 +49,19 @@ public struct OrientationQuaternion: Codable, Equatable, Sendable {
             w: w * inverseMagnitude
         )
     }
+
+    /// Maps the device's left/right lean to a normalized horizontal control axis.
+    /// The gravity projection makes the result independent of yaw, while the
+    /// sensitivity reaches full travel at a comfortable handheld tilt.
+    public func horizontalTiltAxis(sensitivity: Float = 1.5) -> Float {
+        guard sensitivity.isFinite, sensitivity > 0, let normalized else { return 0 }
+        let gravityX = 2 * (
+            (normalized.x * normalized.z) - (normalized.w * normalized.y)
+        )
+        let scaled = -gravityX * sensitivity
+        guard scaled.isFinite, abs(scaled) >= 0.04 else { return 0 }
+        return min(max(scaled, -1), 1)
+    }
 }
 
 public struct InputFrame: Codable, Equatable, Sendable {

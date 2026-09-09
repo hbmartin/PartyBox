@@ -119,6 +119,7 @@ final class PongGameSession: PartyGameSession {
         return ControllerScreen(
             accessibilityID: "controller.layout.paddle.\(edge.rawValue)",
             accentColorHex: participant.player.colorHex,
+            requestedInputs: .orientation,
             components: [
                 .text(.init(
                     id: "pong.player",
@@ -127,7 +128,11 @@ final class PongGameSession: PartyGameSession {
                     tint: .accent
                 )),
                 .text(.init(id: "pong.direction", text: direction, style: .caption, tint: .secondary)),
-                .axisSurface(.init(id: "pong.paddle", binding: .horizontal, instruction: "DRAG ANYWHERE ON THE TRACK")),
+                .axisSurface(.init(
+                    id: "pong.paddle",
+                    binding: .horizontal,
+                    instruction: "TILT TO MOVE  •  DRAG WHEN MOTION IS UNAVAILABLE"
+                )),
             ]
         )
     }

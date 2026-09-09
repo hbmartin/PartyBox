@@ -4,11 +4,18 @@ import PartyBoxCore
 
 @MainActor
 final class ArcadeSoundPlayer {
-    private enum Tone: Hashable {
+    private enum Tone: Hashable, Sendable {
         case paddleHit
         case lostLife
         case eliminated
         case gameOver
+    }
+
+    private struct ToneSpecification: Sendable {
+        let tone: Tone
+        let frequency: Double
+        let duration: Double
+        let overtone: Double
     }
 
     private let engine = AVAudioEngine()
@@ -17,22 +24,33 @@ final class ArcadeSoundPlayer {
     private var notificationTokens: [NSObjectProtocol] = []
     private var toneBuffers: [Tone: AVAudioPCMBuffer] = [:]
 
-    init() {
+    static func prepare() async -> ArcadeSoundPlayer? {
+        let specifications = toneSpecifications
+        let samples = await Task.detached(priority: .utility) {
+            Dictionary(uniqueKeysWithValues: specifications.map { specification in
+                (
+                    specification.tone,
+                    makeToneSamples(
+                        sampleRate: 44_100,
+                        frequency: specification.frequency,
+                        duration: specification.duration,
+                        overtone: specification.overtone
+                    )
+                )
+            })
+        }.value
+        guard !Task.isCancelled else { return nil }
+        return ArcadeSoundPlayer(samples: samples)
+    }
+
+    private init(samples: [Tone: [Float]]) {
         engine.attach(player)
         let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
         engine.connect(player, to: engine.mainMixerNode, format: format)
-        let specifications: [(Tone, Double, Double, Double)] = [
-            (.paddleHit, 620, 0.055, 1.8),
-            (.lostLife, 180, 0.18, 0.5),
-            (.eliminated, 105, 0.42, 0.25),
-            (.gameOver, 880, 0.5, 1.5),
-        ]
-        for (tone, frequency, duration, overtone) in specifications {
+        for (tone, values) in samples {
             toneBuffers[tone] = Self.makeToneBuffer(
                 format: format,
-                frequency: frequency,
-                duration: duration,
-                overtone: overtone
+                samples: values
             )
         }
 #if os(tvOS)
@@ -64,24 +82,41 @@ final class ArcadeSoundPlayer {
         if !player.isPlaying { player.play() }
     }
 
-    private static func makeToneBuffer(
-        format: AVAudioFormat,
+    nonisolated private static let toneSpecifications: [ToneSpecification] = [
+        .init(tone: .paddleHit, frequency: 620, duration: 0.055, overtone: 1.8),
+        .init(tone: .lostLife, frequency: 180, duration: 0.18, overtone: 0.5),
+        .init(tone: .eliminated, frequency: 105, duration: 0.42, overtone: 0.25),
+        .init(tone: .gameOver, frequency: 880, duration: 0.5, overtone: 1.5),
+    ]
+
+    nonisolated private static func makeToneSamples(
+        sampleRate: Double,
         frequency: Double,
         duration: Double,
         overtone: Double
-    ) -> AVAudioPCMBuffer? {
-        let sampleRate = format.sampleRate
-        let frameCount = AVAudioFrameCount(sampleRate * duration)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
-              let samples = buffer.floatChannelData?[0]
-        else { return nil }
-        buffer.frameLength = frameCount
-        for frame in 0..<Int(frameCount) {
+    ) -> [Float] {
+        let frameCount = Int(sampleRate * duration)
+        return (0..<frameCount).map { frame in
             let time = Double(frame) / sampleRate
             let envelope = Float(pow(max(0, 1 - (time / duration)), 2))
             let base = sin(2 * Double.pi * frequency * time)
             let harmonic = sin(2 * Double.pi * frequency * overtone * time) * 0.24
-            samples[frame] = Float(base + harmonic) * envelope * 0.18
+            return Float(base + harmonic) * envelope * 0.18
+        }
+    }
+
+    private static func makeToneBuffer(
+        format: AVAudioFormat,
+        samples: [Float]
+    ) -> AVAudioPCMBuffer? {
+        let frameCount = AVAudioFrameCount(samples.count)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+              let destination = buffer.floatChannelData?[0]
+        else { return nil }
+        buffer.frameLength = frameCount
+        samples.withUnsafeBufferPointer { source in
+            guard let baseAddress = source.baseAddress else { return }
+            destination.update(from: baseAddress, count: samples.count)
         }
         return buffer
     }

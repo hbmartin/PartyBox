@@ -106,7 +106,7 @@ actor ClientTransport {
     var usesTCPFallback = false
     var fallbackProbeSequenceFloor: UInt32?
     var pingWatchdog = PingWatchdog()
-    var probeNonces: Set<UInt64> = []
+    var probeNonce: UInt64?
     var sequence: UInt32 = 0
     var inputTask: Task<Void, Never>?
     var pingTask: Task<Void, Never>?
@@ -314,7 +314,7 @@ actor ClientTransport {
   func send(_ message: ClientMessage, connectionID: UUID) async throws {
     guard let session = sessions[connectionID] else { throw PartyNetTransportError.stopped }
     if case .ping(let nonce) = message, var latest = sessions[connectionID] {
-      latest.probeNonces.insert(nonce)
+      latest.probeNonce = nonce
       sessions[connectionID] = latest
     }
     do {
@@ -325,7 +325,7 @@ actor ClientTransport {
       )
     } catch {
       if case .ping(let nonce) = message, var latest = sessions[connectionID] {
-        latest.probeNonces.remove(nonce)
+        if latest.probeNonce == nonce { latest.probeNonce = nil }
         sessions[connectionID] = latest
       }
       handleControlWriteFailure(error, connectionID: connectionID)
@@ -351,6 +351,12 @@ actor ClientTransport {
     )
     sessions[connectionID] = session
   }
+
+#if DEBUG
+  func explicitProbeNonceForTesting(connectionID: UUID) -> UInt64? {
+    sessions[connectionID]?.probeNonce
+  }
+#endif
 
   func disconnect(connectionID: UUID, sendLeave: Bool = true) async {
     guard let departure = detachSessionForLeave(connectionID) else { return }
@@ -442,7 +448,8 @@ actor ClientTransport {
     if case .pingResponse(let nonce) = message {
       guard var session = sessions[connectionID] else { return }
       let acknowledgedPeriodicPing = session.pingWatchdog.acknowledge(nonce: nonce)
-      let acknowledgedProbe = session.probeNonces.remove(nonce) != nil
+      let acknowledgedProbe = session.probeNonce == nonce
+      if acknowledgedProbe { session.probeNonce = nil }
       guard acknowledgedPeriodicPing || acknowledgedProbe else { return }
       sessions[connectionID] = session
     }

@@ -41,7 +41,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "partyload",
-            dependencies: ["PartyNet"]
+            dependencies: ["PartyNet", "PartyNetTestSupport"]
         ),
         .target(
             name: "PartyNetTestSupport",

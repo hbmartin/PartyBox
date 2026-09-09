@@ -26,6 +26,11 @@ public enum PartyBoxWireError: Error, Sendable {
     case payloadTooLarge
 }
 
+public enum PartyBoxRuntimeLimits {
+    public static let releasePartySize = 4
+    public static let maximumLobbyBots = 3
+}
+
 public enum MenuAction: String, Codable, CaseIterable, Sendable {
     case up, down, left, right, select, back
 }
@@ -42,7 +47,11 @@ public struct GameLayoutEnvelope: Codable, Equatable, Sendable {
     public let schemaVersion: UInt16
     public let payload: Data
 
-    public init(gameID: String, schemaVersion: UInt16 = 1, payload: Data) {
+    public init(
+        gameID: String,
+        schemaVersion: UInt16 = ControllerScreen.schemaVersion,
+        payload: Data
+    ) {
         self.gameID = gameID
         self.schemaVersion = schemaVersion
         self.payload = payload
@@ -61,7 +70,11 @@ public struct GameActionEnvelope: Codable, Equatable, Sendable {
     public let schemaVersion: UInt16
     public let action: ControllerAction
 
-    public init(gameID: String, schemaVersion: UInt16 = 1, action: ControllerAction) {
+    public init(
+        gameID: String,
+        schemaVersion: UInt16 = ControllerScreen.schemaVersion,
+        action: ControllerAction
+    ) {
         self.gameID = gameID
         self.schemaVersion = schemaVersion
         self.action = action
@@ -146,7 +159,7 @@ public struct LobbyLayout: Codable, Equatable, Sendable {
         isCaptain: false,
         botFillTarget: 0,
         activeBotCount: 0,
-        maximumBotCount: 3,
+        maximumBotCount: PartyBoxRuntimeLimits.maximumLobbyBots,
         botDifficulty: "NORMAL"
     )
 }

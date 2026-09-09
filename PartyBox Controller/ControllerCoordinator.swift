@@ -14,7 +14,16 @@ final class ControllerCoordinator {
     private(set) var savedDisplayName: String
     private(set) var discoveryHelpVisible = false
     private(set) var roster: [PlayerInfo] = []
-    private(set) var layout: PartyBoxCore.ControllerLayout = .lobby(.waiting)
+    private(set) var layout: PartyBoxCore.ControllerLayout = .lobby(.waiting) {
+        didSet {
+            if case .game(let envelope) = layout {
+                controllerScreen = envelope.validatedControllerScreen
+            } else {
+                controllerScreen = nil
+            }
+        }
+    }
+    private(set) var controllerScreen: ControllerScreen?
     private(set) var personalHistory: [PersonalMatchRecord] = []
     private(set) var historyPersistenceError: String?
 
@@ -23,6 +32,11 @@ final class ControllerCoordinator {
     var currentPlayer: PlayerInfo? {
         guard let welcomedPlayer = client.player else { return nil }
         return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
+    }
+    var displayedInputAxisX: Float {
+        guard requestedInputs.contains(.orientation),
+              client.inputFlags.contains(.motionAvailable) else { return client.inputAxisX }
+        return client.inputOrientation.horizontalTiltAxis()
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -276,9 +290,7 @@ final class ControllerCoordinator {
     }
 
     private var requestedInputs: RequestedInputs {
-        guard case .game(let envelope) = layout,
-              let screen = envelope.validatedControllerScreen else { return [] }
-        return screen.requestedInputs
+        controllerScreen?.requestedInputs ?? []
     }
 
     private func appendPersonalHistory(_ record: PersonalMatchRecord) async {
@@ -404,7 +416,7 @@ final class ControllerCoordinator {
             isCaptain: true,
             botFillTarget: 2,
             activeBotCount: 1,
-            maximumBotCount: 3,
+            maximumBotCount: PartyBoxRuntimeLimits.maximumLobbyBots,
             botDifficulty: "HARD"
         )
         let memberLobby = LobbyLayout(
@@ -412,7 +424,7 @@ final class ControllerCoordinator {
             isCaptain: false,
             botFillTarget: 2,
             activeBotCount: 1,
-            maximumBotCount: 3,
+            maximumBotCount: PartyBoxRuntimeLimits.maximumLobbyBots,
             botDifficulty: "HARD"
         )
         let host = try? DiscoveredHost(host: "127.0.0.1", port: 49_999, name: "Living Room PartyBox", protocolVersion: PartyNetConstants.protocolVersion, instanceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))

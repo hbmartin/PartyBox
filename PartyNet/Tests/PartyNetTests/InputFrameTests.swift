@@ -80,4 +80,27 @@ struct InputFrameTests {
         #expect(invalid.validated == nil)
         #expect(InputFrame(data: invalid.encode()) == nil)
     }
+
+    @Test func horizontalTiltAxisIsCenteredSymmetricAndBounded() {
+        #expect(OrientationQuaternion.identity.horizontalTiltAxis() == 0)
+
+        let halfAngle = Float.pi / 12
+        let right = OrientationQuaternion(
+            x: 0,
+            y: sin(halfAngle),
+            z: 0,
+            w: cos(halfAngle)
+        ).horizontalTiltAxis()
+        let left = OrientationQuaternion(
+            x: 0,
+            y: -sin(halfAngle),
+            z: 0,
+            w: cos(halfAngle)
+        ).horizontalTiltAxis()
+
+        #expect(abs(right - 0.75) < 0.001)
+        #expect(abs(left + 0.75) < 0.001)
+        #expect(OrientationQuaternion(x: 0, y: 1, z: 0, w: 1).horizontalTiltAxis() == 1)
+        #expect(OrientationQuaternion.identity.horizontalTiltAxis(sensitivity: .nan) == 0)
+    }
 }

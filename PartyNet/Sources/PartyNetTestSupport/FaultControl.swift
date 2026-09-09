@@ -1,4 +1,5 @@
 import Foundation
+import PartyNet
 
 public enum FaultControlRequest: Codable, Equatable, Sendable {
     case reset
@@ -14,18 +15,21 @@ public struct FaultControlResponse: Codable, Equatable, Sendable {
     public let metadata: FaultRigMetadata?
     public let profile: FaultProfile?
     public let metrics: FaultMetrics
+    public let hostInputActivity: [InputActivity]
 
     public init(
         succeeded: Bool,
         message: String,
         metadata: FaultRigMetadata? = nil,
         profile: FaultProfile? = nil,
-        metrics: FaultMetrics = FaultMetrics()
+        metrics: FaultMetrics = FaultMetrics(),
+        hostInputActivity: [InputActivity] = []
     ) {
         self.succeeded = succeeded
         self.message = message
         self.metadata = metadata
         self.profile = profile
         self.metrics = metrics
+        self.hostInputActivity = hostInputActivity
     }
 }

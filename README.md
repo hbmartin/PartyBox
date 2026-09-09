@@ -5,7 +5,9 @@ big screen; up to **eight iPhones** join over Wi-Fi and act as the controllers. 
 no internet: just Bonjour on your LAN.
 
 The first (and currently only) game is **Four-Way Pong**: four players on the four edges of the arena,
-three lives each, winner stays, everyone else waits in a spectator queue.
+three lives each, winner stays, everyone else waits in a spectator queue. On a physical iPhone, tilt
+left and right to position the paddle; the on-screen drag track remains the fallback when motion input
+is unavailable.
 
 > **▶ New here? Read [QUICKSTART.md](QUICKSTART.md).** It covers setup and signing, both host paths
 > (Apple TV and Mac), getting the controller onto your friends' phones, a step-by-step playtest
@@ -59,8 +61,9 @@ Codex invalidates that trust when the hook definition changes. See the supported
 [Codex Hooks mechanism](https://learn.chatgpt.com/docs/hooks.md) for the review flow and event contract.
 
 The soak, ASan, and TSan profiles remain manual. Run `scripts/verify.sh soak` when you want the load and
-fault-injection soak, or `scripts/verify.sh all` for the complete local acceptance suite; there is no
-scheduled soak job.
+fault-injection soak, or `scripts/verify.sh all` for the complete local acceptance suite. Load runs
+require both client transmission metrics and host-observed changing input for every controller; there
+is no scheduled soak job.
 
 ## Docs
 

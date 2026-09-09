@@ -185,14 +185,26 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
             #expect(coordinator.client.inputButtons.isEmpty)
+            #expect(coordinator.controllerScreen == gameScreen)
 
             await coordinator.handleForTesting(.application(rosterPresentation))
             #expect(coordinator.currentPlayer?.displayName == "Renamed")
 
             await coordinator.handleForTesting(.sessionReset)
             #expect(coordinator.layout == .lobby(.waiting))
+            #expect(coordinator.controllerScreen == nil)
             #expect(coordinator.roster.isEmpty)
             await coordinator.stop()
         }
+    }
+
+    @Test func axisSurfaceUsesTheRenderedKnobTrackForDragMapping() {
+        let extent: CGFloat = 300
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 0, extent: extent) == -1)
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 35, extent: extent) == -1)
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 150, extent: extent) == 0)
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 265, extent: extent) == 1)
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 300, extent: extent) == 1)
+        #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 20, extent: 40) == 0)
     }
 }

@@ -174,6 +174,14 @@ public enum DisplayName {
         #"^\p{Indic_Syllabic_Category=Vowel_Dependent}$"#
     )
 
+    private struct DefaultIgnorableContext {
+        let previousNonTransparent: [Unicode.Scalar?]
+        let nextNonTransparent: [Unicode.Scalar?]
+        let previousViramaCandidate: [Int?]
+        let previousNonspacingBase: [Int?]
+        let nextLetterCandidate: [Int?]
+    }
+
     static func boundedForAnalysis(_ value: String) -> String {
         String(String.UnicodeScalarView(
             value.unicodeScalars.prefix(maximumAnalyzedScalars)
@@ -216,19 +224,30 @@ public enum DisplayName {
         in scalars: [Unicode.Scalar]
     ) -> Set<Int> {
         var permitted: Set<Int> = []
+        let context = defaultIgnorableContext(for: scalars)
         let registeredEmojiIgnorables = UnicodeSequenceData
             .registeredEmojiZWJDefaultIgnorableIndices(in: scalars)
         var index = scalars.startIndex
         while index < scalars.endIndex {
             switch scalars[index].value {
             case 0x200C:
-                if hasCursiveZWNJContext(at: index, in: scalars)
-                    || hasViramaContext(before: index, in: scalars, requiresFollowingLetter: true) {
+                if hasCursiveZWNJContext(at: index, context: context)
+                    || hasViramaContext(
+                        before: index,
+                        in: scalars,
+                        context: context,
+                        requiresFollowingLetter: true
+                    ) {
                     permitted.insert(index)
                 }
             case 0x200D:
                 if registeredEmojiIgnorables.contains(index)
-                    || hasViramaContext(before: index, in: scalars, requiresFollowingLetter: false) {
+                    || hasViramaContext(
+                        before: index,
+                        in: scalars,
+                        context: context,
+                        requiresFollowingLetter: false
+                    ) {
                     permitted.insert(index)
                 }
             case 0xFE00...0xFE0F:
@@ -252,71 +271,87 @@ public enum DisplayName {
         return permitted
     }
 
+    private static func defaultIgnorableContext(
+        for scalars: [Unicode.Scalar]
+    ) -> DefaultIgnorableContext {
+        var previousNonTransparent = [Unicode.Scalar?](repeating: nil, count: scalars.count)
+        var nextNonTransparent = [Unicode.Scalar?](repeating: nil, count: scalars.count)
+        var previousViramaCandidate = [Int?](repeating: nil, count: scalars.count)
+        var previousNonspacingBase = [Int?](repeating: nil, count: scalars.count)
+        var nextLetterCandidate = [Int?](repeating: nil, count: scalars.count)
+
+        var nearestNonTransparent: Unicode.Scalar?
+        var nearestViramaCandidate: Int?
+        var nearestNonspacingBase: Int?
+        for index in scalars.indices {
+            let scalar = scalars[index]
+            previousNonTransparent[index] = nearestNonTransparent
+            previousViramaCandidate[index] = nearestViramaCandidate
+            previousNonspacingBase[index] = nearestNonspacingBase
+            if !matches(scalar, using: transparentJoiningMatcher) {
+                nearestNonTransparent = scalar
+            }
+            if !(isNonspacingMark(scalar)
+                && scalar.properties.canonicalCombiningClass != .virama) {
+                nearestViramaCandidate = index
+            }
+            if !isNonspacingMark(scalar) {
+                nearestNonspacingBase = index
+            }
+        }
+
+        nearestNonTransparent = nil
+        var nearestLetterCandidate: Int?
+        for index in scalars.indices.reversed() {
+            let scalar = scalars[index]
+            nextNonTransparent[index] = nearestNonTransparent
+            nextLetterCandidate[index] = nearestLetterCandidate
+            if !matches(scalar, using: transparentJoiningMatcher) {
+                nearestNonTransparent = scalar
+            }
+            if !(isNonspacingMark(scalar)
+                && scalar.properties.canonicalCombiningClass != .notReordered) {
+                nearestLetterCandidate = index
+            }
+        }
+
+        return DefaultIgnorableContext(
+            previousNonTransparent: previousNonTransparent,
+            nextNonTransparent: nextNonTransparent,
+            previousViramaCandidate: previousViramaCandidate,
+            previousNonspacingBase: previousNonspacingBase,
+            nextLetterCandidate: nextLetterCandidate
+        )
+    }
+
     private static func hasCursiveZWNJContext(
         at index: Int,
-        in scalars: [Unicode.Scalar]
+        context: DefaultIgnorableContext
     ) -> Bool {
-        guard let previous = nonTransparentScalar(before: index, in: scalars),
-              let next = nonTransparentScalar(after: index, in: scalars) else { return false }
+        guard let previous = context.previousNonTransparent[index],
+              let next = context.nextNonTransparent[index] else { return false }
         return matches(previous, using: leftJoiningMatcher)
             && matches(next, using: rightJoiningMatcher)
-    }
-
-    private static func nonTransparentScalar(
-        before index: Int,
-        in scalars: [Unicode.Scalar]
-    ) -> Unicode.Scalar? {
-        var cursor = index - 1
-        while cursor >= scalars.startIndex {
-            let scalar = scalars[cursor]
-            if !matches(scalar, using: transparentJoiningMatcher) { return scalar }
-            cursor -= 1
-        }
-        return nil
-    }
-
-    private static func nonTransparentScalar(
-        after index: Int,
-        in scalars: [Unicode.Scalar]
-    ) -> Unicode.Scalar? {
-        var cursor = index + 1
-        while cursor < scalars.endIndex {
-            let scalar = scalars[cursor]
-            if !matches(scalar, using: transparentJoiningMatcher) { return scalar }
-            cursor += 1
-        }
-        return nil
     }
 
     private static func hasViramaContext(
         before index: Int,
         in scalars: [Unicode.Scalar],
+        context: DefaultIgnorableContext,
         requiresFollowingLetter: Bool
     ) -> Bool {
-        var cursor = index - 1
-        while cursor >= scalars.startIndex,
-              isNonspacingMark(scalars[cursor]),
-              scalars[cursor].properties.canonicalCombiningClass != .virama {
-            cursor -= 1
-        }
-        guard cursor >= scalars.startIndex,
-              scalars[cursor].properties.canonicalCombiningClass == .virama else { return false }
-        cursor -= 1
-        while cursor >= scalars.startIndex, isNonspacingMark(scalars[cursor]) { cursor -= 1 }
-        guard cursor >= scalars.startIndex, isLetter(scalars[cursor]) else { return false }
+        guard let viramaIndex = context.previousViramaCandidate[index],
+              scalars[viramaIndex].properties.canonicalCombiningClass == .virama,
+              let baseIndex = context.previousNonspacingBase[viramaIndex],
+              isLetter(scalars[baseIndex]) else { return false }
 
         let following = index + 1
         if !requiresFollowingLetter {
             return following >= scalars.endIndex
                 || !matches(scalars[following], using: dependentVowelMatcher)
         }
-        var next = following
-        while next < scalars.endIndex,
-              isNonspacingMark(scalars[next]),
-              scalars[next].properties.canonicalCombiningClass != .notReordered {
-            next += 1
-        }
-        return next < scalars.endIndex && isLetter(scalars[next])
+        guard let next = context.nextLetterCandidate[index] else { return false }
+        return isLetter(scalars[next])
     }
 
     private static func emojiTagSequenceEnd(

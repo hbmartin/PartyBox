@@ -64,7 +64,7 @@ final class HostCoordinator {
     private(set) var botDifficultyChange: String?
 
     @ObservationIgnored private let games: [any PartyGame]
-    @ObservationIgnored private let sounds: ArcadeSoundPlayer?
+    @ObservationIgnored private var sounds: ArcadeSoundPlayer?
     @ObservationIgnored private let historyStore: JSONRecordStore<MatchRecord>
     @ObservationIgnored private let logger = Logger(subsystem: "PartyBox", category: "HostCoordinator")
     @ObservationIgnored private var currentSession: (any PartyGameSession)?
@@ -72,6 +72,7 @@ final class HostCoordinator {
     @ObservationIgnored private var hostEventsTask: Task<Void, Never>?
     @ObservationIgnored private var botInputTask: Task<Void, Never>?
     @ObservationIgnored private var botReconciliationTask: Task<Void, Never>?
+    @ObservationIgnored private var soundPreparationTask: Task<Void, Never>?
     @ObservationIgnored private var botsNeedReconciliation = false
     @ObservationIgnored private var nextBotNumber = 1
     @ObservationIgnored private var reactionTasks: [UUID: Task<Void, Never>] = [:]
@@ -151,7 +152,7 @@ final class HostCoordinator {
         self.configuration = configuration
         host = suppliedHost ?? PartyHost()
         games = [PongGame()]
-        sounds = configuration.disableEffects ? nil : ArcadeSoundPlayer()
+        sounds = nil
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("PartyBox", isDirectory: true)
             .appendingPathComponent("history-v1.json")
@@ -209,6 +210,7 @@ final class HostCoordinator {
             )
             guard isStarted, lifecycleGeneration == generation else { return }
             statusMessage = "Ready for controllers"
+            prepareSounds(generation: generation)
             startBotInputLoop(generation: generation)
             requestBotReconciliation()
         } catch {
@@ -240,7 +242,10 @@ final class HostCoordinator {
         if configuration.botCount > 0 {
             return min(configuration.botCount, max(0, PartyNetConstants.maximumControllers - connectedHumanCount))
         }
-        return min(botFillTarget, max(0, 4 - connectedHumanCount))
+        return min(
+            botFillTarget,
+            max(0, PartyBoxRuntimeLimits.releasePartySize - connectedHumanCount)
+        )
     }
 
     private func requestBotReconciliation() {
@@ -354,6 +359,9 @@ final class HostCoordinator {
         botInputTask = nil
         botReconciliationTask?.cancel()
         botReconciliationTask = nil
+        soundPreparationTask?.cancel()
+        soundPreparationTask = nil
+        sounds = nil
         let botsToStop = Array(bots.values)
         bots.removeAll()
         resetRuntime()
@@ -581,7 +589,10 @@ final class HostCoordinator {
                 }
             case .setBotFillTarget(let target):
                 guard player.id == captainID, configuration.botCount == 0 else { return }
-                let clamped = min(max(target, 0), 3)
+                let clamped = min(
+                    max(target, 0),
+                    PartyBoxRuntimeLimits.maximumLobbyBots
+                )
                 guard clamped != botFillTarget else { return }
                 botFillTarget = clamped
                 clearReadiness()
@@ -910,14 +921,7 @@ final class HostCoordinator {
     private func layout(for playerID: PlayerID) -> PartyBoxCore.ControllerLayout {
         switch phase {
         case .lobby:
-            return .lobby(.init(
-                captainID: captainID,
-                isCaptain: playerID == captainID,
-                botFillTarget: botFillTarget,
-                activeBotCount: activeBotCount,
-                maximumBotCount: 3,
-                botDifficulty: currentBotDifficulty.title
-            ))
+            return lobbyLayout(for: playerID)
         case .gameMenu:
             return .menu(.init(
                 items: menuItems,
@@ -973,7 +977,7 @@ final class HostCoordinator {
             isCaptain: playerID == captainID,
             botFillTarget: botFillTarget,
             activeBotCount: activeBotCount,
-            maximumBotCount: 3,
+            maximumBotCount: PartyBoxRuntimeLimits.maximumLobbyBots,
             botDifficulty: currentBotDifficulty.title
         ))
     }
@@ -1085,11 +1089,7 @@ final class HostCoordinator {
 
     private func broadcast(_ presentation: HostPresentation) async {
         guard let payload = try? PartyBoxWireCodec.encode(presentation) else { return }
-        await withTaskGroup(of: Void.self) { group in
-            for player in host.players where player.isConnected {
-                group.addTask { [host] in _ = await host.sendApplication(payload, to: player.id) }
-            }
-        }
+        await host.broadcast(.application(payload))
     }
 
     private func recoverFromHostEventStreamEnding(generation: UUID, cancelConsumer: Bool) async {
@@ -1105,6 +1105,9 @@ final class HostCoordinator {
         botInputTask = nil
         botReconciliationTask?.cancel()
         botReconciliationTask = nil
+        soundPreparationTask?.cancel()
+        soundPreparationTask = nil
+        sounds = nil
         let botsToStop = Array(bots.values)
         bots.removeAll()
         resetRuntime()
@@ -1116,6 +1119,8 @@ final class HostCoordinator {
     }
 
     private func resetRuntime() {
+        reactionTasks.values.forEach { $0.cancel() }
+        reactionTasks.removeAll()
         gameEventOperation?.task.cancel()
         gameEventOperation = nil
         pendingGameEventBatches = []
@@ -1154,6 +1159,21 @@ final class HostCoordinator {
         startCheckpointForTesting = nil
         finishMatchCheckpointForTesting = nil
 #endif
+    }
+
+    private func prepareSounds(generation: UUID) {
+        guard !configuration.disableEffects,
+              sounds == nil,
+              soundPreparationTask == nil else { return }
+        soundPreparationTask = Task { @MainActor [weak self] in
+            let prepared = await ArcadeSoundPlayer.prepare()
+            guard let self,
+                  !Task.isCancelled,
+                  self.isStarted,
+                  self.lifecycleGeneration == generation else { return }
+            self.sounds = prepared
+            self.soundPreparationTask = nil
+        }
     }
 
 #if DEBUG

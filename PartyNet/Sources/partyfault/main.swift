@@ -90,6 +90,7 @@ private actor FaultControlServer {
             }
         } catch {
             let metrics = await rig.proxy.currentMetrics()
+            let hostInputActivity = await rig.hostInputActivity()
             try? await withTimeout(
                 .seconds(5),
                 timeoutError: { PartyFaultError.timedOut }
@@ -97,7 +98,8 @@ private actor FaultControlServer {
                 try await connection.send(FaultControlResponse(
                     succeeded: false,
                     message: error.localizedDescription,
-                    metrics: metrics
+                    metrics: metrics,
+                    hostInputActivity: hostInputActivity
                 ))
             }
         }
@@ -143,7 +145,8 @@ private actor FaultControlServer {
                 message: message,
                 metadata: metadata,
                 profile: await rig.proxy.currentProfile(),
-                metrics: await rig.proxy.currentMetrics()
+                metrics: await rig.proxy.currentMetrics(),
+                hostInputActivity: await rig.hostInputActivity()
             )
         } catch {
             return FaultControlResponse(
@@ -151,7 +154,8 @@ private actor FaultControlServer {
                 message: error.localizedDescription,
                 metadata: metadata,
                 profile: await rig.proxy.currentProfile(),
-                metrics: await rig.proxy.currentMetrics()
+                metrics: await rig.proxy.currentMetrics(),
+                hostInputActivity: await rig.hostInputActivity()
             )
         }
     }

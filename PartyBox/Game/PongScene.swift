@@ -40,7 +40,10 @@ final class PongScene: SKScene {
 
     override func update(_ currentTime: TimeInterval) {
         inputStore.forEachFrame { playerID, frame in
-            simulation.setPaddle(for: playerID, normalizedPosition: Double(frame.axisX))
+            simulation.setPaddle(
+                for: playerID,
+                normalizedPosition: Self.paddlePosition(from: frame)
+            )
         }
 
         let delta = previousUpdateTime.map { currentTime - $0 } ?? (1.0 / 60.0)
@@ -72,6 +75,13 @@ final class PongScene: SKScene {
 
     func paddlePosition(for playerID: PlayerID) -> Double? {
         simulation.paddlePosition(for: playerID)
+    }
+
+    static func paddlePosition(from frame: InputFrame) -> Double {
+        if frame.flags.contains(.motionAvailable) {
+            return Double(frame.orientation.horizontalTiltAxis())
+        }
+        return Double(frame.axisX)
     }
 
 #if DEBUG
