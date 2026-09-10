@@ -53,6 +53,7 @@ public final class PartyClient {
 
     private nonisolated let eventHub = EventHub<ClientEvent>()
     private let transport: ClientTransport
+    @ObservationIgnored private(set) var inputEnqueueCountForTesting: UInt64 = 0
     private var transportTask: Task<Void, Never>?
     private var transportEventGeneration: UUID?
     private var transportRecovery: (id: UUID, task: Task<Void, Never>)?
@@ -206,6 +207,7 @@ public final class PartyClient {
 
     private func enqueueCurrentInput() {
         guard let connectionID else { return }
+        inputEnqueueCountForTesting &+= 1
         pendingInput = PendingInput(
             connectionID: connectionID,
             axisX: inputAxisX,

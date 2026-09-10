@@ -215,4 +215,19 @@ struct PartyBox_ControllerTests {
         #expect(ControllerCoordinator.motionRetryDelay(failureCount: 5) == .seconds(16))
         #expect(ControllerCoordinator.motionRetryDelay(failureCount: 20) == .seconds(16))
     }
+
+    @Test func motionRetryBackoffRequiresSustainedRecovery() {
+        var backoff = ControllerCoordinator.MotionRetryBackoff()
+
+        #expect(backoff.recordFailure() == .seconds(1))
+        backoff.recordSuccessfulSample()
+        #expect(backoff.recordFailure() == .seconds(2))
+
+        for _ in 0..<ControllerCoordinator.MotionRetryBackoff.recoverySampleThreshold {
+            backoff.recordSuccessfulSample()
+        }
+
+        #expect(backoff.failureCount == 0)
+        #expect(backoff.recordFailure() == .seconds(1))
+    }
 }
