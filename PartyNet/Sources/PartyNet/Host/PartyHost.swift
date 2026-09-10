@@ -228,14 +228,18 @@ public final class PartyHost {
         guard requester.mark != mark else { return true }
         guard !reservedInitialMarks.contains(mark),
               !pendingMarkDisplacements.values.contains(where: {
-                  $0.botControllerID == requesterID || $0.previousMark == mark
+                  $0.botControllerID == requesterID
               }) else { return false }
 
-        if let holderID = sessions.first(where: {
-            $0.key != requesterID && $0.value.isAdmitted && $0.value.mark == mark
-        })?.key {
+        let holders = sessions.filter {
+            $0.key != requesterID && $0.value.mark == mark
+        }
+        if !holders.isEmpty {
             guard requester.kind == .human,
+                  holders.count == 1,
+                  let holderID = holders.first?.key,
                   var holder = sessions[holderID],
+                  holder.isAdmitted,
                   holder.kind == .bot else { return false }
             holder.mark = requester.mark
             sessions[holderID] = holder

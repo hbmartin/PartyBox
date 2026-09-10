@@ -60,21 +60,6 @@ extension NetworkIntegrationTests {
       }
     }
 
-    private actor HandshakeResponseGate {
-      private(set) var isPaused = false
-      private var continuation: CheckedContinuation<Void, Never>?
-
-      func pause() async {
-        isPaused = true
-        await withCheckedContinuation { continuation = $0 }
-      }
-
-      func resume() {
-        continuation?.resume()
-        continuation = nil
-      }
-    }
-
     private actor WriteProbe {
       private(set) var started = false
       private(set) var count = 0
@@ -88,22 +73,6 @@ extension NetworkIntegrationTests {
         started = true
         count += 1
         return count
-      }
-    }
-
-    private actor PingResponseGate {
-      private(set) var isBlocking = false
-      private var continuation: CheckedContinuation<Void, Never>?
-
-      func blockFirstResponse() async {
-        guard !isBlocking else { return }
-        isBlocking = true
-        await withCheckedContinuation { continuation = $0 }
-      }
-
-      func resume() {
-        continuation?.resume()
-        continuation = nil
       }
     }
 
@@ -324,10 +293,10 @@ extension NetworkIntegrationTests {
       defer { listenerTask.cancel() }
       try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
       let port = try #require(listener.port?.rawValue)
-      let gate = HandshakeResponseGate()
+      let gate = NthCallGate(blockedCall: 1)
       let transport = ClientTransport(handshakeResponseHook: { response in
         guard case .welcome = response else { return }
-        await gate.pause()
+        await gate.pauseIfNeeded()
       })
       let target = try DiscoveredHost(host: "127.0.0.1", port: port)
       let attemptID = UUID()
@@ -341,14 +310,14 @@ extension NetworkIntegrationTests {
       defer {
         connectTask.cancel()
         Task {
-          await gate.resume()
+          await gate.open()
           await transport.stop()
         }
       }
 
-      try await waitUntilAsync { await gate.isPaused }
+      try await waitUntilAsync { await gate.isBlocking }
       await transport.cancelConnectionAttempt(attemptID)
-      await gate.resume()
+      await gate.open()
       await #expect(throws: CancellationError.self) {
         try await connectTask.value
       }
@@ -581,13 +550,13 @@ extension NetworkIntegrationTests {
     }
 
     @Test func stalledPingWriterPreservesEveryQueuedResponseNonce() async throws {
-      let gate = PingResponseGate()
+      let gate = NthCallGate(blockedCall: 1)
       let host = PartyHost(transportFactory: { inputs in
         HostTransport(
           inputs: inputs,
           controlSender: { connection, message in
             if message == .pingResponse(1) {
-              await gate.blockFirstResponse()
+              await gate.pauseIfNeeded()
             }
             try await connection.send(message)
           }
@@ -614,7 +583,7 @@ extension NetworkIntegrationTests {
         try await connection.send(.ping(1))
         try await waitUntilAsync { await gate.isBlocking }
         try await connection.send(.ping(2))
-        await gate.resume()
+        await gate.open()
 
         let first = try await withTimeout(.seconds(1), operationName: "receiving first ping echo") {
           try await connection.receive().content
@@ -624,10 +593,10 @@ extension NetworkIntegrationTests {
         }
         #expect(first == .pingResponse(1))
         #expect(second == .pingResponse(2))
-        await gate.resume()
+        await gate.open()
         await host.stop()
       } catch {
-        await gate.resume()
+        await gate.open()
         await host.stop()
         throw error
       }
@@ -1441,18 +1410,6 @@ extension NetworkIntegrationTests {
         try await Task.sleep(for: .milliseconds(20))
       }
       try #require(condition())
-    }
-
-    private func waitUntilAsync(
-      timeout: Duration = .seconds(3),
-      condition: @escaping @Sendable () async -> Bool
-    ) async throws {
-      let clock = ContinuousClock()
-      let deadline = clock.now.advanced(by: timeout)
-      while !(await condition()), clock.now < deadline {
-        try await Task.sleep(for: .milliseconds(20))
-      }
-      try #require(await condition())
     }
 
     private func settle() async {

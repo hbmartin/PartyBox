@@ -353,19 +353,7 @@ final class HostCoordinator {
         lifecycleGeneration = UUID()
         hostEventsTask?.cancel()
         hostEventsTask = nil
-        reactionTasks.values.forEach { $0.cancel() }
-        reactionTasks.removeAll()
-        botInputTask?.cancel()
-        botInputTask = nil
-        botReconciliationTask?.cancel()
-        botReconciliationTask = nil
-        soundPreparationTask?.cancel()
-        soundPreparationTask = nil
-        sounds?.shutdown()
-        sounds = nil
-        let botsToStop = Array(bots.values)
-        bots.removeAll()
-        resetRuntime()
+        let botsToStop = prepareRuntimeForShutdown()
         await host.stop()
         for bot in botsToStop { await bot.stop() }
     }
@@ -1102,6 +1090,15 @@ final class HostCoordinator {
         let consumer = hostEventsTask
         hostEventsTask = nil
         if cancelConsumer { consumer?.cancel() }
+        let botsToStop = prepareRuntimeForShutdown()
+        statusMessage = "Restarting after a host event overload…"
+        await host.stop()
+        for bot in botsToStop { await bot.stop() }
+        guard !isStarted, lifecycleGeneration == recoveryGeneration else { return }
+        await start(preservingHostInstanceID: preservedHostInstanceID)
+    }
+
+    private func prepareRuntimeForShutdown() -> [PartyClient] {
         botInputTask?.cancel()
         botInputTask = nil
         botReconciliationTask?.cancel()
@@ -1113,11 +1110,7 @@ final class HostCoordinator {
         let botsToStop = Array(bots.values)
         bots.removeAll()
         resetRuntime()
-        statusMessage = "Restarting after a host event overload…"
-        await host.stop()
-        for bot in botsToStop { await bot.stop() }
-        guard !isStarted, lifecycleGeneration == recoveryGeneration else { return }
-        await start(preservingHostInstanceID: preservedHostInstanceID)
+        return botsToStop
     }
 
     private func resetRuntime() {

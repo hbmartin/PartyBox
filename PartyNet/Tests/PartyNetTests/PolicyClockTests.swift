@@ -274,6 +274,42 @@ extension NetworkIntegrationTests {
       }
     }
 
+    @Test func unchangedMotionAvailabilityDoesNotEnqueueInput() async throws {
+      let clock = TestClock()
+      try await withDependencies {
+        $0.continuousClock = clock
+      } operation: {
+        let rig = FaultRig()
+        let metadata = try await start(rig, advancing: clock)
+        let client = PartyClient(displayName: "Motion Cadence")
+        await client.connect(host: metadata.host, port: metadata.tcpPort)
+
+        await clock.advance(by: .milliseconds(16))
+        try await waitUntil { client.inputFramesSent == 1 }
+        let baselineSendCount = client.inputFramesSent
+
+        client.setOrientation(.identity, available: false)
+        await settle()
+        await clock.advance(by: .milliseconds(16))
+        await settle()
+        #expect(client.inputFramesSent == baselineSendCount)
+
+        let orientation = OrientationQuaternion(x: 0, y: 0, z: 1, w: 0)
+        client.setOrientation(orientation)
+        await clock.advance(by: .milliseconds(16))
+        try await waitUntil { client.inputFramesSent == baselineSendCount + 1 }
+
+        client.setOrientation(orientation)
+        await settle()
+        await clock.advance(by: .milliseconds(16))
+        await settle()
+        #expect(client.inputFramesSent == baselineSendCount + 1)
+
+        await client.disconnect()
+        await rig.stop()
+      }
+    }
+
     @Test func acknowledgmentLossUsesTCPAndUDPProbesUntilRecovery() async throws {
       let clock = TestClock()
       try await withDependencies {

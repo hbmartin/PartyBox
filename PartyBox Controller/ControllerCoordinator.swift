@@ -49,6 +49,7 @@ final class ControllerCoordinator {
     @ObservationIgnored private var stopOperation: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var motionCaptureGeneration: UUID?
     @ObservationIgnored private var motionRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var motionRetryFailureCount = 0
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var isSceneActive = true
 
@@ -316,18 +317,19 @@ final class ControllerCoordinator {
             return
         }
         guard !motionManager.isDeviceMotionActive else { return }
-        motionRetryTask?.cancel()
-        motionRetryTask = nil
+        guard motionRetryTask == nil else { return }
         let generation = UUID()
         motionCaptureGeneration = generation
         motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
             MainActor.assumeIsolated {
                 guard let self, self.motionCaptureGeneration == generation else { return }
-                guard error == nil, let quaternion = motion?.attitude.quaternion else {
+                if error != nil {
                     self.handleMotionCaptureFailure(generation: generation)
                     return
                 }
+                guard let quaternion = motion?.attitude.quaternion else { return }
+                self.motionRetryFailureCount = 0
                 self.client.setOrientation(
                     .init(
                         x: Float(quaternion.x), y: Float(quaternion.y),
@@ -341,19 +343,22 @@ final class ControllerCoordinator {
         motionCaptureGeneration = nil
         motionRetryTask?.cancel()
         motionRetryTask = nil
+        motionRetryFailureCount = 0
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
-        client.setOrientation(.identity, available: false)
+        reportMotionUnavailableIfNeeded()
     }
 
     private func handleMotionCaptureFailure(generation: UUID) {
         guard motionCaptureGeneration == generation else { return }
         motionCaptureGeneration = nil
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
-        client.setOrientation(.identity, available: false)
+        reportMotionUnavailableIfNeeded()
         guard motionRetryTask == nil else { return }
+        motionRetryFailureCount += 1
+        let delay = Self.motionRetryDelay(failureCount: motionRetryFailureCount)
         motionRetryTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .seconds(1))
+                try await Task.sleep(for: delay)
             } catch {
                 return
             }
@@ -361,6 +366,16 @@ final class ControllerCoordinator {
             self.motionRetryTask = nil
             self.updateMotionCapture()
         }
+    }
+
+    private func reportMotionUnavailableIfNeeded() {
+        guard client.inputFlags.contains(.motionAvailable) else { return }
+        client.setOrientation(.identity, available: false)
+    }
+
+    static func motionRetryDelay(failureCount: Int) -> Duration {
+        let exponent = min(max(failureCount - 1, 0), 4)
+        return .seconds(1 << exponent)
     }
 
     private func startEventTask() {
