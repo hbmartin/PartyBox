@@ -95,6 +95,22 @@ enum ArcadeChallengeMode: String {
     }
 }
 
+struct ArcadeRandomNumberGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed == 0 ? 1 : seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        var output = state
+        output = (output ^ (output >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        output = (output ^ (output >> 27)) &* 0x94D0_49BB_1331_11EB
+        return output ^ (output >> 31)
+    }
+}
+
 @MainActor
 final class ArcadeChallengeSession: PartyGameSession {
     private let mode: ArcadeChallengeMode
@@ -165,7 +181,40 @@ final class ArcadeChallengeSession: PartyGameSession {
     func botInput(for playerID: PlayerID, difficulty: GameBotDifficulty, deltaTime: Duration) -> GameBotInput? {
         challengeScene.botInput(for: playerID, difficulty: difficulty)
     }
+
+#if DEBUG
+    func updateForTesting(_ currentTime: TimeInterval) {
+        challengeScene.update(currentTime)
+    }
+
+    func signalDirectionForTesting() -> String {
+        challengeScene.signalDirectionForTesting
+    }
+
+    func scoreForTesting(_ playerID: PlayerID) -> Int? {
+        challengeScene.scoreForTesting(playerID)
+    }
+
+    func snapshotForTesting() -> [PlayerID: ArcadeChallengePlayerSnapshot] {
+        challengeScene.snapshotForTesting()
+    }
+
+    func reverseStorageForTesting() {
+        challengeScene.reverseStorageForTesting()
+    }
+#endif
 }
+
+#if DEBUG
+struct ArcadeChallengePlayerSnapshot: Equatable {
+    let x: Double
+    let y: Double
+    let direction: String
+    let score: Int
+    let lives: Int
+    let alive: Bool
+}
+#endif
 
 @MainActor
 private final class ArcadeChallengeScene: SKScene {
@@ -177,6 +226,7 @@ private final class ArcadeChallengeScene: SKScene {
         var lives: Int
         var alive: Bool
         var lastInput: String?
+        var submittedSignalRound: Int?
         var lastHitAt: TimeInterval
     }
 
@@ -203,7 +253,7 @@ private final class ArcadeChallengeScene: SKScene {
     private var signalRound = 0
     private var signalDirection = "up"
     private var finished = false
-    private var randomState: UInt64
+    private var randomGenerator: ArcadeRandomNumberGenerator
     private let timerLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
     private let promptLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
 
@@ -211,7 +261,7 @@ private final class ArcadeChallengeScene: SKScene {
         self.mode = mode
         self.context = context
         self.onEvents = onEvents
-        randomState = context.seed == 0 ? 1 : context.seed
+        randomGenerator = ArcadeRandomNumberGenerator(seed: context.seed)
         super.init(size: CGSize(width: 1_920, height: 1_080))
         scaleMode = .aspectFit
         backgroundColor = SKColor(red: 0.018, green: 0.025, blue: 0.075, alpha: 1)
@@ -260,7 +310,7 @@ private final class ArcadeChallengeScene: SKScene {
 
     func botInput(for playerID: PlayerID, difficulty: GameBotDifficulty) -> GameBotInput? {
         guard let state = states[playerID], state.alive else { return nil }
-        let precision: Float = switch difficulty { case .easy: 0.58; case .normal: 0.78; case .hard: 0.94 }
+        let precision: Float = switch difficulty { case .easy: 0.64; case .normal: 0.78; case .hard: 0.94 }
         switch mode {
         case .pongQualifiers:
             let target: Float = signalDirection == "left" ? -1 : 1
@@ -334,6 +384,7 @@ private final class ArcadeChallengeScene: SKScene {
                 lives: 3,
                 alive: true,
                 lastInput: nil,
+                submittedSignalRound: nil,
                 lastHitAt: -10
             )
             snakeTrails[participant.player.id] = []
@@ -459,7 +510,9 @@ private final class ArcadeChallengeScene: SKScene {
     }
 
     private func submitSignal(_ direction: String, playerID: PlayerID) {
-        guard signalAccumulator > 0.18, states[playerID]?.lastInput == nil else { return }
+        guard signalAccumulator > 0.18,
+              states[playerID]?.submittedSignalRound != signalRound else { return }
+        states[playerID]?.submittedSignalRound = signalRound
         states[playerID]?.lastInput = direction
         if direction == signalDirection {
             let speedBonus = max(0, 30 - Int(signalAccumulator * 10))
@@ -497,36 +550,55 @@ private final class ArcadeChallengeScene: SKScene {
         tickAccumulator += delta
         guard tickAccumulator >= 0.14 else { return }
         tickAccumulator = 0
+        let stateSnapshot = states
+        let activePlayerIDs = stateSnapshot.compactMap { playerID, state in
+            state.alive ? playerID : nil
+        }.sorted { $0.rawValue < $1.rawValue }
+        var nextStates = stateSnapshot
+        var nextTrails = snakeTrails
         var occupied: [String: [PlayerID]] = [:]
         var collisions: Set<PlayerID> = []
-        for (playerID, state) in states where state.alive {
-            snakeTrails[playerID, default: []].append(CGPoint(x: state.x, y: state.y))
-            if (snakeTrails[playerID]?.count ?? 0) > 36 {
-                snakeTrails[playerID]?.removeFirst()
+        for playerID in activePlayerIDs {
+            guard let state = stateSnapshot[playerID] else { continue }
+            nextTrails[playerID, default: []].append(CGPoint(x: state.x, y: state.y))
+            if (nextTrails[playerID]?.count ?? 0) > 36 {
+                nextTrails[playerID]?.removeFirst()
             }
+        }
+        for playerID in activePlayerIDs {
+            guard var state = stateSnapshot[playerID] else { continue }
             let vector = axes(for: state.direction)
-            states[playerID]?.x += Double(vector.x) * 0.08
-            states[playerID]?.y += Double(vector.y) * 0.08
-            states[playerID]?.score += 1
-            if abs(states[playerID]?.x ?? 0) > 1 || abs(states[playerID]?.y ?? 0) > 1 {
+            state.x += Double(vector.x) * 0.08
+            state.y += Double(vector.y) * 0.08
+            state.score += 1
+            nextStates[playerID] = state
+            if abs(state.x) > 1 || abs(state.y) > 1 {
                 collisions.insert(playerID)
                 continue
             }
-            let head = CGPoint(x: states[playerID]?.x ?? 0, y: states[playerID]?.y ?? 0)
-            for (trailOwner, trail) in snakeTrails {
+            let head = CGPoint(x: state.x, y: state.y)
+            for trailOwner in nextTrails.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let trail = nextTrails[trailOwner, default: []]
                 let collisionTrail = trailOwner == playerID ? trail.dropLast(min(3, trail.count)) : trail[...]
                 if collisionTrail.contains(where: { hypot($0.x - head.x, $0.y - head.y) < 0.055 }) {
                     collisions.insert(playerID)
                     break
                 }
             }
-            let cell = "\(Int((states[playerID]?.x ?? 0) * 10)),\(Int((states[playerID]?.y ?? 0) * 6))"
+            let cell = "\(Int(state.x * 10)),\(Int(state.y * 6))"
             occupied[cell, default: []].append(playerID)
         }
+        states = nextStates
+        snakeTrails = nextTrails
         for collision in occupied.values where collision.count > 1 {
             collisions.formUnion(collision)
         }
-        collisions.forEach(loseLife)
+        for playerID in collisions.sorted(by: { $0.rawValue < $1.rawValue }) {
+            loseLife(playerID, checkForCompletion: false)
+        }
+        if context.participants.count > 1 && states.values.filter(\.alive).count <= 1 {
+            complete()
+        }
         rebuildSnakeTrails()
     }
 
@@ -562,7 +634,7 @@ private final class ArcadeChallengeScene: SKScene {
         }
     }
 
-    private func loseLife(_ playerID: PlayerID) {
+    private func loseLife(_ playerID: PlayerID, checkForCompletion: Bool = true) {
         guard var state = states[playerID], state.alive else { return }
         state.lives -= 1
         state.x = (Double(nextRandom() % 120) / 100) - 0.6
@@ -576,7 +648,9 @@ private final class ArcadeChallengeScene: SKScene {
                 .deviceCue(playerID, .init(colorHex: "#FF375F", haptic: .error)),
                 .eliminated(playerID),
             ])
-            if context.participants.count > 1 && states.values.filter(\.alive).count <= 1 { complete() }
+            if checkForCompletion,
+               context.participants.count > 1,
+               states.values.filter(\.alive).count <= 1 { complete() }
         } else {
             states[playerID] = state
             onEvents([
@@ -590,8 +664,14 @@ private final class ArcadeChallengeScene: SKScene {
         guard !finished else { return }
         finished = true
         let sorted = context.participants.sorted { lhs, rhs in
-            let left = states[lhs.player.id] ?? PlayerState(x: 0, y: 0, direction: "", score: 0, lives: 0, alive: false, lastHitAt: 0)
-            let right = states[rhs.player.id] ?? PlayerState(x: 0, y: 0, direction: "", score: 0, lives: 0, alive: false, lastHitAt: 0)
+            let left = states[lhs.player.id] ?? PlayerState(
+                x: 0, y: 0, direction: "", score: 0, lives: 0, alive: false,
+                lastInput: nil, submittedSignalRound: nil, lastHitAt: 0
+            )
+            let right = states[rhs.player.id] ?? PlayerState(
+                x: 0, y: 0, direction: "", score: 0, lives: 0, alive: false,
+                lastInput: nil, submittedSignalRound: nil, lastHitAt: 0
+            )
             if left.score != right.score { return left.score > right.score }
             if left.lives != right.lives { return left.lives > right.lives }
             return lhs.player.id.rawValue < rhs.player.id.rawValue
@@ -681,9 +761,38 @@ private final class ArcadeChallengeScene: SKScene {
     }
 
     private func nextRandom() -> UInt64 {
-        randomState = randomState &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return randomState
+        randomGenerator.next()
     }
+
+#if DEBUG
+    var signalDirectionForTesting: String { signalDirection }
+
+    func scoreForTesting(_ playerID: PlayerID) -> Int? {
+        states[playerID]?.score
+    }
+
+    func snapshotForTesting() -> [PlayerID: ArcadeChallengePlayerSnapshot] {
+        states.mapValues {
+            ArcadeChallengePlayerSnapshot(
+                x: $0.x,
+                y: $0.y,
+                direction: $0.direction,
+                score: $0.score,
+                lives: $0.lives,
+                alive: $0.alive
+            )
+        }
+    }
+
+    func reverseStorageForTesting() {
+        states = Dictionary(uniqueKeysWithValues: states.sorted {
+            $0.key.rawValue > $1.key.rawValue
+        })
+        snakeTrails = Dictionary(uniqueKeysWithValues: snakeTrails.sorted {
+            $0.key.rawValue > $1.key.rawValue
+        })
+    }
+#endif
 
     private static func color(_ hex: String) -> SKColor {
         let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))

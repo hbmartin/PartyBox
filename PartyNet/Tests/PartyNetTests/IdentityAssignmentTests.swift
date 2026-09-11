@@ -7,11 +7,16 @@ import Testing
 @MainActor
 struct IdentityAssignmentTests {
     private actor WelcomeFailure {
+        private let failingWelcome: Int
         private var welcomeCount = 0
+
+        init(failingWelcome: Int = 2) {
+            self.failingWelcome = failingWelcome
+        }
 
         func shouldFail() -> Bool {
             welcomeCount += 1
-            return welcomeCount == 2
+            return welcomeCount == failingWelcome
         }
     }
 
@@ -66,6 +71,92 @@ struct IdentityAssignmentTests {
             await untrusted.stop()
             await bot.stop()
             await host.stop()
+        }
+    }
+
+    @Test func arrivingHumanPreemptsABotWhenTheControllerCapacityIsFull() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let host = PartyHost(reconnectGrace: .milliseconds(50))
+            let port = try await host.start(hostName: "Bot Capacity Test", advertise: false)
+            let captain = PartyClient(displayName: "Captain")
+            let newcomer = PartyClient(displayName: "New Human")
+            let botIDs = (0..<(PartyNetConstants.maximumControllers - 1)).map { _ in ControllerID() }
+            let bots = botIDs.enumerated().map { index, controllerID in
+                PartyClient(controllerID: controllerID, displayName: "Bot \(index + 1)")
+            }
+
+            try await withAsyncCleanup {
+                await captain.connect(host: "127.0.0.1", port: port)
+                for (controllerID, bot) in zip(botIDs, bots) {
+                    host.registerLocalBot(controllerID: controllerID)
+                    await bot.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
+                #expect(host.players.count { $0.kind == .bot } == 7)
+
+                await newcomer.connect(host: "127.0.0.1", port: port)
+                try await waitUntil {
+                    host.players.count == PartyNetConstants.maximumControllers
+                        && host.players.count { $0.kind == .human } == 2
+                }
+
+                #expect(host.players.count { $0.kind == .bot } == 6)
+                #expect(newcomer.player?.kind == .human)
+            } cleanup: {
+                await newcomer.stop()
+                await captain.stop()
+                for bot in bots { await bot.stop() }
+                await host.stop()
+            }
+        }
+    }
+
+    @Test func failedHumanHandshakeRestoresTheBotReservedForCapacity() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let failure = WelcomeFailure(failingWelcome: PartyNetConstants.maximumControllers + 1)
+            let host = PartyHost(transportFactory: { inputs in
+                HostTransport(
+                    inputs: inputs,
+                    controlSender: { connection, message in
+                        if case .welcome = message, await failure.shouldFail() {
+                            throw CancellationError()
+                        }
+                        try await connection.send(message)
+                    }
+                )
+            })
+            let port = try await host.start(hostName: "Bot Capacity Rollback Test", advertise: false)
+            let captain = PartyClient(displayName: "Captain")
+            let newcomer = PartyClient(displayName: "Rejected Human")
+            let botIDs = (0..<(PartyNetConstants.maximumControllers - 1)).map { _ in ControllerID() }
+            let bots = botIDs.enumerated().map { index, controllerID in
+                PartyClient(controllerID: controllerID, displayName: "Bot \(index + 1)")
+            }
+
+            try await withAsyncCleanup {
+                await captain.connect(host: "127.0.0.1", port: port)
+                for (controllerID, bot) in zip(botIDs, bots) {
+                    host.registerLocalBot(controllerID: controllerID)
+                    await bot.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
+
+                await newcomer.connect(host: "127.0.0.1", port: port)
+
+                #expect(host.players.count == PartyNetConstants.maximumControllers)
+                #expect(host.players.count { $0.kind == .bot } == 7)
+                #expect(host.players.count { $0.kind == .human } == 1)
+                #expect(newcomer.player == nil)
+            } cleanup: {
+                await newcomer.stop()
+                await captain.stop()
+                for bot in bots { await bot.stop() }
+                await host.stop()
+            }
         }
     }
 

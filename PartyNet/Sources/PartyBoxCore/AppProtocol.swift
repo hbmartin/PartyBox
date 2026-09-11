@@ -59,6 +59,20 @@ public struct DeviceCue: Codable, Equatable, Sendable {
         self.durationMilliseconds = min(max(durationMilliseconds, 80), 250)
         self.haptic = haptic
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, colorHex, durationMilliseconds, haptic
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decode(UUID.self, forKey: .id),
+            colorHex: try values.decode(String.self, forKey: .colorHex),
+            durationMilliseconds: try values.decode(Int.self, forKey: .durationMilliseconds),
+            haptic: try values.decodeIfPresent(HapticPattern.self, forKey: .haptic)
+        )
+    }
 }
 
 public struct GameLayoutEnvelope: Codable, Equatable, Sendable {
@@ -125,19 +139,38 @@ public struct PartyControlStatus: Codable, Equatable, Sendable {
     public let isReady: Bool
     public let readyCount: Int
     public let requiredReadyCount: Int
+    public let canToggleReady: Bool
 
     public init(
         captainID: PlayerID?,
         isCaptain: Bool,
         isReady: Bool,
         readyCount: Int,
-        requiredReadyCount: Int
+        requiredReadyCount: Int,
+        canToggleReady: Bool = false
     ) {
         self.captainID = captainID
         self.isCaptain = isCaptain
         self.isReady = isReady
         self.readyCount = max(0, readyCount)
         self.requiredReadyCount = max(0, requiredReadyCount)
+        self.canToggleReady = canToggleReady
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case captainID, isCaptain, isReady, readyCount, requiredReadyCount, canToggleReady
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            captainID: try values.decodeIfPresent(PlayerID.self, forKey: .captainID),
+            isCaptain: try values.decode(Bool.self, forKey: .isCaptain),
+            isReady: try values.decode(Bool.self, forKey: .isReady),
+            readyCount: try values.decode(Int.self, forKey: .readyCount),
+            requiredReadyCount: try values.decode(Int.self, forKey: .requiredReadyCount),
+            canToggleReady: try values.decodeIfPresent(Bool.self, forKey: .canToggleReady) ?? false
+        )
     }
 
     public static let uncontrolled = PartyControlStatus(
@@ -145,7 +178,8 @@ public struct PartyControlStatus: Codable, Equatable, Sendable {
         isCaptain: true,
         isReady: false,
         readyCount: 0,
-        requiredReadyCount: 0
+        requiredReadyCount: 0,
+        canToggleReady: false
     )
 }
 

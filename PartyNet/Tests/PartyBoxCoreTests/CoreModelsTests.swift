@@ -55,6 +55,27 @@ struct CoreModelsTests {
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 
+    @Test func wireDecodedDeviceCuesClampDurationsAndOlderControlStatusDefaultsSafely() throws {
+        let identifier = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        let longCue = Data(
+            ##"{"id":"\##(identifier)","colorHex":"#39FF88","durationMilliseconds":999,"haptic":"success"}"##.utf8
+        )
+        let shortCue = Data(
+            ##"{"id":"\##(identifier)","colorHex":"#39FF88","durationMilliseconds":-10,"haptic":null}"##.utf8
+        )
+
+        #expect(try PartyBoxWireCodec.decode(DeviceCue.self, from: longCue).durationMilliseconds == 250)
+        #expect(try PartyBoxWireCodec.decode(DeviceCue.self, from: shortCue).durationMilliseconds == 80)
+
+        let legacyControl = Data(
+            #"{"captainID":null,"isCaptain":false,"isReady":false,"readyCount":1,"requiredReadyCount":2}"#.utf8
+        )
+        #expect(!(try PartyBoxWireCodec.decode(
+            PartyControlStatus.self,
+            from: legacyControl
+        )).canToggleReady)
+    }
+
     @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),

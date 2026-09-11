@@ -492,6 +492,18 @@ struct PartyBoxTests {
         #expect(game.descriptor.minimumPlayers == 1)
         #expect(game.descriptor.maximumPlayers == 8)
         #expect(game.descriptor.modifiers.map(\.id) == ["fast-ball", "big-paddles", "extra-life"])
+        #expect(game.availableModifiers(participantCount: 4) == game.descriptor.modifiers)
+        #expect(game.availableModifiers(participantCount: 5).isEmpty)
+        #expect(HostCoordinator.applicableModifier(
+            PongGame.fastBall,
+            for: game,
+            participantCount: 4
+        ) == PongGame.fastBall)
+        #expect(HostCoordinator.applicableModifier(
+            PongGame.fastBall,
+            for: game,
+            participantCount: 5
+        ) == nil)
 
         let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
         let session = game.makeSession(
@@ -549,6 +561,125 @@ struct PartyBoxTests {
         #expect(games.allSatisfy { $0.descriptor.maximumPlayers == 8 })
     }
 
+    @Test func arcadeRandomChoicesDoNotUseRepeatingLowOrderLCGBits() {
+        var generator = ArcadeRandomNumberGenerator(seed: 42)
+        let values = (0..<12).map { _ in generator.next() }
+        let parity = values.map { $0 % 2 }
+        let directions = values.map { $0 % 4 }
+
+        #expect(zip(parity, parity.dropFirst()).contains { $0.0 == $0.1 })
+        #expect(Array(directions.prefix(4)) != Array(directions.dropFirst(4).prefix(4)))
+    }
+
+    @Test func easyArcadeBotsCrossTheSignalActivationThreshold() throws {
+        let playerID = PlayerID(0)
+        let participant = GameParticipant(
+            player: .init(id: playerID, displayName: "Bot", colorHex: "#32E6FF", kind: .bot),
+            controllerID: ControllerID()
+        )
+
+        for mode in [ArcadeChallengeMode.pongQualifiers, .signalSnap] {
+            let session = ArcadeChallengeSession(
+                mode: mode,
+                context: .init(
+                    participants: [participant],
+                    inputs: InputStore(),
+                    seed: 42,
+                    modifierID: nil
+                ),
+                onEvents: { _ in }
+            )
+            let input = try #require(session.botInput(
+                for: playerID,
+                difficulty: .easy,
+                deltaTime: .milliseconds(16)
+            ))
+            #expect(max(abs(input.axisX), abs(input.axisY)) > 0.58)
+        }
+    }
+
+    @Test func signalRecenteringCannotScoreTwiceInOneRound() throws {
+        let playerID = PlayerID(0)
+        let inputs = InputStore()
+        let session = ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: inputs,
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+        for step in 0...5 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let direction = session.signalDirectionForTesting()
+        let axes: (Float, Float) = switch direction {
+        case "up": (0, 1)
+        case "down": (0, -1)
+        case "left": (-1, 0)
+        default: (1, 0)
+        }
+
+        #expect(inputs.update(
+            .init(token: 1, sequence: 1, clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+            for: playerID
+        ))
+        session.updateForTesting(0.30)
+        let firstScore = try #require(session.scoreForTesting(playerID))
+        #expect(firstScore > 0)
+
+        #expect(inputs.update(
+            .init(token: 1, sequence: 2, clientTimeMs: 2, axisX: 0, axisY: 0),
+            for: playerID
+        ))
+        session.updateForTesting(0.35)
+        #expect(inputs.update(
+            .init(token: 1, sequence: 3, clientTimeMs: 3, axisX: axes.0, axisY: axes.1),
+            for: playerID
+        ))
+        session.updateForTesting(0.40)
+
+        #expect(session.scoreForTesting(playerID) == firstScore)
+    }
+
+    @Test func seededSnakeSimulationIgnoresDictionaryStorageOrder() {
+        let participants = (0..<6).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        let first = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        let second = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        second.reverseStorageForTesting()
+
+        for step in 0...100 {
+            let time = Double(step) * 0.05
+            first.updateForTesting(time)
+            second.updateForTesting(time)
+        }
+
+        #expect(first.snapshotForTesting() == second.snapshotForTesting())
+    }
+
     @Test func everyGameBuildsAValidEightPlayerControllerAndBotSession() {
         let participants = (0..<8).map { index in
             let playerID = PlayerID(UInt8(index))
@@ -602,8 +733,10 @@ struct PartyBoxTests {
             coordinator.perform(.select)
             for _ in 0..<5 { coordinator.perform(.down) }
             #expect(coordinator.menuItems[coordinator.menuSelection] == "PARTY CUP")
+            #expect(!coordinator.controlStatusForTesting(teammateID).canToggleReady)
             coordinator.perform(.select)
             #expect(coordinator.phase == .cupSetup)
+            #expect(!coordinator.controlStatusForTesting(teammateID).canToggleReady)
 
             coordinator.perform(.select)
             coordinator.perform(.down)
@@ -611,6 +744,7 @@ struct PartyBoxTests {
             coordinator.perform(.down)
             coordinator.perform(.select)
             #expect(coordinator.selectedCupGameIDs.count == 3)
+            #expect(coordinator.controlStatusForTesting(teammateID).canToggleReady)
             coordinator.perform(.select, source: .controller(teammateID))
             #expect(coordinator.phase == .playing)
 

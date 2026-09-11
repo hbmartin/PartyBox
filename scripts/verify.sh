@@ -152,6 +152,7 @@ fault_control() {
 
 normal() {
     run_logged partynet-tests swift test --package-path "$ROOT_DIR/PartyNet"
+    run_logged partyfault-tests swift test --package-path "$ROOT_DIR/PartyFault"
     ensure_ios_destination
     ensure_tvos_destination
     start_fault_rig
@@ -176,6 +177,7 @@ normal() {
     run_xcode release-ios -project "$PROJECT" -scheme "PartyBox Controller" \
         -configuration Release -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
     run_logged partynet-release swift build --package-path "$ROOT_DIR/PartyNet" -c release
+    run_logged partyfault-release swift build --package-path "$ROOT_DIR/PartyFault" -c release
 }
 
 asan() {

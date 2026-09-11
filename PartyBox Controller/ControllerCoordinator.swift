@@ -700,7 +700,8 @@ final class ControllerCoordinator {
             isCaptain: false,
             isReady: true,
             readyCount: 2,
-            requiredReadyCount: 2
+            requiredReadyCount: 2,
+            canToggleReady: true
         )
         let captainLobby = LobbyLayout(
             captainID: currentPlayer.id,

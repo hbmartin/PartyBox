@@ -363,8 +363,7 @@ private struct MenuControllerView: View {
                 Button("BACK") { Task { await coordinator.sendMenu(.back) } }
                     .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
                     .accessibilityIdentifier("controller.menu.back")
-            } else if layout.items.indices.contains(layout.selected),
-                      layout.items[layout.selected] != "HISTORY & LEADERBOARD" {
+            } else if layout.control.canToggleReady {
                 Button(layout.control.isReady ? "CANCEL READY" : "READY") {
                     Task { await coordinator.sendMenu(.select) }
                 }
@@ -663,11 +662,13 @@ private struct GameOverControllerView: View {
                 Text("NEXT: \(nextUp)").font(.headline.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
             }
             ControlStatusView(status: layout.control)
-            Button(layout.control.isCaptain ? "NEXT MATCH" : (layout.control.isReady ? "CANCEL READY" : "READY")) {
-                Task { await coordinator.sendMenu(.select) }
+            if layout.control.isCaptain || layout.control.canToggleReady {
+                Button(layout.control.isCaptain ? "NEXT MATCH" : (layout.control.isReady ? "CANCEL READY" : "READY")) {
+                    Task { await coordinator.sendMenu(.select) }
+                }
+                    .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.lime))
+                    .accessibilityIdentifier("controller.gameOver.next")
             }
-                .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.lime))
-                .accessibilityIdentifier("controller.gameOver.next")
             if layout.control.isCaptain {
                 Button("GAME MENU") { Task { await coordinator.sendMenu(.back) } }
                     .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
@@ -862,7 +863,11 @@ private struct ControlStatusView: View {
             Label(status.isCaptain ? "YOU ARE CAPTAIN" : "CAPTAIN CONTROLS NAVIGATION", systemImage: "crown.fill")
             if status.requiredReadyCount > 1 {
                 Text("READY \(status.readyCount)/\(status.requiredReadyCount)")
-                if !status.isCaptain { Text(status.isReady ? "YOU’RE READY" : "TAP READY TO VOTE") }
+                if !status.isCaptain {
+                    Text(status.canToggleReady
+                         ? (status.isReady ? "YOU’RE READY" : "TAP READY TO VOTE")
+                         : "WAITING FOR CAPTAIN")
+                }
             }
         }
         .font(.caption.monospaced().weight(.black))

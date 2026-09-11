@@ -136,7 +136,9 @@ final class HostCoordinator {
     }
     var leaderboard: [LeaderboardEntry] { HistoryAggregation.leaderboard(historyRecords) }
     var displayedVoteTallies: [VoteTallyPresentation] {
-        let modifiers = games.indices.contains(menuSelection) ? games[menuSelection].descriptor.modifiers : []
+        let modifiers = games.indices.contains(menuSelection)
+            ? games[menuSelection].availableModifiers(participantCount: currentParticipants.count)
+            : []
         return voteTallies.keys.sorted().map { modifierID in
             VoteTallyPresentation(
                 id: modifierID,
@@ -902,7 +904,11 @@ final class HostCoordinator {
             descriptor: game.descriptor
         ) else { return false }
         menuSelection = gameIndex
-        let modifier = isCupEvent ? nil : pendingModifier
+        let modifier = Self.applicableModifier(
+            isCupEvent ? nil : pendingModifier,
+            for: game,
+            participantCount: participants.count
+        )
         pendingModifier = nil
         appliedModifier = modifier
         botDifficultyChange = nil
@@ -1014,7 +1020,7 @@ final class HostCoordinator {
               games.indices.contains(menuSelection) else { return }
         let game = games[menuSelection]
         let participants = currentParticipants
-        pendingModifier = currentMatchIsCup ? nil : resolveVote(in: game.descriptor)
+        pendingModifier = currentMatchIsCup ? nil : resolveVote(in: game)
         let endedAt = Date()
         let participantRecords = participants.map { participant in
             let value = outcome.playerOutcomes.first { $0.playerID == participant.player.id }?.outcome ?? .lost
@@ -1206,13 +1212,26 @@ final class HostCoordinator {
         }
     }
 
-    private func resolveVote(in descriptor: GameDescriptor) -> GameModifierDescriptor? {
+    private func resolveVote(in game: any PartyGame) -> GameModifierDescriptor? {
         guard !votes.isEmpty else { return nil }
         let counts = Dictionary(grouping: votes.values, by: { $0 }).mapValues(\.count)
         guard let maximum = counts.values.max() else { return nil }
-        let tied = descriptor.modifiers.filter { counts[$0.id] == maximum }
+        let tied = game.availableModifiers(participantCount: currentParticipants.count)
+            .filter { counts[$0.id] == maximum }
         guard !tied.isEmpty else { return nil }
         return tied[Int(currentMatchSeed % UInt64(tied.count))]
+    }
+
+    static func applicableModifier(
+        _ candidate: GameModifierDescriptor?,
+        for game: any PartyGame,
+        participantCount: Int
+    ) -> GameModifierDescriptor? {
+        guard let candidate,
+              game.availableModifiers(participantCount: participantCount).contains(where: {
+                  $0.id == candidate.id
+              }) else { return nil }
+        return candidate
     }
 
     private func isEligibleSpectator(_ playerID: PlayerID) -> Bool {
@@ -1248,7 +1267,9 @@ final class HostCoordinator {
         now suppliedNow: ContinuousClock.Instant? = nil
     ) -> Bool {
         guard games.indices.contains(menuSelection),
-              games[menuSelection].descriptor.modifiers.contains(where: { $0.id == modifierID }),
+              games[menuSelection].availableModifiers(
+                  participantCount: currentParticipants.count
+              ).contains(where: { $0.id == modifierID }),
               votes[playerID] != modifierID else { return false }
         let now = suppliedNow ?? ContinuousClock().now
         if let previous = lastVoteAt[playerID], previous.duration(to: now) < .milliseconds(250) {
@@ -1344,7 +1365,12 @@ final class HostCoordinator {
                     : .waiting(position: turnOrder.waitingPosition(of: playerID, active: active) ?? 1)
                 screen = SpectatorScreenFactory.make(
                     game: game.descriptor,
-                    state: .init(role: role, choices: game.descriptor.modifiers, tallies: voteTallies, selection: votes[playerID])
+                    state: .init(
+                        role: role,
+                        choices: game.availableModifiers(participantCount: currentParticipants.count),
+                        tallies: voteTallies,
+                        selection: votes[playerID]
+                    )
                 )
             }
             do {
@@ -1373,8 +1399,21 @@ final class HostCoordinator {
             isCaptain: playerID == captainID,
             isReady: readyPlayerIDs.contains(playerID),
             readyCount: readyCount,
-            requiredReadyCount: requiredReadyCount
+            requiredReadyCount: requiredReadyCount,
+            canToggleReady: playerID != captainID && canToggleReadiness
         )
+    }
+
+    private var canToggleReadiness: Bool {
+        guard canStart else { return false }
+        switch phase {
+        case .gameMenu:
+            return games.indices.contains(menuSelection)
+        case .cupSetup, .gameOver, .cupStandings:
+            return true
+        case .lobby, .playing, .history, .cupComplete:
+            return false
+        }
     }
 
     private func unavailableGameLayout(gameID: String) -> PartyBoxCore.ControllerLayout {
@@ -1626,6 +1665,10 @@ final class HostCoordinator {
 
     func isLiveParticipantForTesting(_ participant: GameParticipant) -> Bool {
         livePlayer(for: participant) != nil
+    }
+
+    func controlStatusForTesting(_ playerID: PlayerID) -> PartyControlStatus {
+        controlStatus(for: playerID)
     }
 
     var botInputFramesSentForTesting: UInt64 {

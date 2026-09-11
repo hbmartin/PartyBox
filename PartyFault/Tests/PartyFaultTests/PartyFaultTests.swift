@@ -112,6 +112,67 @@ struct PartyFaultTests {
         #expect(metrics.serverToClient.udpDatagramsForwarded == 1)
     }
 
+    @Test func partialUDPReorderWindowFlushesAfterIdle() async throws {
+        let tcpServer = try NetworkListener<TCP>(
+            for: nil,
+            using: NWParametersBuilder.parameters { TCP().noDelay(true) }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let udpServer = try NetworkListener<UDP>(
+            for: nil,
+            using: .parameters { UDP() }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let tcpServerTask = Task {
+            try await tcpServer.run { _ in }
+        }
+        let udpServerTask = Task {
+            try await udpServer.run { connection in
+                let content = try await connection.receive().content
+                try await connection.send(content)
+            }
+        }
+        defer {
+            tcpServerTask.cancel()
+            udpServerTask.cancel()
+        }
+
+        let tcpPort = try await boundPort(tcpServer)
+        let udpPort = try await boundPort(udpServer)
+        let reordered = LinkImpairment(udp: .init(reorderWindow: 3))
+        let proxy = GenericFaultProxy(profile: .init(
+            clientToServer: reordered,
+            serverToClient: reordered
+        ))
+        let proxyPorts = try await proxy.start(
+            upstreamHost: "127.0.0.1",
+            upstreamTCPPort: tcpPort,
+            upstreamUDPPort: udpPort
+        )
+        defer { Task { await proxy.stop() } }
+
+        let payload = Data("partial reorder window".utf8)
+        let client = NetworkConnection<UDP>(
+            to: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: proxyPorts.udp)!),
+            using: .parameters { UDP() }.peerToPeerIncluded(false)
+        )
+        let response = try await withTimeout {
+            try await client.send(payload)
+            return try await client.receive().content
+        }
+
+        #expect(response == payload)
+        let metrics = await proxy.currentMetrics()
+        #expect(metrics.clientToServer.udpDatagramsReceived == 1)
+        #expect(metrics.clientToServer.udpDatagramsForwarded == 1)
+        #expect(metrics.serverToClient.udpDatagramsReceived == 1)
+        #expect(metrics.serverToClient.udpDatagramsForwarded == 1)
+    }
+
     private func boundPort<P>(_ listener: NetworkListener<P>) async throws -> UInt16 {
         for _ in 0..<300 {
             if let port = listener.port?.rawValue, port != 0 { return port }

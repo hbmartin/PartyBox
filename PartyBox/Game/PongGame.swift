@@ -36,6 +36,10 @@ struct PongGame: PartyGame {
         return rules
     }
 
+    func availableModifiers(participantCount: Int) -> [GameModifierDescriptor] {
+        participantCount > 4 ? [] : descriptor.modifiers
+    }
+
     func makeSession(
         context: GameSessionContext,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void

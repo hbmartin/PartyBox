@@ -275,6 +275,34 @@ public enum PartyFaultError: Error, LocalizedError, Sendable {
 }
 
 public actor GenericFaultProxy {
+    private final class PendingUDPDatagrams: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        func enqueued() {
+            lock.withLock { count += 1 }
+        }
+
+        func consumed() {
+            lock.withLock { count = max(0, count - 1) }
+        }
+
+        func takeAll() -> Int {
+            lock.withLock {
+                defer { count = 0 }
+                return count
+            }
+        }
+    }
+
+    private enum UDPForwardEvent: Sendable {
+        case datagram(Data)
+        case idle(UUID)
+        case finished
+    }
+
+    private static let udpReorderIdleFlushDelay = Duration.milliseconds(50)
+
     private let engine: ImpairmentEngine
     private var metrics = FaultMetrics()
     private var tcpListener: NetworkListener<TCP>?
@@ -444,28 +472,144 @@ public actor GenericFaultProxy {
         direction: TrafficDirection
     ) async {
         var reorderBuffer: [Data] = []
-        do {
-            while !Task.isCancelled {
-                let data = try await source.receive().content
-                noteUDPReceived(direction: direction)
-                let profile = await engine.currentProfile().link(for: direction).udp
-                reorderBuffer.append(data)
-                guard reorderBuffer.count >= profile.reorderWindow else { continue }
-                let payloads = profile.reorderWindow > 1 ? Array(reorderBuffer.reversed()) : reorderBuffer
-                reorderBuffer.removeAll(keepingCapacity: true)
-                if profile.reorderWindow > 1 { noteUDPReordered(payloads.count, direction: direction) }
-                for payload in payloads {
-                    let plan = await engine.udpPlan(direction: direction)
-                    if plan.isDropped { noteUDPDropped(direction: direction); continue }
-                    if plan.delays.count > 1 { noteUDPDuplicated(plan.delays.count - 1, direction: direction) }
-                    for delay in plan.delays {
-                        if delay > .zero { try await Task.sleep(for: delay); noteDelay(direction: direction) }
-                        try await destination.send(payload)
-                        noteUDPForwarded(direction: direction)
+        var idleTask: Task<Void, Never>?
+        var idleGeneration: UUID?
+        let pendingDatagrams = PendingUDPDatagrams()
+        let (events, continuation) = AsyncStream.makeStream(
+            of: UDPForwardEvent.self,
+            bufferingPolicy: .bufferingOldest(1_024)
+        )
+        let receiveTask = Task {
+            do {
+                while !Task.isCancelled {
+                    let message = try await source.receive()
+                    let data = message.content
+                    guard !data.isEmpty else { continue }
+                    noteUDPReceived(direction: direction)
+                    switch continuation.yield(.datagram(data)) {
+                    case .enqueued:
+                        pendingDatagrams.enqueued()
+                    case .dropped:
+                        noteUDPDropped(direction: direction)
+                    case .terminated:
+                        noteUDPDropped(direction: direction)
+                        return
+                    @unknown default:
+                        noteUDPDropped(direction: direction)
+                        return
                     }
+                }
+            } catch {}
+            continuation.yield(.finished)
+            continuation.finish()
+        }
+        do {
+            eventLoop: for await event in events {
+                guard !Task.isCancelled else { break eventLoop }
+                switch event {
+                case .datagram(let data):
+                    pendingDatagrams.consumed()
+                    idleTask?.cancel()
+                    idleTask = nil
+                    idleGeneration = nil
+                    let profile = await engine.currentProfile().link(for: direction).udp
+                    reorderBuffer.append(data)
+                    if reorderBuffer.count >= profile.reorderWindow {
+                        let buffered = reorderBuffer
+                        reorderBuffer.removeAll(keepingCapacity: true)
+                        try await forwardUDPBatch(
+                            buffered,
+                            reordered: profile.reorderWindow > 1,
+                            to: destination,
+                            direction: direction
+                        )
+                    } else {
+                        let generation = UUID()
+                        idleGeneration = generation
+                        idleTask = Task {
+                            do {
+                                try await Task.sleep(for: Self.udpReorderIdleFlushDelay)
+                            } catch {
+                                return
+                            }
+                            guard !Task.isCancelled else { return }
+                            continuation.yield(.idle(generation))
+                        }
+                    }
+                case .idle(let generation):
+                    guard idleGeneration == generation, !reorderBuffer.isEmpty else { continue }
+                    idleGeneration = nil
+                    idleTask = nil
+                    let profile = await engine.currentProfile().link(for: direction).udp
+                    let buffered = reorderBuffer
+                    reorderBuffer.removeAll(keepingCapacity: true)
+                    try await forwardUDPBatch(
+                        buffered,
+                        reordered: profile.reorderWindow > 1,
+                        to: destination,
+                        direction: direction
+                    )
+                case .finished:
+                    idleTask?.cancel()
+                    idleTask = nil
+                    idleGeneration = nil
+                    guard !reorderBuffer.isEmpty else { break eventLoop }
+                    let profile = await engine.currentProfile().link(for: direction).udp
+                    let buffered = reorderBuffer
+                    reorderBuffer.removeAll(keepingCapacity: true)
+                    try await forwardUDPBatch(
+                        buffered,
+                        reordered: profile.reorderWindow > 1,
+                        to: destination,
+                        direction: direction
+                    )
+                    break eventLoop
                 }
             }
         } catch {}
+        receiveTask.cancel()
+        idleTask?.cancel()
+        continuation.finish()
+        await receiveTask.value
+        let droppedOnExit = reorderBuffer.count + pendingDatagrams.takeAll()
+        if droppedOnExit > 0 {
+            noteUDPDropped(droppedOnExit, direction: direction)
+        }
+    }
+
+    private func forwardUDPBatch(
+        _ buffered: [Data],
+        reordered: Bool,
+        to destination: NetworkConnection<UDP>,
+        direction: TrafficDirection
+    ) async throws {
+        let payloads = reordered ? Array(buffered.reversed()) : buffered
+        if reordered, payloads.count > 1 {
+            noteUDPReordered(payloads.count, direction: direction)
+        }
+        for (index, payload) in payloads.enumerated() {
+            do {
+                let plan = await engine.udpPlan(direction: direction)
+                if plan.isDropped {
+                    noteUDPDropped(direction: direction)
+                    continue
+                }
+                if plan.delays.count > 1 {
+                    noteUDPDuplicated(plan.delays.count - 1, direction: direction)
+                }
+                for delay in plan.delays {
+                    if delay > .zero {
+                        try await Task.sleep(for: delay)
+                        noteDelay(direction: direction)
+                    }
+                    try await destination.send(payload)
+                    noteUDPForwarded(direction: direction)
+                }
+            } catch {
+                noteUDPDropped(payloads.count - index, direction: direction)
+                throw error
+            }
+        }
     }
 
     private func finishTCP(_ id: UUID) {
@@ -499,6 +643,9 @@ public actor GenericFaultProxy {
     private func noteUDPReceived(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsReceived += 1 } }
     private func noteUDPForwarded(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsForwarded += 1 } }
     private func noteUDPDropped(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsDropped += 1 } }
+    private func noteUDPDropped(_ count: Int, direction: TrafficDirection) {
+        updateDirection(direction) { $0.udpDatagramsDropped += UInt64(count) }
+    }
     private func noteUDPDuplicated(_ count: Int, direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsDuplicated += UInt64(count) } }
     private func noteUDPReordered(_ count: Int, direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsReordered += UInt64(count) } }
     private func noteDelay(direction: TrafficDirection) { updateDirection(direction) { $0.delayedUnits += 1 } }
