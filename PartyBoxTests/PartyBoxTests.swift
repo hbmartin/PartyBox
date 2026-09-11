@@ -305,6 +305,82 @@ struct PartyBoxTests {
         #expect(coordinator.currentScene == nil)
     }
 
+    @Test func stoppedCoordinatorCannotBeRevivedBySuspendedCupCompletion() async throws {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "cup-final-match", "--disable-effects",
+        ]))
+        await coordinator.start()
+        let gate = CleanupGate()
+        coordinator.setFinishCupCheckpointForTesting { await gate.wait() }
+        let players = coordinator.host.players
+        let outcome = GameOutcome(
+            title: "CUP COMPLETE",
+            subtitle: "Done",
+            winner: players.first?.id,
+            playerOutcomes: players.map {
+                .init(playerID: $0.id, outcome: $0.id == players.first?.id ? .won : .lost)
+            },
+            metrics: [],
+            standings: players.enumerated().map {
+                .init(playerID: $0.element.id, rank: $0.offset + 1, score: 100 - $0.offset)
+            }
+        )
+        let completion = Task { await coordinator.finishCurrentMatchForTesting(outcome) }
+        defer {
+            gate.release()
+            completion.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await completion.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.currentScene == nil)
+        #expect(coordinator.cupRecords.isEmpty)
+    }
+
+    @Test func failedCupEventStartDoesNotAdvanceTheEventIndex() async {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "cup-standings", "--disable-effects",
+        ]))
+        await coordinator.start()
+        #expect(coordinator.cupEventIndex == 0)
+
+        coordinator.perform(.select)
+
+        #expect(coordinator.cupEventIndex == 0)
+        guard case .cupStandings = coordinator.phase else {
+            Issue.record("A failed event start must leave the Cup on its standings screen")
+            await coordinator.stop()
+            return
+        }
+        await coordinator.stop()
+    }
+
+    @Test func centralizedGameStartEligibilityEnforcesMinimumAndMaximumPlayers() {
+        let descriptor = GameDescriptor(
+            id: "two-player", title: "Two Player", summary: "Test",
+            minimumPlayers: 2, maximumPlayers: 2
+        )
+        let participants = (0..<3).map { index in
+            let player = PlayerInfo(
+                id: PlayerID(UInt8(index)),
+                displayName: "P\(index)",
+                colorHex: PlayerPalette.color(for: PlayerID(UInt8(index)))
+            )
+            return GameParticipant(player: player, controllerID: ControllerID())
+        }
+
+        #expect(HostCoordinator.participantsForStart(
+            Array(participants.prefix(1)), descriptor: descriptor
+        ) == nil)
+        #expect(HostCoordinator.participantsForStart(
+            participants, descriptor: descriptor
+        ) == Array(participants.prefix(2)))
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))
@@ -416,6 +492,18 @@ struct PartyBoxTests {
         #expect(game.descriptor.minimumPlayers == 1)
         #expect(game.descriptor.maximumPlayers == 8)
         #expect(game.descriptor.modifiers.map(\.id) == ["fast-ball", "big-paddles", "extra-life"])
+        #expect(game.availableModifiers(participantCount: 4) == game.descriptor.modifiers)
+        #expect(game.availableModifiers(participantCount: 5).isEmpty)
+        #expect(HostCoordinator.applicableModifier(
+            PongGame.fastBall,
+            for: game,
+            participantCount: 4
+        ) == PongGame.fastBall)
+        #expect(HostCoordinator.applicableModifier(
+            PongGame.fastBall,
+            for: game,
+            participantCount: 5
+        ) == nil)
 
         let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
         let session = game.makeSession(
@@ -473,6 +561,156 @@ struct PartyBoxTests {
         #expect(games.allSatisfy { $0.descriptor.maximumPlayers == 8 })
     }
 
+    @Test func arcadeRandomChoicesDoNotUseRepeatingLowOrderLCGBits() {
+        var generator = ArcadeRandomNumberGenerator(seed: 42)
+        let values = (0..<12).map { _ in generator.next() }
+        let parity = values.map { $0 % 2 }
+        let directions = values.map { $0 % 4 }
+
+        #expect(zip(parity, parity.dropFirst()).contains { $0.0 == $0.1 })
+        #expect(Array(directions.prefix(4)) != Array(directions.dropFirst(4).prefix(4)))
+    }
+
+    @Test func easyArcadeBotsCrossTheSignalActivationThreshold() throws {
+        let playerID = PlayerID(0)
+        let participant = GameParticipant(
+            player: .init(id: playerID, displayName: "Bot", colorHex: "#32E6FF", kind: .bot),
+            controllerID: ControllerID()
+        )
+
+        for mode in [ArcadeChallengeMode.pongQualifiers, .signalSnap] {
+            let session = ArcadeChallengeSession(
+                mode: mode,
+                context: .init(
+                    participants: [participant],
+                    inputs: InputStore(),
+                    seed: 42,
+                    modifierID: nil
+                ),
+                onEvents: { _ in }
+            )
+            let input = try #require(session.botInput(
+                for: playerID,
+                difficulty: .easy,
+                deltaTime: .milliseconds(16)
+            ))
+            #expect(max(abs(input.axisX), abs(input.axisY)) > 0.58)
+        }
+    }
+
+    @Test func signalRecenteringCannotScoreTwiceInOneRound() throws {
+        let playerID = PlayerID(0)
+        let inputs = InputStore()
+        let session = ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: inputs,
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+        for step in 0...5 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let direction = session.signalDirectionForTesting()
+        let axes: (Float, Float) = switch direction {
+        case "up": (0, 1)
+        case "down": (0, -1)
+        case "left": (-1, 0)
+        default: (1, 0)
+        }
+
+        #expect(inputs.update(
+            .init(token: 1, sequence: 1, clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+            for: playerID
+        ))
+        session.updateForTesting(0.30)
+        let firstScore = try #require(session.scoreForTesting(playerID))
+        #expect(firstScore > 0)
+
+        #expect(inputs.update(
+            .init(token: 1, sequence: 2, clientTimeMs: 2, axisX: 0, axisY: 0),
+            for: playerID
+        ))
+        session.updateForTesting(0.35)
+        #expect(inputs.update(
+            .init(token: 1, sequence: 3, clientTimeMs: 3, axisX: axes.0, axisY: axes.1),
+            for: playerID
+        ))
+        session.updateForTesting(0.40)
+
+        #expect(session.scoreForTesting(playerID) == firstScore)
+    }
+
+    @Test func seededSnakeSimulationIgnoresDictionaryStorageOrder() {
+        let participants = (0..<6).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        let first = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        let second = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        second.reverseStorageForTesting()
+
+        for step in 0...100 {
+            let time = Double(step) * 0.05
+            first.updateForTesting(time)
+            second.updateForTesting(time)
+        }
+
+        #expect(first.snapshotForTesting() == second.snapshotForTesting())
+    }
+
+    @Test func snakeTrailRenderingReusesItsBoundedNodePool() throws {
+        let playerID = PlayerID(0)
+        let session = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: InputStore(),
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+
+        for step in 0...20 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let initial = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
+        #expect(!initial.isEmpty)
+
+        for step in 21...60 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let later = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
+
+        #expect(Array(later.prefix(initial.count)) == initial)
+        #expect(later.count <= 36)
+    }
+
     @Test func everyGameBuildsAValidEightPlayerControllerAndBotSession() {
         let participants = (0..<8).map { index in
             let playerID = PlayerID(UInt8(index))
@@ -526,8 +764,10 @@ struct PartyBoxTests {
             coordinator.perform(.select)
             for _ in 0..<5 { coordinator.perform(.down) }
             #expect(coordinator.menuItems[coordinator.menuSelection] == "PARTY CUP")
+            #expect(!coordinator.controlStatusForTesting(teammateID).canToggleReady)
             coordinator.perform(.select)
             #expect(coordinator.phase == .cupSetup)
+            #expect(!coordinator.controlStatusForTesting(teammateID).canToggleReady)
 
             coordinator.perform(.select)
             coordinator.perform(.down)
@@ -535,6 +775,7 @@ struct PartyBoxTests {
             coordinator.perform(.down)
             coordinator.perform(.select)
             #expect(coordinator.selectedCupGameIDs.count == 3)
+            #expect(coordinator.controlStatusForTesting(teammateID).canToggleReady)
             coordinator.perform(.select, source: .controller(teammateID))
             #expect(coordinator.phase == .playing)
 

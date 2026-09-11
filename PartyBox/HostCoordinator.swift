@@ -116,6 +116,7 @@ final class HostCoordinator {
 #if DEBUG
     @ObservationIgnored private var startCheckpointForTesting: (@MainActor () async -> Void)?
     @ObservationIgnored private var finishMatchCheckpointForTesting: (@MainActor () async -> Void)?
+    @ObservationIgnored private var finishCupCheckpointForTesting: (@MainActor () async -> Void)?
 #endif
 
     var menuItems: [String] { games.map { $0.descriptor.title } + ["PARTY CUP", "HISTORY & LEADERBOARD"] }
@@ -135,7 +136,9 @@ final class HostCoordinator {
     }
     var leaderboard: [LeaderboardEntry] { HistoryAggregation.leaderboard(historyRecords) }
     var displayedVoteTallies: [VoteTallyPresentation] {
-        let modifiers = games.indices.contains(menuSelection) ? games[menuSelection].descriptor.modifiers : []
+        let modifiers = games.indices.contains(menuSelection)
+            ? games[menuSelection].availableModifiers(participantCount: currentParticipants.count)
+            : []
         return voteTallies.keys.sorted().map { modifierID in
             VoteTallyPresentation(
                 id: modifierID,
@@ -597,23 +600,29 @@ final class HostCoordinator {
         cupPoints = Dictionary(uniqueKeysWithValues: cupParticipants.map { ($0.controllerID, 0) })
         cupEventWins = Dictionary(uniqueKeysWithValues: cupParticipants.map { ($0.controllerID, 0) })
         cupMatchRecordIDs = []
-        startCurrentCupEvent()
+        guard startCupEvent(at: 0) else {
+            cupParticipants = []
+            cupPoints = [:]
+            cupEventWins = [:]
+            return
+        }
+        cupEventIndex = 0
     }
 
     private func startNextCupEvent() {
-        guard case .cupStandings = phase, cupEventIndex + 1 < selectedCupGameIDs.count else { return }
-        cupEventIndex += 1
-        startCurrentCupEvent()
+        let nextEventIndex = cupEventIndex + 1
+        guard case .cupStandings = phase, nextEventIndex < selectedCupGameIDs.count else { return }
+        guard startCupEvent(at: nextEventIndex) else { return }
+        cupEventIndex = nextEventIndex
     }
 
-    private func startCurrentCupEvent() {
+    @discardableResult
+    private func startCupEvent(at eventIndex: Int) -> Bool {
         reconcileCupParticipants()
-        guard selectedCupGameIDs.indices.contains(cupEventIndex),
-              let gameIndex = games.firstIndex(where: { $0.descriptor.id == selectedCupGameIDs[cupEventIndex] }) else { return }
-        menuSelection = gameIndex
+        guard selectedCupGameIDs.indices.contains(eventIndex),
+              let gameIndex = games.firstIndex(where: { $0.descriptor.id == selectedCupGameIDs[eventIndex] }) else { return false }
         let live = cupParticipants.filter { livePlayer(for: $0)?.isConnected == true }
-        guard !live.isEmpty else { return }
-        startGame(at: gameIndex, participants: Array(live.prefix(games[gameIndex].descriptor.maximumPlayers)), isCupEvent: true)
+        return startGame(at: gameIndex, participants: live, isCupEvent: true)
     }
 
     private func reconcileCupParticipants() {
@@ -636,15 +645,20 @@ final class HostCoordinator {
     private func connectedParticipants(maximum: Int) -> [GameParticipant] {
         let connectedPlayers = host.players.filter(\.isConnected)
         let connected = Set(connectedPlayers.map(\.id))
-        let ordered = turnOrder.players.filter { connected.contains($0) }
-        // PartyHost updates its roster before the corresponding join event reaches us.
-        // Include those freshly admitted players so an immediate start cannot omit them.
-        let missing = connectedPlayers.map(\.id).filter { !ordered.contains($0) }
-        return Array((ordered + missing).prefix(maximum)).compactMap { id in
-            guard let player = host.players.first(where: { $0.id == id }),
-                  let controllerID = host.controllerID(for: id) else { return nil }
-            return GameParticipant(player: player, controllerID: controllerID)
+        let ids = turnOrder.participants(
+            connected: connected,
+            maximum: maximum,
+            including: connectedPlayers.map(\.id)
+        )
+        let playersByID = Dictionary(uniqueKeysWithValues: connectedPlayers.map { ($0.id, $0) })
+        var participants: [GameParticipant] = []
+        participants.reserveCapacity(ids.count)
+        for id in ids {
+            guard let player = playersByID[id],
+                  let controllerID = host.controllerID(for: id) else { return [] }
+            participants.append(GameParticipant(player: player, controllerID: controllerID))
         }
+        return participants
     }
 
     private func clearReadiness() {
@@ -683,8 +697,9 @@ final class HostCoordinator {
         case .cupComplete: "cupComplete"
         case .history: "history"
         }
+        let generatedAt = Date()
         let report = Report(
-            generatedAt: Date(),
+            generatedAt: generatedAt,
             role: "host",
             protocolVersion: PartyNetConstants.protocolVersion,
             phase: phaseName,
@@ -697,15 +712,8 @@ final class HostCoordinator {
             },
             historyPersistenceHealthy: historyPersistenceError == nil
         )
-        let formatter = ISO8601DateFormatter()
-        let safeDate = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("PartyBox-host-diagnostics-\(safeDate).json")
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         do {
-            try encoder.encode(report).write(to: url, options: .atomic)
-            return url
+            return try RedactedDiagnosticsExporter.write(report, role: .host)
         } catch {
             logger.error("Could not export diagnostics: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -757,9 +765,9 @@ final class HostCoordinator {
             requestLayoutBroadcast()
             if case .cupComplete(let record) = phase,
                let controllerID = host.controllerID(for: player.id),
-               record.standings.contains(where: { $0.controllerID == controllerID }) {
+               let personalRecord = PersonalCupRecord(record: record, controllerID: controllerID) {
                 await send(
-                    .cupCompleted(PersonalCupRecord(record: record, controllerID: controllerID)),
+                    .cupCompleted(personalRecord),
                     to: player.id
                 )
             }
@@ -876,15 +884,31 @@ final class HostCoordinator {
         guard phase != .playing, games.indices.contains(menuSelection) else { return }
         let game = games[menuSelection]
         let participants = connectedParticipants(maximum: game.descriptor.maximumPlayers)
-        guard participants.count >= game.descriptor.minimumPlayers else { return }
-        startGame(at: menuSelection, participants: participants, isCupEvent: false)
+        _ = startGame(at: menuSelection, participants: participants, isCupEvent: false)
     }
 
-    private func startGame(at gameIndex: Int, participants: [GameParticipant], isCupEvent: Bool) {
-        guard phase != .playing, games.indices.contains(gameIndex), !participants.isEmpty else { return }
-        menuSelection = gameIndex
+    static func participantsForStart(
+        _ participants: [GameParticipant],
+        descriptor: GameDescriptor
+    ) -> [GameParticipant]? {
+        let eligible = Array(participants.prefix(descriptor.maximumPlayers))
+        return eligible.count >= descriptor.minimumPlayers ? eligible : nil
+    }
+
+    @discardableResult
+    private func startGame(at gameIndex: Int, participants: [GameParticipant], isCupEvent: Bool) -> Bool {
+        guard phase != .playing, games.indices.contains(gameIndex) else { return false }
         let game = games[gameIndex]
-        let modifier = isCupEvent ? nil : pendingModifier
+        guard let participants = Self.participantsForStart(
+            participants,
+            descriptor: game.descriptor
+        ) else { return false }
+        menuSelection = gameIndex
+        let modifier = Self.applicableModifier(
+            isCupEvent ? nil : pendingModifier,
+            for: game,
+            participantCount: participants.count
+        )
         pendingModifier = nil
         appliedModifier = modifier
         botDifficultyChange = nil
@@ -917,6 +941,7 @@ final class HostCoordinator {
         phase = .playing
         statusMessage = "Match in progress"
         requestLayoutBroadcast()
+        return true
     }
 
     private func handleGame(_ events: [GameEvent], matchID: UUID) {
@@ -995,7 +1020,7 @@ final class HostCoordinator {
               games.indices.contains(menuSelection) else { return }
         let game = games[menuSelection]
         let participants = currentParticipants
-        pendingModifier = currentMatchIsCup ? nil : resolveVote(in: game.descriptor)
+        pendingModifier = currentMatchIsCup ? nil : resolveVote(in: game)
         let endedAt = Date()
         let participantRecords = participants.map { participant in
             let value = outcome.playerOutcomes.first { $0.playerID == participant.player.id }?.outcome ?? .lost
@@ -1047,7 +1072,7 @@ final class HostCoordinator {
         if currentMatchIsCup {
             currentMatchIsCup = false
             if cupEventIndex + 1 >= selectedCupGameIDs.count {
-                await finishCup()
+                guard await finishCup(lifecycleGeneration: lifecycleGeneration) else { return }
             } else {
                 phase = .cupStandings(outcome)
             }
@@ -1100,7 +1125,7 @@ final class HostCoordinator {
         }
     }
 
-    private func finishCup() async {
+    private func finishCup(lifecycleGeneration: UUID) async -> Bool {
         let record = CupRecord(
             endedAt: Date(),
             gameIDs: selectedCupGameIDs,
@@ -1108,6 +1133,10 @@ final class HostCoordinator {
             standings: makeCupStandings()
         )
         let result = await cupHistoryStore.append(record)
+#if DEBUG
+        if let checkpoint = finishCupCheckpointForTesting { await checkpoint() }
+#endif
+        guard isCurrentLifecycle(lifecycleGeneration) else { return false }
         if result.wasInserted, !cupRecords.contains(where: { $0.id == record.id }) {
             cupRecords.insert(record, at: 0)
         }
@@ -1117,11 +1146,15 @@ final class HostCoordinator {
             historyPersistenceError = nil
         }
         for participant in cupParticipants {
+            guard isCurrentLifecycle(lifecycleGeneration) else { return false }
             guard let live = livePlayer(for: participant), live.isConnected else { continue }
-            await send(.cupCompleted(PersonalCupRecord(record: record, controllerID: participant.controllerID)), to: live.id)
+            guard let personalRecord = PersonalCupRecord(record: record, controllerID: participant.controllerID) else { continue }
+            await send(.cupCompleted(personalRecord), to: live.id)
         }
+        guard isCurrentLifecycle(lifecycleGeneration) else { return false }
         phase = .cupComplete(record)
         statusMessage = record.standings.first.map { "\($0.displayName) won the Party Cup" } ?? "Party Cup complete"
+        return true
     }
 
     private func resetCup() {
@@ -1164,6 +1197,10 @@ final class HostCoordinator {
             && currentMatchID == matchID && phase == .playing
     }
 
+    private func isCurrentLifecycle(_ lifecycleGeneration: UUID) -> Bool {
+        isStarted && self.lifecycleGeneration == lifecycleGeneration
+    }
+
     private func livePlayer(for participant: GameParticipant) -> PlayerInfo? {
         guard host.controllerID(for: participant.player.id) == participant.controllerID else { return nil }
         return host.players.first { $0.id == participant.player.id }
@@ -1175,13 +1212,26 @@ final class HostCoordinator {
         }
     }
 
-    private func resolveVote(in descriptor: GameDescriptor) -> GameModifierDescriptor? {
+    private func resolveVote(in game: any PartyGame) -> GameModifierDescriptor? {
         guard !votes.isEmpty else { return nil }
         let counts = Dictionary(grouping: votes.values, by: { $0 }).mapValues(\.count)
         guard let maximum = counts.values.max() else { return nil }
-        let tied = descriptor.modifiers.filter { counts[$0.id] == maximum }
+        let tied = game.availableModifiers(participantCount: currentParticipants.count)
+            .filter { counts[$0.id] == maximum }
         guard !tied.isEmpty else { return nil }
         return tied[Int(currentMatchSeed % UInt64(tied.count))]
+    }
+
+    static func applicableModifier(
+        _ candidate: GameModifierDescriptor?,
+        for game: any PartyGame,
+        participantCount: Int
+    ) -> GameModifierDescriptor? {
+        guard let candidate,
+              game.availableModifiers(participantCount: participantCount).contains(where: {
+                  $0.id == candidate.id
+              }) else { return nil }
+        return candidate
     }
 
     private func isEligibleSpectator(_ playerID: PlayerID) -> Bool {
@@ -1217,7 +1267,9 @@ final class HostCoordinator {
         now suppliedNow: ContinuousClock.Instant? = nil
     ) -> Bool {
         guard games.indices.contains(menuSelection),
-              games[menuSelection].descriptor.modifiers.contains(where: { $0.id == modifierID }),
+              games[menuSelection].availableModifiers(
+                  participantCount: currentParticipants.count
+              ).contains(where: { $0.id == modifierID }),
               votes[playerID] != modifierID else { return false }
         let now = suppliedNow ?? ContinuousClock().now
         if let previous = lastVoteAt[playerID], previous.duration(to: now) < .milliseconds(250) {
@@ -1269,7 +1321,7 @@ final class HostCoordinator {
             return .gameOver(.init(
                 title: outcome.title,
                 subtitle: outcome.subtitle,
-                nextModifier: pendingModifier?.title,
+                nextUp: pendingModifier?.title,
                 control: controlStatus(for: playerID),
                 botDifficultyChange: botDifficultyChange
             ))
@@ -1278,7 +1330,7 @@ final class HostCoordinator {
             return .gameOver(.init(
                 title: "EVENT \(cupEventIndex + 1) COMPLETE",
                 subtitle: leader.map { "\($0.displayName) leads with \($0.points) points" } ?? "Party Cup continues",
-                nextModifier: selectedCupGameIDs.indices.contains(cupEventIndex + 1)
+                nextUp: selectedCupGameIDs.indices.contains(cupEventIndex + 1)
                     ? games.first(where: { $0.descriptor.id == selectedCupGameIDs[cupEventIndex + 1] })?.descriptor.title
                     : nil,
                 control: controlStatus(for: playerID)
@@ -1313,7 +1365,12 @@ final class HostCoordinator {
                     : .waiting(position: turnOrder.waitingPosition(of: playerID, active: active) ?? 1)
                 screen = SpectatorScreenFactory.make(
                     game: game.descriptor,
-                    state: .init(role: role, choices: game.descriptor.modifiers, tallies: voteTallies, selection: votes[playerID])
+                    state: .init(
+                        role: role,
+                        choices: game.availableModifiers(participantCount: currentParticipants.count),
+                        tallies: voteTallies,
+                        selection: votes[playerID]
+                    )
                 )
             }
             do {
@@ -1342,8 +1399,21 @@ final class HostCoordinator {
             isCaptain: playerID == captainID,
             isReady: readyPlayerIDs.contains(playerID),
             readyCount: readyCount,
-            requiredReadyCount: requiredReadyCount
+            requiredReadyCount: requiredReadyCount,
+            canToggleReady: playerID != captainID && canToggleReadiness
         )
+    }
+
+    private var canToggleReadiness: Bool {
+        guard canStart else { return false }
+        switch phase {
+        case .gameMenu:
+            return games.indices.contains(menuSelection)
+        case .cupSetup, .gameOver, .cupStandings:
+            return true
+        case .lobby, .playing, .history, .cupComplete:
+            return false
+        }
     }
 
     private func unavailableGameLayout(gameID: String) -> PartyBoxCore.ControllerLayout {
@@ -1527,6 +1597,7 @@ final class HostCoordinator {
 #if DEBUG
         startCheckpointForTesting = nil
         finishMatchCheckpointForTesting = nil
+        finishCupCheckpointForTesting = nil
 #endif
     }
 
@@ -1583,6 +1654,10 @@ final class HostCoordinator {
         finishMatchCheckpointForTesting = checkpoint
     }
 
+    func setFinishCupCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
+        finishCupCheckpointForTesting = checkpoint
+    }
+
     func finishCurrentMatchForTesting(_ outcome: GameOutcome) async {
         guard let currentMatchID else { return }
         await finishMatch(outcome, matchID: currentMatchID, lifecycleGeneration: lifecycleGeneration)
@@ -1590,6 +1665,10 @@ final class HostCoordinator {
 
     func isLiveParticipantForTesting(_ participant: GameParticipant) -> Bool {
         livePlayer(for: participant) != nil
+    }
+
+    func controlStatusForTesting(_ playerID: PlayerID) -> PartyControlStatus {
+        controlStatus(for: playerID)
     }
 
     var botInputFramesSentForTesting: UInt64 {
@@ -1646,13 +1725,14 @@ final class HostCoordinator {
         }
         switch scenario {
         case "menu": phase = .gameMenu
-        case "four-way-match", "signal-snap-match", "gravity-grab-match", "snake-pit-match", "last-light-match":
+        case "four-way-match", "signal-snap-match", "gravity-grab-match", "snake-pit-match", "last-light-match", "cup-final-match":
             let gameIndex = [
                 "four-way-match": 0,
                 "signal-snap-match": 1,
                 "gravity-grab-match": 2,
                 "snake-pit-match": 3,
                 "last-light-match": 4,
+                "cup-final-match": 2,
             ][scenario] ?? 0
             menuSelection = gameIndex
             currentParticipants = fixtureParticipants
@@ -1664,6 +1744,14 @@ final class HostCoordinator {
             currentSession = games[gameIndex].makeSession(context: context, onEvents: { _ in })
             currentScene = currentSession?.scene
             phase = .playing
+            if scenario == "cup-final-match" {
+                selectedCupGameIDs = Array(games.prefix(3).map(\.descriptor.id))
+                cupParticipants = fixtureParticipants
+                cupEventIndex = selectedCupGameIDs.count - 1
+                cupPoints = Dictionary(uniqueKeysWithValues: fixtureParticipants.map { ($0.controllerID, 0) })
+                cupEventWins = Dictionary(uniqueKeysWithValues: fixtureParticipants.map { ($0.controllerID, 0) })
+                currentMatchIsCup = true
+            }
         case "cup-setup":
             selectedCupGameIDs = Array(games.prefix(2).map(\.descriptor.id))
             cupSetupSelection = 2

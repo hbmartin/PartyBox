@@ -96,6 +96,7 @@ public final class PartyHost {
     private var sessions: [ControllerID: PlayerSession] = [:]
     private var connectionOwners: [UUID: ControllerID] = [:]
     private var registeredLocalBotIDs: Set<ControllerID> = []
+    private var pendingCapacityDisplacements: [ControllerID: PlayerSession] = [:]
     private var pendingMarkDisplacements: [ControllerID: PendingMarkDisplacement] = [:]
     private var reservedInitialMarks: Set<PlayerMark> = []
     private var lifecycleGeneration: UInt64 = 0
@@ -231,12 +232,13 @@ public final class PartyHost {
                   $0.botControllerID == requesterID
               }) else { return false }
 
-        let holders = sessions.lazy
-            .filter { $0.key != requesterID && $0.value.mark == mark }
-            .prefix(2)
-        if let holderEntry = holders.first {
+        var holderEntry: (key: ControllerID, value: PlayerSession)?
+        for entry in sessions where entry.key != requesterID && entry.value.mark == mark {
+            guard holderEntry == nil else { return false }
+            holderEntry = entry
+        }
+        if let holderEntry {
             guard requester.kind == .human,
-                  holders.count == 1,
                   holderEntry.value.isAdmitted,
                   holderEntry.value.kind == .bot else { return false }
             var holder = holderEntry.value
@@ -368,6 +370,7 @@ public final class PartyHost {
         sessions.removeAll()
         connectionOwners.removeAll()
         registeredLocalBotIDs.removeAll()
+        pendingCapacityDisplacements.removeAll()
         pendingMarkDisplacements.removeAll()
         reservedInitialMarks.removeAll()
         players.removeAll()
@@ -486,6 +489,10 @@ public final class PartyHost {
             event = .playerReconnected(info(for: existing, connected: true))
         } else {
             isNewSession = true
+            let kind: PlayerKind = registeredLocalBotIDs.contains(hello.controllerID) ? .bot : .human
+            if sessions.count >= PartyNetConstants.maximumControllers, kind == .human {
+                pendingCapacityDisplacements[hello.controllerID] = reserveBotCapacityForHumanAdmission()
+            }
             guard sessions.count < PartyNetConstants.maximumControllers,
                   let playerID = lowestAvailablePlayerID() else {
                 await transport.respond(to: connectionID, with: .reject(.full))
@@ -493,7 +500,6 @@ public final class PartyHost {
             }
             fallbackName = "Player \(playerID.rawValue + 1)"
             token = UInt64.random(in: UInt64.min...UInt64.max)
-            let kind: PlayerKind = registeredLocalBotIDs.contains(hello.controllerID) ? .bot : .human
             let markAssignment = assignInitialMark(
                 preferred: hello.preferredMark,
                 kind: kind,
@@ -533,25 +539,48 @@ public final class PartyHost {
         let accepted = await transport.respond(to: connectionID, with: .accept(welcome))
         guard lifecycleGeneration == generation else { return }
         guard accepted else {
-            await rollbackFailedHello(
-                controllerID: hello.controllerID,
-                connectionID: connectionID,
-                isNewSession: isNewSession,
-                generation: generation
-            )
+            if pendingCapacityDisplacements[hello.controllerID] != nil {
+                await rollbackFailedCapacityReplacement(
+                    controllerID: hello.controllerID,
+                    connectionID: connectionID,
+                    generation: generation
+                )
+            } else {
+                await rollbackFailedHello(
+                    controllerID: hello.controllerID,
+                    connectionID: connectionID,
+                    isNewSession: isNewSession,
+                    generation: generation
+                )
+            }
             return
         }
         guard var admitted = sessions[hello.controllerID], admitted.connectionID == connectionID else {
-            discardPendingInitialMarkAssignment(for: hello.controllerID)
+            if sessions[hello.controllerID] == nil {
+                discardPendingInitialMarkAssignment(for: hello.controllerID)
+            }
             await transport.disconnect(connectionID: connectionID)
             return
         }
+        let capacityDisplacement = pendingCapacityDisplacements.removeValue(
+            forKey: hello.controllerID
+        )
         commitPendingInitialMarkAssignment(for: hello.controllerID)
         admitted.isAdmitted = true
         admitted.isWelcomedConnection = true
         sessions[hello.controllerID] = admitted
+        if let capacityDisplacement { commitBotCapacityDisplacement(capacityDisplacement) }
         refreshPlayers()
+        if let capacityDisplacement, capacityDisplacement.isAdmitted {
+            eventHub.yield(.playerExpired(
+                info(for: capacityDisplacement, connected: false),
+                controllerID: capacityDisplacement.controllerID
+            ))
+        }
         eventHub.yield(event)
+        if let capacityDisplacement {
+            await disconnectDisplacedBot(capacityDisplacement)
+        }
     }
 
     private func abandonReconnectHandshake(
@@ -587,6 +616,88 @@ public final class PartyHost {
         } else {
             guard session.connectionID == connectionID else { return }
             await handleDisconnect(connectionID: connectionID, generation: generation)
+        }
+    }
+
+    private func reserveBotCapacityForHumanAdmission() -> PlayerSession? {
+        guard let entry = sessions
+            .filter({
+                $0.value.kind == .bot
+                    && $0.value.isAdmitted
+                    && $0.value.isWelcomedConnection
+                    && $0.value.connectionID != nil
+            })
+            .max(by: { $0.value.playerID.rawValue < $1.value.playerID.rawValue }) else {
+            return nil
+        }
+        cancelPendingRename(for: entry.key)
+        entry.value.graceTask?.cancel()
+        sessions.removeValue(forKey: entry.key)
+        return entry.value
+    }
+
+    private func rollbackFailedCapacityReplacement(
+        controllerID: ControllerID,
+        connectionID: UUID,
+        generation: UInt64
+    ) async {
+        guard lifecycleGeneration == generation,
+              let replacement = sessions[controllerID],
+              replacement.connectionID == connectionID
+                || (!replacement.isAdmitted && replacement.connectionID == nil) else { return }
+        guard pendingCapacityDisplacements[controllerID] != nil else {
+            await rollbackFailedHello(
+                controllerID: controllerID,
+                connectionID: connectionID,
+                isNewSession: true,
+                generation: generation
+            )
+            return
+        }
+        sessions.removeValue(forKey: controllerID)
+        discardPendingInitialMarkAssignment(for: controllerID)
+        connectionOwners.removeValue(forKey: connectionID)
+        replacement.graceTask?.cancel()
+        inputs.remove(replacement.playerID)
+        let expiredBot = restorePendingCapacityDisplacement(for: controllerID)
+        refreshPlayers()
+        if let expiredBot, expiredBot.isAdmitted {
+            eventHub.yield(.playerExpired(
+                info(for: expiredBot, connected: false),
+                controllerID: expiredBot.controllerID
+            ))
+        }
+        if let token = replacement.sessionToken { await transport?.invalidate(token: token) }
+        await transport?.disconnect(connectionID: connectionID)
+    }
+
+    private func restorePendingCapacityDisplacement(for controllerID: ControllerID) -> PlayerSession? {
+        guard let bot = pendingCapacityDisplacements.removeValue(forKey: controllerID) else {
+            return nil
+        }
+        guard let connectionID = bot.connectionID,
+              connectionOwners[connectionID] == bot.controllerID else {
+            inputs.remove(bot.playerID)
+            return bot
+        }
+        sessions[bot.controllerID] = bot
+        return nil
+    }
+
+    private func commitBotCapacityDisplacement(_ bot: PlayerSession) {
+        if let connectionID = bot.connectionID {
+            connectionOwners.removeValue(forKey: connectionID)
+        }
+        bot.graceTask?.cancel()
+        inputs.remove(bot.playerID)
+    }
+
+    private func disconnectDisplacedBot(_ bot: PlayerSession) async {
+        if let connectionID = bot.connectionID {
+            await transport?.disconnect(connectionID: connectionID)
+        }
+        if let token = bot.sessionToken {
+            await transport?.invalidate(token: token)
         }
     }
 
@@ -741,11 +852,18 @@ public final class PartyHost {
         }
         session.graceTask?.cancel()
         inputs.remove(session.playerID)
+        let expiredCapacityBot = restorePendingCapacityDisplacement(for: controllerID)
         refreshPlayers()
         if session.isAdmitted {
             eventHub.yield(.playerExpired(
                 info(for: session, connected: false),
                 controllerID: session.controllerID
+            ))
+        }
+        if let expiredCapacityBot, expiredCapacityBot.isAdmitted {
+            eventHub.yield(.playerExpired(
+                info(for: expiredCapacityBot, connected: false),
+                controllerID: expiredCapacityBot.controllerID
             ))
         }
         if let connectionID = session.connectionID {

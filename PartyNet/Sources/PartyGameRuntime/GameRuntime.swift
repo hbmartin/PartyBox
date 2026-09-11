@@ -143,8 +143,15 @@ public extension PartyGameSession {
 @MainActor
 public protocol PartyGame {
     var descriptor: GameDescriptor { get }
+    func availableModifiers(participantCount: Int) -> [GameModifierDescriptor]
     func makeSession(
         context: GameSessionContext,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) -> any PartyGameSession
+}
+
+public extension PartyGame {
+    func availableModifiers(participantCount: Int) -> [GameModifierDescriptor] {
+        descriptor.modifiers
+    }
 }

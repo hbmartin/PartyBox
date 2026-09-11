@@ -10,13 +10,15 @@ import UIKit
 final class ControllerCoordinator {
     struct MotionRetryBackoff {
         static let recoverySampleThreshold = 60
+        static let maximumRetryExponent = 4
+        static let maximumFailureCount = maximumRetryExponent + 1
 
         private(set) var failureCount = 0
         private(set) var successfulSampleCount = 0
 
         mutating func recordFailure() -> Duration {
             successfulSampleCount = 0
-            failureCount = min(failureCount, 4) + 1
+            failureCount = min(failureCount + 1, Self.maximumFailureCount)
             return ControllerCoordinator.motionRetryDelay(failureCount: failureCount)
         }
 
@@ -31,6 +33,30 @@ final class ControllerCoordinator {
             failureCount = 0
             successfulSampleCount = 0
         }
+    }
+
+    struct MotionSampleTolerance {
+        static let consecutiveMissingSampleLimit = 3
+
+        private(set) var consecutiveMissingSamples = 0
+
+        mutating func recordMissingSample() -> Bool {
+            consecutiveMissingSamples += 1
+            return consecutiveMissingSamples >= Self.consecutiveMissingSampleLimit
+        }
+
+        mutating func recordSuccessfulSample() {
+            consecutiveMissingSamples = 0
+        }
+
+        mutating func reset() {
+            consecutiveMissingSamples = 0
+        }
+    }
+
+    struct DeviceCueDeliveryPolicy: Equatable {
+        let playsHaptic: Bool
+        let presentsColor: Bool
     }
 
     let client: PartyClient
@@ -51,7 +77,12 @@ final class ControllerCoordinator {
     private(set) var controllerScreen: ControllerScreen?
     private(set) var personalHistory: [PersonalMatchRecord] = []
     private(set) var personalCupHistory: [PersonalCupRecord] = []
-    private(set) var historyPersistenceError: String?
+    private(set) var matchHistoryPersistenceError: String?
+    private(set) var cupHistoryPersistenceError: String?
+    var historyPersistenceError: String? {
+        let failures = [matchHistoryPersistenceError, cupHistoryPersistenceError].compactMap { $0 }
+        return failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
     private(set) var currentDeviceCue: DeviceCue?
     var motionControlEnabled: Bool {
         didSet {
@@ -102,9 +133,14 @@ final class ControllerCoordinator {
     @ObservationIgnored private var motionCaptureGeneration: UUID?
     @ObservationIgnored private var motionRetryTask: Task<Void, Never>?
     @ObservationIgnored private var motionRetryBackoff = MotionRetryBackoff()
+    @ObservationIgnored private var motionSampleTolerance = MotionSampleTolerance()
     @ObservationIgnored private var deviceCueTask: Task<Void, Never>?
+    @ObservationIgnored private var lifecycleGeneration: UUID?
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var isSceneActive = true
+#if DEBUG
+    @ObservationIgnored private var startLoadCheckpointForTesting: (@MainActor () async -> Void)?
+#endif
 
     init(
         defaults: UserDefaults? = nil,
@@ -170,10 +206,18 @@ final class ControllerCoordinator {
             if stopOperation?.id == operation.id { stopOperation = nil }
         }
         guard !isStarted else { return }
+        let generation = UUID()
+        lifecycleGeneration = generation
         isStarted = true
-        personalHistory = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
-        personalCupHistory = await cupHistoryStore.all().sorted { $0.endedAt > $1.endedAt }
-        guard isStarted else { return }
+        async let storedMatches = historyStore.all()
+        async let storedCups = cupHistoryStore.all()
+        let (matches, cups) = await (storedMatches, storedCups)
+#if DEBUG
+        if let checkpoint = startLoadCheckpointForTesting { await checkpoint() }
+#endif
+        guard isStarted, lifecycleGeneration == generation else { return }
+        personalHistory = matches.sorted { $0.endedAt > $1.endedAt }
+        personalCupHistory = cups.sorted { $0.endedAt > $1.endedAt }
 #if DEBUG
         if let scenario = configuration.scenario {
             applyFixture(scenario: scenario)
@@ -190,7 +234,7 @@ final class ControllerCoordinator {
         }
 #endif
         await client.startBrowsing()
-        guard isStarted else { return }
+        guard isStarted, lifecycleGeneration == generation else { return }
 #if DEBUG
         if let address = configuration.hostAddress,
            let host = try? DiscoveredHost(host: address.host, port: address.port, name: "UI Test Host") {
@@ -206,6 +250,7 @@ final class ControllerCoordinator {
             return
         }
         isStarted = false
+        lifecycleGeneration = nil
         eventGeneration = nil
         discoveryHelpTask?.cancel()
         discoveryHelpTask = nil
@@ -316,8 +361,9 @@ final class ControllerCoordinator {
         case .gameOver: "gameOver"
         case .historyNavigation: "history"
         }
+        let generatedAt = Date()
         let report = Report(
-            generatedAt: Date(),
+            generatedAt: generatedAt,
             role: "controller",
             protocolVersion: PartyNetConstants.protocolVersion,
             connectionState: stateName,
@@ -330,37 +376,28 @@ final class ControllerCoordinator {
             savedCups: personalCupHistory.count,
             historyPersistenceHealthy: historyPersistenceError == nil
         )
-        let formatter = ISO8601DateFormatter()
-        let safeDate = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("PartyBox-controller-diagnostics-\(safeDate).json")
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         do {
-            try encoder.encode(report).write(to: url, options: .atomic)
-            return url
+            return try RedactedDiagnosticsExporter.write(report, role: .controller)
         } catch {
             return nil
         }
     }
 
     func clearPersonalHistory() async {
-        var failures: [String] = []
         do {
             try await historyStore.clear()
             personalHistory = []
+            matchHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            matchHistoryPersistenceError = "Match history could not be cleared: \(error.localizedDescription)"
         }
         do {
             try await cupHistoryStore.clear()
             personalCupHistory = []
+            cupHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            cupHistoryPersistenceError = "Party Cup history could not be cleared: \(error.localizedDescription)"
         }
-        historyPersistenceError = failures.isEmpty
-            ? nil
-            : "History could not be cleared: \(failures.joined(separator: "; "))"
     }
 
     func scenePhaseChanged(isActive: Bool) {
@@ -441,9 +478,15 @@ final class ControllerCoordinator {
     }
 
     private func show(_ cue: DeviceCue) {
-        guard !configuration.disableEffects, deviceEffectsEnabled else { return }
+        let policy = Self.deviceCueDeliveryPolicy(
+            effectsGloballyDisabled: configuration.disableEffects,
+            deviceEffectsEnabled: deviceEffectsEnabled,
+            hapticsEnabled: hapticsEnabled,
+            containsHaptic: cue.haptic != nil
+        )
+        if policy.playsHaptic, let haptic = cue.haptic { play(haptic) }
+        guard policy.presentsColor else { return }
         currentDeviceCue = cue
-        if let haptic = cue.haptic { play(haptic) }
         deviceCueTask?.cancel()
         deviceCueTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(cue.durationMilliseconds))
@@ -451,6 +494,18 @@ final class ControllerCoordinator {
             self?.currentDeviceCue = nil
             self?.deviceCueTask = nil
         }
+    }
+
+    static func deviceCueDeliveryPolicy(
+        effectsGloballyDisabled: Bool,
+        deviceEffectsEnabled: Bool,
+        hapticsEnabled: Bool,
+        containsHaptic: Bool
+    ) -> DeviceCueDeliveryPolicy {
+        DeviceCueDeliveryPolicy(
+            playsHaptic: !effectsGloballyDisabled && hapticsEnabled && containsHaptic,
+            presentsColor: !effectsGloballyDisabled && deviceEffectsEnabled
+        )
     }
 
     private var requestedInputs: RequestedInputs {
@@ -464,9 +519,9 @@ final class ControllerCoordinator {
             personalHistory.insert(record, at: 0)
         }
         if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This match is available for this session but could not be saved: \(error)"
+            matchHistoryPersistenceError = "This match is available for this session but could not be saved: \(error)"
         } else {
-            historyPersistenceError = nil
+            matchHistoryPersistenceError = nil
         }
     }
 
@@ -477,7 +532,9 @@ final class ControllerCoordinator {
             personalCupHistory.insert(record, at: 0)
         }
         if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+            cupHistoryPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+        } else {
+            cupHistoryPersistenceError = nil
         }
     }
 
@@ -497,10 +554,17 @@ final class ControllerCoordinator {
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
             MainActor.assumeIsolated {
                 guard let self, self.motionCaptureGeneration == generation else { return }
-                guard error == nil, let quaternion = motion?.attitude.quaternion else {
+                if error != nil {
                     self.handleMotionCaptureFailure(generation: generation)
                     return
                 }
+                guard let quaternion = motion?.attitude.quaternion else {
+                    if self.motionSampleTolerance.recordMissingSample() {
+                        self.handleMotionCaptureFailure(generation: generation)
+                    }
+                    return
+                }
+                self.motionSampleTolerance.recordSuccessfulSample()
                 self.motionRetryBackoff.recordSuccessfulSample()
                 let orientation = OrientationQuaternion(
                     x: Float(quaternion.x), y:Float(quaternion.y),
@@ -516,20 +580,26 @@ final class ControllerCoordinator {
     }
 
     private func stopMotionCapture() {
+        let wasCapturingMotion = motionCaptureGeneration != nil
+            || motionRetryTask != nil
+            || motionManager.isDeviceMotionActive
         motionCaptureGeneration = nil
         motionRetryTask?.cancel()
         motionRetryTask = nil
         motionRetryBackoff.reset()
+        motionSampleTolerance.reset()
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
         client.setOrientation(.identity, available: false)
-        client.setInput(axisX: 0, axisY: 0)
+        if wasCapturingMotion { client.setInput(axisX: 0, axisY: 0) }
     }
 
     private func handleMotionCaptureFailure(generation: UUID) {
         guard motionCaptureGeneration == generation else { return }
         motionCaptureGeneration = nil
+        motionSampleTolerance.reset()
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
         client.setOrientation(.identity, available: false)
+        client.setInput(axisX: 0, axisY: 0)
         guard motionRetryTask == nil else { return }
         let delay = motionRetryBackoff.recordFailure()
         motionRetryTask = Task { @MainActor [weak self] in
@@ -545,7 +615,7 @@ final class ControllerCoordinator {
     }
 
     static func motionRetryDelay(failureCount: Int) -> Duration {
-        let exponent = min(max(failureCount - 1, 0), 4)
+        let exponent = min(max(failureCount - 1, 0), MotionRetryBackoff.maximumRetryExponent)
         return .seconds(1 << exponent)
     }
 
@@ -598,6 +668,18 @@ final class ControllerCoordinator {
         await appendPersonalHistory(record)
     }
 
+    func appendPersonalCupHistoryForTesting(_ record: PersonalCupRecord) async {
+        await appendPersonalCupHistory(record)
+    }
+
+    func setStartLoadCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
+        startLoadCheckpointForTesting = checkpoint
+    }
+
+    func refreshMotionCaptureForTesting() {
+        updateMotionCapture()
+    }
+
     func handleForTesting(_ event: ClientEvent) async {
         await handle(event)
     }
@@ -627,7 +709,8 @@ final class ControllerCoordinator {
             isCaptain: false,
             isReady: true,
             readyCount: 2,
-            requiredReadyCount: 2
+            requiredReadyCount: 2,
+            canToggleReady: true
         )
         let captainLobby = LobbyLayout(
             captainID: currentPlayer.id,

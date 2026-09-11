@@ -451,9 +451,19 @@ The crown identifies the captain; other phones ready up instead of changing shar
 Pick a game and complete the ready check, then tap **SELECT**. For Party Cup, the captain first chooses
 three distinct games; placement points carry through all three events.
 
-✅ TV: the Pong arena, with a life counter (`◆◆◆`) along each occupied edge.
-✅ Each of the four active phones becomes a **paddle track** in that player's color, labelled
-`P<n> <name>`, with an orientation hint:
+The TV and phone controls depend on the selected game:
+
+- **Four-Way Pong, 1–4 players:** the TV shows the classic arena with a life counter (`◆◆◆`) along
+  each occupied edge. Every active phone becomes a paddle track in that player's color, labelled
+  `P<n> <name>`.
+- **Four-Way Pong, 5–8 players:** everyone plays the horizontal **GATE** qualifier on their phone;
+  the top four advance to the classic arena.
+- **Signal Snap:** match the TV symbol with the phone's direction pad.
+- **Gravity Grab:** steer around the ring with the two-dimensional drag surface or optional motion.
+- **Snake Pit:** turn with the direction pad and protect your three lives.
+- **Last Light:** use two-dimensional drag or optional motion to dodge the red hazards.
+
+For classic 1–4 player Pong, the paddle-track orientation is:
 
 | Seat | Edge | Hint on the phone |
 |---|---|---|
@@ -463,7 +473,7 @@ three distinct games; placement points carry through all three events.
 | 4th | right | `BOTTOM ← PADDLE → TOP` |
 
 Drag anywhere on the track to move — you don't have to grab the paddle itself. Touch is the default.
-Use the gear on the phone to enable and calibrate optional motion controls.
+Where a game supports it, use the gear on the phone to enable and calibrate optional motion controls.
 
 ### Step 9 — Play, and watch the diagnostics
 

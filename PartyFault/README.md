@@ -21,6 +21,7 @@ swift run --package-path PartyFault partyfault control 127.0.0.1:9900 cut
 
 The `serve` command prints one JSON `ProxyEndpoints` object after both listeners are ready. Point a
 client at those TCP and UDP ports. Profiles are clamped to safe bounds and seeded, so a scenario can
-be reproduced in CI.
+be reproduced in CI. The proxy listeners follow `--bind`, while the control listener always binds
+to `127.0.0.1`; the emitted `controlHost` field reports that address explicitly.
 
 PartyFault is licensed under Apache-2.0.
