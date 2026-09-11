@@ -118,8 +118,8 @@ final class ControllerCoordinator {
     var displayedInputAxisX: Float {
         client.inputAxisX
     }
-    private(set) var motionNeutralAxisX: Float
-    private(set) var motionNeutralAxisY: Float
+    private(set) var motionNeutralProjectionX: Float
+    private(set) var motionNeutralProjectionY: Float
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
@@ -156,8 +156,8 @@ final class ControllerCoordinator {
         motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
         deviceEffectsEnabled = defaults.object(forKey: "partybox.deviceEffectsEnabled") as? Bool ?? true
         hapticsEnabled = defaults.object(forKey: "partybox.hapticsEnabled") as? Bool ?? true
-        motionNeutralAxisX = Float(defaults.double(forKey: "partybox.motionNeutralAxisX"))
-        motionNeutralAxisY = Float(defaults.double(forKey: "partybox.motionNeutralAxisY"))
+        motionNeutralProjectionX = Float(defaults.double(forKey: "partybox.motionNeutralProjectionX"))
+        motionNeutralProjectionY = Float(defaults.double(forKey: "partybox.motionNeutralProjectionY"))
         let controllerID: ControllerID
         if let configured = configuration.controllerID {
             controllerID = ControllerID(rawValue: configured)
@@ -323,10 +323,10 @@ final class ControllerCoordinator {
     func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
 
     func calibrateMotion() {
-        motionNeutralAxisX = client.inputOrientation.horizontalTiltAxis()
-        motionNeutralAxisY = client.inputOrientation.verticalTiltAxis()
-        defaults.set(Double(motionNeutralAxisX), forKey: "partybox.motionNeutralAxisX")
-        defaults.set(Double(motionNeutralAxisY), forKey: "partybox.motionNeutralAxisY")
+        motionNeutralProjectionX = client.inputOrientation.horizontalTiltProjection()
+        motionNeutralProjectionY = client.inputOrientation.verticalTiltProjection()
+        defaults.set(Double(motionNeutralProjectionX), forKey: "partybox.motionNeutralProjectionX")
+        defaults.set(Double(motionNeutralProjectionY), forKey: "partybox.motionNeutralProjectionY")
         client.setInput(axisX: 0, axisY: 0)
         play(.success)
     }
@@ -571,8 +571,8 @@ final class ControllerCoordinator {
                     z: Float(quaternion.z), w: Float(quaternion.w)
                 )
                 self.client.setInput(
-                    axisX: orientation.horizontalTiltAxis() - self.motionNeutralAxisX,
-                    axisY: orientation.verticalTiltAxis() - self.motionNeutralAxisY
+                    axisX: orientation.horizontalTiltAxis(neutral: self.motionNeutralProjectionX),
+                    axisY: orientation.verticalTiltAxis(neutral: self.motionNeutralProjectionY)
                 )
                 self.client.setOrientation(orientation)
             }

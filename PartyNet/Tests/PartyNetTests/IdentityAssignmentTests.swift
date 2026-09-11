@@ -160,6 +160,68 @@ struct IdentityAssignmentTests {
         }
     }
 
+    @Test func overlappingHandshakesForOneHumanCommitTheReservedBotCapacity() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let gate = NthCallGate(blockedCall: PartyNetConstants.maximumControllers + 1)
+            let host = PartyHost(transportFactory: { inputs in
+                HostTransport(
+                    inputs: inputs,
+                    controlSender: { connection, message in
+                        if case .welcome = message { await gate.pauseIfNeeded() }
+                        try await connection.send(message)
+                    }
+                )
+            })
+            let port = try await host.start(hostName: "Overlapping Admission Test", advertise: false)
+            let captain = PartyClient(displayName: "Captain")
+            let controllerID = ControllerID()
+            let firstArrival = PartyClient(controllerID: controllerID, displayName: "First Arrival")
+            let replacement = PartyClient(controllerID: controllerID, displayName: "Replacement")
+            let botIDs = (0..<(PartyNetConstants.maximumControllers - 1)).map { _ in ControllerID() }
+            let bots = botIDs.enumerated().map { index, controllerID in
+                PartyClient(controllerID: controllerID, displayName: "Bot \(index + 1)")
+            }
+            var firstConnection: Task<Void, Never>?
+
+            try await withAsyncCleanup {
+                await captain.connect(host: "127.0.0.1", port: port)
+                for (controllerID, bot) in zip(botIDs, bots) {
+                    host.registerLocalBot(controllerID: controllerID)
+                    await bot.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntil { host.players.count == PartyNetConstants.maximumControllers }
+
+                firstConnection = Task {
+                    await firstArrival.connect(host: "127.0.0.1", port: port)
+                }
+                try await waitUntilAsync { await gate.isBlocking }
+                await replacement.connect(host: "127.0.0.1", port: port)
+                try await waitUntil {
+                    host.players.count == PartyNetConstants.maximumControllers
+                        && host.players.count { $0.kind == .human } == 2
+                }
+
+                #expect(host.players.count { $0.kind == .bot } == 6)
+                #expect(replacement.player?.kind == .human)
+
+                await gate.open()
+                await firstConnection?.value
+                #expect(host.players.count == PartyNetConstants.maximumControllers)
+                #expect(host.players.count { $0.kind == .bot } == 6)
+            } cleanup: {
+                await gate.open()
+                await firstConnection?.value
+                await replacement.stop()
+                await firstArrival.stop()
+                await captain.stop()
+                for bot in bots { await bot.stop() }
+                await host.stop()
+            }
+        }
+    }
+
     @Test func trustedBotIdentitySurvivesExpirationUntilExplicitlyUnregistered() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()

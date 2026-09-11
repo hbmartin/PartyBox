@@ -121,4 +121,33 @@ struct InputFrameTests {
         #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: .nan) == 0)
         #expect(OrientationQuaternion(x: .nan, y: 0, z: 0, w: 1).verticalTiltAxis() == 0)
     }
+
+    @Test func calibratedTiltAppliesNeutralBeforeDeadZoneAndPreservesBothExtremes() {
+        let halfAngle = Float.pi / 12
+        let horizontalNeutral = OrientationQuaternion(
+            x: 0,
+            y: sin(halfAngle),
+            z: 0,
+            w: cos(halfAngle)
+        )
+        let verticalNeutral = OrientationQuaternion(
+            x: sin(halfAngle),
+            y: 0,
+            z: 0,
+            w: cos(halfAngle)
+        )
+        let horizontalProjection = horizontalNeutral.horizontalTiltProjection()
+        let verticalProjection = verticalNeutral.verticalTiltProjection()
+
+        #expect(horizontalNeutral.horizontalTiltAxis(neutral: horizontalProjection) == 0)
+        #expect(verticalNeutral.verticalTiltAxis(neutral: verticalProjection) == 0)
+        #expect(OrientationQuaternion(x: 0, y: 1, z: 0, w: 1)
+            .horizontalTiltAxis(neutral: horizontalProjection) > 0.999)
+        #expect(OrientationQuaternion(x: 0, y: -1, z: 0, w: 1)
+            .horizontalTiltAxis(neutral: horizontalProjection) == -1)
+        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1)
+            .verticalTiltAxis(neutral: verticalProjection) > 0.999)
+        #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1)
+            .verticalTiltAxis(neutral: verticalProjection) == -1)
+    }
 }

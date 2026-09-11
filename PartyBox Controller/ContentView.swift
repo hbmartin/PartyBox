@@ -336,7 +336,7 @@ private struct MenuControllerView: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text(layout.items.contains("START PARTY CUP") ? "PARTY CUP SETUP" : "GAME SELECT")
+            Text(layout.kind == .cupSetup ? "PARTY CUP SETUP" : "GAME SELECT")
                 .font(.caption.monospaced().weight(.black))
                 .foregroundStyle(ControllerTheme.cyan)
                 .accessibilityIdentifier("controller.layout.menu")

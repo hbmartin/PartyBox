@@ -35,6 +35,16 @@ struct PartyFaultTests {
         }
     }
 
+    @Test func impairmentRandomChoicesDoNotUseRepeatingLowOrderLCGBits() {
+        var generator = ImpairmentRandomNumberGenerator(seed: 42)
+        let values = (0..<12).map { _ in generator.next() }
+        let parity = values.map { $0 % 2 }
+        let jitterBuckets = values.map { $0 % 5 }
+
+        #expect(zip(parity, parity.dropFirst()).contains { $0.0 == $0.1 })
+        #expect(Array(jitterBuckets.prefix(4)) != Array(jitterBuckets.dropFirst(4).prefix(4)))
+    }
+
     @Test func tcpThrottleContributesDelay() async {
         let engine = ImpairmentEngine(profile: .init(
             clientToServer: .init(tcp: .init(throttleBytesPerSecond: 1_000))
@@ -303,6 +313,65 @@ struct PartyFaultTests {
                     && $0.clientToServer.udpDatagramsForwarded == 2
             }
             #expect(metrics.clientToServer.delayedUnits == 2)
+        } cleanup: {
+            await proxy.stop()
+        }
+    }
+
+    @Test func delayedUDPDatagramsDoNotBlockLaterArrivals() async throws {
+        let datagramCount = 12
+        let tcpServer = try NetworkListener<TCP>(
+            for: nil,
+            using: .parameters { TCP().noDelay(true) }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let udpServer = try NetworkListener<UDP>(
+            for: nil,
+            using: .parameters { UDP() }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let tcpServerTask = Task { try await tcpServer.run { _ in } }
+        let udpServerTask = Task {
+            try await udpServer.run { connection in
+                for _ in 0..<datagramCount {
+                    _ = try await connection.receive().content
+                }
+            }
+        }
+        defer {
+            tcpServerTask.cancel()
+            udpServerTask.cancel()
+        }
+
+        let tcpPort = try await PartyFaultNetworkSupport.waitForBoundPort(tcpServer, attempts: 300)
+        let udpPort = try await PartyFaultNetworkSupport.waitForBoundPort(udpServer, attempts: 300)
+        let proxy = GenericFaultProxy(profile: .init(
+            clientToServer: .init(udp: .init(delayMilliseconds: 200))
+        ))
+        let proxyPorts = try await proxy.start(
+            upstreamHost: "127.0.0.1",
+            upstreamTCPPort: tcpPort,
+            upstreamUDPPort: udpPort
+        )
+
+        try await withAsyncCleanup {
+            let client = NetworkConnection<UDP>(
+                to: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: proxyPorts.udp)!),
+                using: .parameters { UDP() }.peerToPeerIncluded(false)
+            )
+            for index in 0..<datagramCount {
+                try await client.send(Data("datagram \(index)".utf8))
+            }
+
+            let metrics = try await waitForMetrics(proxy, timeout: .seconds(1)) {
+                $0.clientToServer.udpDatagramsForwarded == UInt64(datagramCount)
+            }
+            #expect(metrics.clientToServer.udpDatagramsReceived == UInt64(datagramCount))
+            #expect(metrics.clientToServer.delayedUnits == UInt64(datagramCount))
         } cleanup: {
             await proxy.stop()
         }

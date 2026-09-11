@@ -228,18 +228,34 @@ public enum TCPForwardDecision: Equatable, Sendable {
     case terminate(reset: Bool)
 }
 
+struct ImpairmentRandomNumberGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        var output = state
+        output = (output ^ (output >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        output = (output ^ (output >> 27)) &* 0x94D0_49BB_1331_11EB
+        return output ^ (output >> 31)
+    }
+}
+
 public actor ImpairmentEngine {
     private var profile: FaultProfile
-    private var randomState: UInt64
+    private var randomGenerator: ImpairmentRandomNumberGenerator
 
     public init(profile: FaultProfile = .stable) {
         self.profile = profile
-        randomState = profile.seed
+        randomGenerator = ImpairmentRandomNumberGenerator(seed: profile.seed)
     }
 
     public func setProfile(_ value: FaultProfile) {
         profile = value
-        randomState = value.seed
+        randomGenerator = ImpairmentRandomNumberGenerator(seed: value.seed)
     }
 
     public func currentProfile() -> FaultProfile { profile }
@@ -279,8 +295,7 @@ public actor ImpairmentEngine {
     private func nextUnit() -> Double { Double(nextRandom() >> 11) / Double(UInt64(1) << 53) }
 
     private func nextRandom() -> UInt64 {
-        randomState = randomState &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return randomState
+        randomGenerator.next()
     }
 }
 
@@ -328,8 +343,12 @@ public actor GenericFaultProxy {
         private let lock = NSLock()
         private var count = 0
 
-        func enqueued() {
-            lock.withLock { count += 1 }
+        func tryEnqueue(maximum: Int) -> Bool {
+            lock.withLock {
+                guard count < maximum else { return false }
+                count += 1
+                return true
+            }
         }
 
         func consumed() {
@@ -347,16 +366,26 @@ public actor GenericFaultProxy {
     private enum UDPForwardEvent: Sendable {
         case datagram(Data)
         case idle(UUID)
-        case finished
+        case sourceFinished
+        case deliveryFinished(UUID)
     }
 
-    private enum UDPDeliveryResult: Sendable {
-        case forwarded(index: Int, delayed: Bool)
-        case failed(index: Int, delayed: Bool, reason: String)
-        case cancelled(index: Int)
+    private enum UDPDeliveryAttemptResult: Sendable {
+        case forwarded(delayed: Bool)
+        case failed(delayed: Bool, reason: String)
+        case cancelled
+    }
+
+    private struct UDPPayloadDeliverySummary: Sendable {
+        var forwardedCount = 0
+        var delayedCount = 0
+        var failureReason: String?
+        var wasCancelled = false
     }
 
     private static let udpReorderIdleFlushDelay = Duration.milliseconds(50)
+    private static let maximumPendingUDPDatagrams = 1_024
+    private static let maximumScheduledUDPPayloads = 1_024
 
     private let engine: ImpairmentEngine
     private let logger = Logger(subsystem: "PartyFault", category: "GenericFaultProxy")
@@ -553,12 +582,14 @@ public actor GenericFaultProxy {
         direction: TrafficDirection
     ) async {
         var reorderBuffer: [Data] = []
+        var deliveryTasks: [UUID: Task<UDPPayloadDeliverySummary, Never>] = [:]
         var idleTask: Task<Void, Never>?
         var idleGeneration: UUID?
+        var sourceFinished = false
         let pendingDatagrams = PendingUDPDatagrams()
         let (events, continuation) = AsyncStream.makeStream(
             of: UDPForwardEvent.self,
-            bufferingPolicy: .bufferingOldest(1_024)
+            bufferingPolicy: .unbounded
         )
         let receiveTask = Task {
             do {
@@ -567,15 +598,24 @@ public actor GenericFaultProxy {
                     let data = message.content
                     guard !data.isEmpty else { continue }
                     noteUDPReceived(direction: direction)
+                    guard pendingDatagrams.tryEnqueue(
+                        maximum: Self.maximumPendingUDPDatagrams
+                    ) else {
+                        noteUDPDropped(direction: direction)
+                        continue
+                    }
                     switch continuation.yield(.datagram(data)) {
                     case .enqueued:
-                        pendingDatagrams.enqueued()
-                    case .dropped:
-                        noteUDPDropped(direction: direction)
+                        break
                     case .terminated:
+                        pendingDatagrams.consumed()
                         noteUDPDropped(direction: direction)
                         return
+                    case .dropped:
+                        pendingDatagrams.consumed()
+                        noteUDPDropped(direction: direction)
                     @unknown default:
+                        pendingDatagrams.consumed()
                         noteUDPDropped(direction: direction)
                         return
                     }
@@ -584,8 +624,7 @@ public actor GenericFaultProxy {
             } catch {
                 self.logger.error("UDP receive failed: \(error.localizedDescription, privacy: .public)")
             }
-            continuation.yield(.finished)
-            continuation.finish()
+            continuation.yield(.sourceFinished)
         }
         do {
             eventLoop: for await event in events {
@@ -601,11 +640,13 @@ public actor GenericFaultProxy {
                     if reorderBuffer.count >= profile.reorderWindow {
                         let buffered = reorderBuffer
                         reorderBuffer.removeAll(keepingCapacity: true)
-                        try await forwardUDPBatch(
+                        await scheduleUDPBatch(
                             buffered,
                             reordered: profile.reorderWindow > 1,
                             to: destination,
-                            direction: direction
+                            direction: direction,
+                            deliveryTasks: &deliveryTasks,
+                            continuation: continuation
                         )
                     } else {
                         let generation = UUID()
@@ -627,26 +668,39 @@ public actor GenericFaultProxy {
                     let profile = await engine.currentProfile().link(for: direction).udp
                     let buffered = reorderBuffer
                     reorderBuffer.removeAll(keepingCapacity: true)
-                    try await forwardUDPBatch(
+                    await scheduleUDPBatch(
                         buffered,
                         reordered: profile.reorderWindow > 1,
                         to: destination,
-                        direction: direction
+                        direction: direction,
+                        deliveryTasks: &deliveryTasks,
+                        continuation: continuation
                     )
-                case .finished:
+                case .sourceFinished:
                     idleTask?.cancel()
                     idleTask = nil
                     idleGeneration = nil
-                    guard !reorderBuffer.isEmpty else { break eventLoop }
-                    let profile = await engine.currentProfile().link(for: direction).udp
-                    let buffered = reorderBuffer
-                    reorderBuffer.removeAll(keepingCapacity: true)
-                    try await forwardUDPBatch(
-                        buffered,
-                        reordered: profile.reorderWindow > 1,
-                        to: destination,
-                        direction: direction
-                    )
+                    sourceFinished = true
+                    if !reorderBuffer.isEmpty {
+                        let profile = await engine.currentProfile().link(for: direction).udp
+                        let buffered = reorderBuffer
+                        reorderBuffer.removeAll(keepingCapacity: true)
+                        await scheduleUDPBatch(
+                            buffered,
+                            reordered: profile.reorderWindow > 1,
+                            to: destination,
+                            direction: direction,
+                            deliveryTasks: &deliveryTasks,
+                            continuation: continuation
+                        )
+                    }
+                case .deliveryFinished(let id):
+                    guard let task = deliveryTasks.removeValue(forKey: id) else { continue }
+                    if let failure = applyUDPDeliverySummary(await task.value, direction: direction) {
+                        throw PartyFaultError.forwardingFailed(failure)
+                    }
+                }
+                if sourceFinished, reorderBuffer.isEmpty, deliveryTasks.isEmpty {
                     break eventLoop
                 }
             }
@@ -658,96 +712,102 @@ public actor GenericFaultProxy {
         idleTask?.cancel()
         continuation.finish()
         await receiveTask.value
+        let unfinishedDeliveries = Array(deliveryTasks.values)
+        unfinishedDeliveries.forEach { $0.cancel() }
+        for task in unfinishedDeliveries {
+            _ = applyUDPDeliverySummary(await task.value, direction: direction)
+        }
         let droppedOnExit = reorderBuffer.count + pendingDatagrams.takeAll()
         if droppedOnExit > 0 {
             noteUDPDropped(droppedOnExit, direction: direction)
         }
     }
 
-    private func forwardUDPBatch(
+    private func scheduleUDPBatch(
         _ buffered: [Data],
         reordered: Bool,
         to destination: NetworkConnection<UDP>,
-        direction: TrafficDirection
-    ) async throws {
+        direction: TrafficDirection,
+        deliveryTasks: inout [UUID: Task<UDPPayloadDeliverySummary, Never>],
+        continuation: AsyncStream<UDPForwardEvent>.Continuation
+    ) async {
         let payloads = reordered ? Array(buffered.reversed()) : buffered
         if reordered, payloads.count > 1 {
             noteUDPReordered(payloads.count, direction: direction)
         }
-        try await withThrowingTaskGroup(of: UDPDeliveryResult.self) { group in
-            var forwardedPayloads: Set<Int> = []
-            var impairmentDrops: Set<Int> = []
-            var firstFailure: String?
-            var wasCancelled = false
+        for payload in payloads {
+            guard !Task.isCancelled else { return }
+            let plan = await engine.udpPlan(direction: direction)
+            if plan.isDropped {
+                noteUDPDropped(direction: direction)
+                continue
+            }
+            guard deliveryTasks.count < Self.maximumScheduledUDPPayloads else {
+                noteUDPDropped(direction: direction)
+                continue
+            }
+            if plan.delays.count > 1 {
+                noteUDPDuplicated(plan.delays.count - 1, direction: direction)
+            }
+            let id = UUID()
+            let delays = plan.delays
+            deliveryTasks[id] = Task {
+                let summary = await Self.deliverUDPPayload(payload, delays: delays, to: destination)
+                continuation.yield(.deliveryFinished(id))
+                return summary
+            }
+        }
+    }
 
-            payloadLoop: for (index, payload) in payloads.enumerated() {
-                if Task.isCancelled {
-                    wasCancelled = true
-                    group.cancelAll()
-                    break
-                }
-                let plan = await engine.udpPlan(direction: direction)
-                if plan.isDropped {
-                    noteUDPDropped(direction: direction)
-                    impairmentDrops.insert(index)
-                    continue
-                }
-                if plan.delays.count > 1 {
-                    noteUDPDuplicated(plan.delays.count - 1, direction: direction)
-                }
-                for delay in plan.delays {
-                    if delay > .zero {
-                        group.addTask {
-                            do {
-                                try await Task.sleep(for: delay)
-                                try await destination.send(payload)
-                                return .forwarded(index: index, delayed: true)
-                            } catch where Task.isCancelled {
-                                return .cancelled(index: index)
-                            } catch {
-                                return .failed(index: index, delayed: true, reason: error.localizedDescription)
-                            }
-                        }
-                        continue
-                    }
+    private nonisolated static func deliverUDPPayload(
+        _ payload: Data,
+        delays: [Duration],
+        to destination: NetworkConnection<UDP>
+    ) async -> UDPPayloadDeliverySummary {
+        await withTaskGroup(of: UDPDeliveryAttemptResult.self) { group in
+            for delay in delays {
+                group.addTask {
                     do {
+                        if delay > .zero { try await Task.sleep(for: delay) }
                         try await destination.send(payload)
-                        noteUDPForwarded(direction: direction)
-                        forwardedPayloads.insert(index)
+                        return .forwarded(delayed: delay > .zero)
                     } catch where Task.isCancelled {
-                        wasCancelled = true
-                        group.cancelAll()
-                        break payloadLoop
+                        return .cancelled
                     } catch {
-                        firstFailure = error.localizedDescription
-                        group.cancelAll()
-                        break payloadLoop
+                        return .failed(
+                            delayed: delay > .zero,
+                            reason: error.localizedDescription
+                        )
                     }
                 }
             }
 
-            for try await result in group {
+            var summary = UDPPayloadDeliverySummary()
+            for await result in group {
                 switch result {
-                case .forwarded(let index, let delayed):
-                    if delayed { noteDelay(direction: direction) }
-                    noteUDPForwarded(direction: direction)
-                    forwardedPayloads.insert(index)
-                case .failed(_, let delayed, let reason):
-                    if delayed { noteDelay(direction: direction) }
-                    firstFailure = firstFailure ?? reason
+                case .forwarded(let delayed):
+                    summary.forwardedCount += 1
+                    if delayed { summary.delayedCount += 1 }
+                case .failed(let delayed, let reason):
+                    if delayed { summary.delayedCount += 1 }
+                    summary.failureReason = summary.failureReason ?? reason
                     group.cancelAll()
                 case .cancelled:
-                    wasCancelled = wasCancelled || Task.isCancelled
+                    summary.wasCancelled = true
                 }
             }
-
-            let droppedPayloads = payloads.indices.count {
-                !forwardedPayloads.contains($0) && !impairmentDrops.contains($0)
-            }
-            if droppedPayloads > 0 { noteUDPDropped(droppedPayloads, direction: direction) }
-            if wasCancelled || Task.isCancelled { throw CancellationError() }
-            if let firstFailure { throw PartyFaultError.forwardingFailed(firstFailure) }
+            return summary
         }
+    }
+
+    private func applyUDPDeliverySummary(
+        _ summary: UDPPayloadDeliverySummary,
+        direction: TrafficDirection
+    ) -> String? {
+        for _ in 0..<summary.forwardedCount { noteUDPForwarded(direction: direction) }
+        for _ in 0..<summary.delayedCount { noteDelay(direction: direction) }
+        if summary.forwardedCount == 0 { noteUDPDropped(direction: direction) }
+        return summary.failureReason
     }
 
     private func finishTCP(_ id: UUID) {

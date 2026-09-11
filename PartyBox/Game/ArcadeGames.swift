@@ -203,6 +203,18 @@ final class ArcadeChallengeSession: PartyGameSession {
         challengeScene.reverseStorageForTesting()
     }
 
+    func setLivesForTesting(_ lives: Int, playerID: PlayerID) {
+        challengeScene.setLivesForTesting(lives, playerID: playerID)
+    }
+
+    func loseLifeForTesting(_ playerID: PlayerID) {
+        challengeScene.loseLifeForTesting(playerID)
+    }
+
+    func prepareLastLightCollisionForTesting() {
+        challengeScene.prepareLastLightCollisionForTesting()
+    }
+
     func snakeTrailNodeIdentitiesForTesting() -> [PlayerID: [ObjectIdentifier]] {
         challengeScene.snakeTrailNodeIdentitiesForTesting()
     }
@@ -243,6 +255,7 @@ private final class ArcadeChallengeScene: SKScene {
     private let mode: ArcadeChallengeMode
     private let context: GameSessionContext
     private let onEvents: @MainActor ([GameEvent]) -> Void
+    private let playerIDs: [PlayerID]
     private var states: [PlayerID: PlayerState] = [:]
     private var playerNodes: [PlayerID: SKShapeNode] = [:]
     private var scoreLabels: [PlayerID: SKLabelNode] = [:]
@@ -267,6 +280,7 @@ private final class ArcadeChallengeScene: SKScene {
         self.mode = mode
         self.context = context
         self.onEvents = onEvents
+        playerIDs = context.participants.map(\.player.id).sorted { $0.rawValue < $1.rawValue }
         randomGenerator = ArcadeRandomNumberGenerator(seed: context.seed)
         super.init(size: CGSize(width: 1_920, height: 1_080))
         scaleMode = .aspectFit
@@ -439,13 +453,13 @@ private final class ArcadeChallengeScene: SKScene {
                 if direction != states[playerID]?.lastInput, let direction {
                     submitSignal(direction, playerID: playerID)
                 }
-                states[playerID]?.lastInput = direction
+                if direction == nil { states[playerID]?.lastInput = nil }
             case .signalSnap:
                 let direction = dominantDirection(x: x, y: y)
                 if direction != states[playerID]?.lastInput, let direction {
                     submitSignal(direction, playerID: playerID)
                 }
-                states[playerID]?.lastInput = direction
+                if direction == nil { states[playerID]?.lastInput = nil }
             case .gravityGrab:
                 if abs(x) + abs(y) > 0.12 {
                     states[playerID]?.x = cos(atan2(y, x))
@@ -493,7 +507,7 @@ private final class ArcadeChallengeScene: SKScene {
             promptLabel.text = ["up": "↑", "right": "→", "down": "↓", "left": "←"][signalDirection]
         }
         promptLabel.fontColor = SKColor(red: 0.8, green: 0.95, blue: 1, alpha: 1)
-        for playerID in states.keys {
+        for playerID in playerIDs {
             states[playerID]?.lastInput = nil
         }
     }
@@ -605,9 +619,7 @@ private final class ArcadeChallengeScene: SKScene {
         for playerID in collisions.sorted(by: { $0.rawValue < $1.rawValue }) {
             loseLife(playerID, checkForCompletion: false)
         }
-        if context.participants.count > 1 && states.values.filter(\.alive).count <= 1 {
-            complete()
-        }
+        completeIfEliminationFinished()
         rebuildSnakeTrails()
     }
 
@@ -625,7 +637,10 @@ private final class ArcadeChallengeScene: SKScene {
         for index in hazards.indices.reversed() {
             hazards[index].y -= delta * 0.72
             hazards[index].node.position = arenaPoint(x: hazards[index].x, y: hazards[index].y)
-            for (playerID, state) in states where state.alive && elapsed - state.lastHitAt > 0.8 {
+            for playerID in playerIDs {
+                guard let state = states[playerID],
+                      state.alive,
+                      elapsed - state.lastHitAt > 0.8 else { continue }
                 if abs(state.x - hazards[index].x) < 0.13 && abs(state.y - hazards[index].y) < 0.13 {
                     loseLife(playerID)
                     states[playerID]?.lastHitAt = elapsed
@@ -639,7 +654,9 @@ private final class ArcadeChallengeScene: SKScene {
         tickAccumulator += delta
         if tickAccumulator >= 0.25 {
             tickAccumulator = 0
-            for playerID in states.keys where states[playerID]?.alive == true { states[playerID]?.score += 1 }
+            for playerID in playerIDs where states[playerID]?.alive == true {
+                states[playerID]?.score += 1
+            }
         }
     }
 
@@ -657,15 +674,20 @@ private final class ArcadeChallengeScene: SKScene {
                 .deviceCue(playerID, .init(colorHex: "#FF375F", haptic: .error)),
                 .eliminated(playerID),
             ])
-            if checkForCompletion,
-               context.participants.count > 1,
-               states.values.filter(\.alive).count <= 1 { complete() }
+            if checkForCompletion { completeIfEliminationFinished() }
         } else {
             states[playerID] = state
             onEvents([
                 .audio(.heavyImpact),
                 .deviceCue(playerID, .init(colorHex: "#FF9F0A", haptic: .heavyImpact)),
             ])
+        }
+    }
+
+    private func completeIfEliminationFinished() {
+        let aliveCount = states.values.count(where: \.alive)
+        if aliveCount == 0 || (context.participants.count > 1 && aliveCount == 1) {
+            complete()
         }
     }
 
@@ -814,6 +836,26 @@ private final class ArcadeChallengeScene: SKScene {
         snakeTrails = Dictionary(uniqueKeysWithValues: snakeTrails.sorted {
             $0.key.rawValue > $1.key.rawValue
         })
+    }
+
+    func setLivesForTesting(_ lives: Int, playerID: PlayerID) {
+        states[playerID]?.lives = lives
+    }
+
+    func loseLifeForTesting(_ playerID: PlayerID) {
+        loseLife(playerID)
+    }
+
+    func prepareLastLightCollisionForTesting() {
+        guard mode == .lastLight else { return }
+        for playerID in playerIDs {
+            states[playerID]?.x = 0
+            states[playerID]?.y = 0
+            states[playerID]?.lastHitAt = -10
+        }
+        let node = SKShapeNode()
+        addChild(node)
+        hazards = [Hazard(x: 0, y: 0, node: node)]
     }
 
     func snakeTrailNodeIdentitiesForTesting() -> [PlayerID: [ObjectIdentifier]] {
