@@ -4,10 +4,11 @@ A local-network party game for the living room. One **host** — an Apple TV or 
 big screen; up to **eight iPhones** join over Wi-Fi and act as the controllers. No accounts, no servers,
 no internet: just Bonjour on your LAN.
 
-The first (and currently only) game is **Four-Way Pong**: four players on the four edges of the arena,
-three lives each, winner stays, everyone else waits in a spectator queue. On a physical iPhone, tilt
-left and right to position the paddle; the on-screen drag track remains the fallback when motion input
-is unavailable.
+The library includes **Four-Way Pong**, **Signal Snap**, **Gravity Grab**, **Snake Pit**, and
+**Last Light**. Every game supports up to eight players (Pong switches to a short qualifier format
+above four), bots can fill the room, and a three-event **Party Cup** awards persistent trophies.
+Touch is the controller default; players can opt into calibrated motion controls in phone settings.
+Phones also provide brief, gentle private color and haptic cues—never torch or distributed audio.
 
 > **▶ New here? Read [QUICKSTART.md](QUICKSTART.md).** It covers setup and signing, both host paths
 > (Apple TV and Mac), getting the controller onto your friends' phones, a step-by-step playtest
@@ -35,9 +36,10 @@ state. Peer-to-peer/AWDL is deliberately disabled — everyone shares one real W
 ## Layout
 
 ```
-PartyBox/              Host app (tvOS + macOS): coordinator, SwiftUI screens, SpriteKit Pong
-PartyBox Controller/   iPhone app: host picker, paddle/menu/spectator layouts
-PartyNet/              Swift package: protocol, transport, host + client, partyload/partyfault tools
+PartyBox/              Host app (tvOS + macOS): Cup flow, SwiftUI screens, SpriteKit games
+PartyBox Controller/   iPhone app: touch/motion controls, private cues, trophies
+PartyNet/              Shared application protocol and resilient local transport
+PartyFault/            Apache-2.0 generic Network.framework fault proxy library + CLI
 Config/                Info.plists (Bonjour service + Local Network usage strings)
 TestPlans/             Normal / ASan / TSan / Soak test plans for both apps
 scripts/verify.sh      Automated build, test, sanitizer and soak suite
@@ -68,6 +70,7 @@ is no scheduled soak job.
 ## Docs
 
 - **[QUICKSTART.md](QUICKSTART.md)** — build it, install it, play it, debug the network.
+- **[PartyFault/README.md](PartyFault/README.md)** — generic TCP/UDP impairment proxy and JSON control socket.
 - [CANDIDATE STACK.md](CANDIDATE%20STACK.md) — the chosen architecture and reliability advice.
 - [CHECKLIST.md](CHECKLIST.md) — landscape survey behind the transport decision.
 - [REFERENCES.md](REFERENCES.md) — prior art on pairing, identity and reconnection.

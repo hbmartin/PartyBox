@@ -50,22 +50,49 @@ final class ControllerCoordinator {
     }
     private(set) var controllerScreen: ControllerScreen?
     private(set) var personalHistory: [PersonalMatchRecord] = []
+    private(set) var personalCupHistory: [PersonalCupRecord] = []
     private(set) var historyPersistenceError: String?
+    private(set) var currentDeviceCue: DeviceCue?
+    var motionControlEnabled: Bool {
+        didSet {
+            defaults.set(motionControlEnabled, forKey: "partybox.motionControlEnabled")
+            if !motionControlEnabled {
+                client.setOrientation(.identity, available: false)
+                client.setInput(axisX: 0, axisY: 0)
+            }
+            updateMotionCapture()
+        }
+    }
+    var deviceEffectsEnabled: Bool {
+        didSet {
+            defaults.set(deviceEffectsEnabled, forKey: "partybox.deviceEffectsEnabled")
+            if !deviceEffectsEnabled {
+                currentDeviceCue = nil
+                deviceCueTask?.cancel()
+                deviceCueTask = nil
+            }
+        }
+    }
+    var hapticsEnabled: Bool {
+        didSet { defaults.set(hapticsEnabled, forKey: "partybox.hapticsEnabled") }
+    }
 
     var personalStatistics: HistoryStatistics { HistoryAggregation.personal(personalHistory) }
     var soloStatistics: HistoryStatistics { HistoryAggregation.solo(personalHistory) }
+    var cupStatistics: CupStatistics { HistoryAggregation.cups(personalCupHistory) }
     var currentPlayer: PlayerInfo? {
         guard let welcomedPlayer = client.player else { return nil }
         return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
     }
     var displayedInputAxisX: Float {
-        guard requestedInputs.contains(.orientation),
-              client.inputFlags.contains(.motionAvailable) else { return client.inputAxisX }
-        return client.inputOrientation.horizontalTiltAxis()
+        client.inputAxisX
     }
+    private(set) var motionNeutralAxisX: Float
+    private(set) var motionNeutralAxisY: Float
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
+    @ObservationIgnored private let cupHistoryStore: JSONRecordStore<PersonalCupRecord>
     @ObservationIgnored private let motionManager = CMMotionManager()
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var eventGeneration: UUID?
@@ -75,6 +102,7 @@ final class ControllerCoordinator {
     @ObservationIgnored private var motionCaptureGeneration: UUID?
     @ObservationIgnored private var motionRetryTask: Task<Void, Never>?
     @ObservationIgnored private var motionRetryBackoff = MotionRetryBackoff()
+    @ObservationIgnored private var deviceCueTask: Task<Void, Never>?
     @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var isSceneActive = true
 
@@ -89,6 +117,11 @@ final class ControllerCoordinator {
             ?? configuration.defaultsSuite.flatMap(UserDefaults.init(suiteName:))
             ?? .standard
         self.defaults = defaults
+        motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
+        deviceEffectsEnabled = defaults.object(forKey: "partybox.deviceEffectsEnabled") as? Bool ?? true
+        hapticsEnabled = defaults.object(forKey: "partybox.hapticsEnabled") as? Bool ?? true
+        motionNeutralAxisX = Float(defaults.double(forKey: "partybox.motionNeutralAxisX"))
+        motionNeutralAxisY = Float(defaults.double(forKey: "partybox.motionNeutralAxisY"))
         let controllerID: ControllerID
         if let configured = configuration.controllerID {
             controllerID = ControllerID(rawValue: configured)
@@ -121,7 +154,11 @@ final class ControllerCoordinator {
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("PartyBox Controller", isDirectory: true)
             .appendingPathComponent("history-\(controllerID.rawValue.uuidString)-v1.json")
-        historyStore = JSONRecordStore(fileURL: configuration.isUITesting ? nil : (historyFileURL ?? defaultURL))
+        let resolvedHistoryURL = historyFileURL ?? defaultURL
+        historyStore = JSONRecordStore(fileURL: configuration.isUITesting ? nil : resolvedHistoryURL)
+        let cupURL = resolvedHistoryURL?.deletingLastPathComponent()
+            .appendingPathComponent("cups-\(controllerID.rawValue.uuidString)-v1.json")
+        cupHistoryStore = JSONRecordStore(fileURL: configuration.isUITesting ? nil : cupURL)
 #if DEBUG
         if let scenario = configuration.scenario { applyFixture(scenario: scenario) }
 #endif
@@ -135,6 +172,8 @@ final class ControllerCoordinator {
         guard !isStarted else { return }
         isStarted = true
         personalHistory = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
+        personalCupHistory = await cupHistoryStore.all().sorted { $0.endedAt > $1.endedAt }
+        guard isStarted else { return }
 #if DEBUG
         if let scenario = configuration.scenario {
             applyFixture(scenario: scenario)
@@ -175,6 +214,8 @@ final class ControllerCoordinator {
         eventTask = nil
         discoveryHelpVisible = false
         resetSessionPresentation()
+        deviceCueTask?.cancel()
+        deviceCueTask = nil
         setIdleTimer(connected: false)
         let id = UUID()
         let task = Task { [client] in await client.stop() }
@@ -236,14 +277,90 @@ final class ControllerCoordinator {
 
     func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
 
+    func calibrateMotion() {
+        motionNeutralAxisX = client.inputOrientation.horizontalTiltAxis()
+        motionNeutralAxisY = client.inputOrientation.verticalTiltAxis()
+        defaults.set(Double(motionNeutralAxisX), forKey: "partybox.motionNeutralAxisX")
+        defaults.set(Double(motionNeutralAxisY), forKey: "partybox.motionNeutralAxisY")
+        client.setInput(axisX: 0, axisY: 0)
+        play(.success)
+    }
+
+    func makeRedactedDiagnosticsFile() -> URL? {
+        struct Report: Codable {
+            let generatedAt: Date
+            let role: String
+            let protocolVersion: UInt16
+            let connectionState: String
+            let layout: String
+            let rttMilliseconds: Double?
+            let inputFramesSent: UInt64
+            let motionEnabled: Bool
+            let effectsEnabled: Bool
+            let savedMatches: Int
+            let savedCups: Int
+            let historyPersistenceHealthy: Bool
+        }
+        let stateName: String = switch client.state {
+        case .browsing: "browsing"
+        case .connecting: "connecting"
+        case .connected: "connected"
+        case .reconnecting: "reconnecting"
+        case .rejected: "rejected"
+        case .disconnected: "disconnected"
+        }
+        let layoutName: String = switch layout {
+        case .lobby: "lobby"
+        case .menu: "menu"
+        case .game: "game"
+        case .gameOver: "gameOver"
+        case .historyNavigation: "history"
+        }
+        let report = Report(
+            generatedAt: Date(),
+            role: "controller",
+            protocolVersion: PartyNetConstants.protocolVersion,
+            connectionState: stateName,
+            layout: layoutName,
+            rttMilliseconds: client.rttMilliseconds,
+            inputFramesSent: client.inputFramesSent,
+            motionEnabled: motionControlEnabled,
+            effectsEnabled: deviceEffectsEnabled,
+            savedMatches: personalHistory.count,
+            savedCups: personalCupHistory.count,
+            historyPersistenceHealthy: historyPersistenceError == nil
+        )
+        let formatter = ISO8601DateFormatter()
+        let safeDate = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("PartyBox-controller-diagnostics-\(safeDate).json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            try encoder.encode(report).write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
     func clearPersonalHistory() async {
+        var failures: [String] = []
         do {
             try await historyStore.clear()
             personalHistory = []
-            historyPersistenceError = nil
         } catch {
-            historyPersistenceError = "History could not be cleared: \(error.localizedDescription)"
+            failures.append(error.localizedDescription)
         }
+        do {
+            try await cupHistoryStore.clear()
+            personalCupHistory = []
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+        historyPersistenceError = failures.isEmpty
+            ? nil
+            : "History could not be cleared: \(failures.joined(separator: "; "))"
     }
 
     func scenePhaseChanged(isActive: Bool) {
@@ -284,8 +401,11 @@ final class ControllerCoordinator {
                 layout = value
                 updateMotionCapture()
             case .haptic(let pattern): play(pattern)
+            case .deviceCue(let cue): show(cue)
             case .matchCompleted(let record):
                 await appendPersonalHistory(record)
+            case .cupCompleted(let record):
+                await appendPersonalCupHistory(record)
             }
         case let .hostsChanged(hosts):
             if hosts.isEmpty {
@@ -305,15 +425,31 @@ final class ControllerCoordinator {
         stopMotionCapture()
         layout = .lobby(.waiting)
         roster = []
+        currentDeviceCue = nil
+        deviceCueTask?.cancel()
+        deviceCueTask = nil
     }
 
     private func play(_ pattern: HapticPattern) {
-        guard !configuration.disableEffects else { return }
+        guard !configuration.disableEffects, hapticsEnabled else { return }
         switch pattern {
         case .lightImpact: UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
         case .heavyImpact: UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
         case .error: UINotificationFeedbackGenerator().notificationOccurred(.error)
         case .success: UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
+    private func show(_ cue: DeviceCue) {
+        guard !configuration.disableEffects, deviceEffectsEnabled else { return }
+        currentDeviceCue = cue
+        if let haptic = cue.haptic { play(haptic) }
+        deviceCueTask?.cancel()
+        deviceCueTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(cue.durationMilliseconds))
+            guard !Task.isCancelled, self?.currentDeviceCue?.id == cue.id else { return }
+            self?.currentDeviceCue = nil
+            self?.deviceCueTask = nil
         }
     }
 
@@ -334,9 +470,21 @@ final class ControllerCoordinator {
         }
     }
 
+    private func appendPersonalCupHistory(_ record: PersonalCupRecord) async {
+        let result = await cupHistoryStore.append(record)
+        guard result.wasInserted else { return }
+        if !personalCupHistory.contains(where: { $0.id == record.id }) {
+            personalCupHistory.insert(record, at: 0)
+        }
+        if let error = result.persistenceErrorDescription {
+            historyPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+        }
+    }
+
     private func updateMotionCapture() {
         let shouldRun = isStarted && isSceneActive && isConnected
-            && requestedInputs.contains(.orientation) && motionManager.isDeviceMotionAvailable
+            && motionControlEnabled && requestedInputs.contains(.orientation)
+            && motionManager.isDeviceMotionAvailable
         guard shouldRun else {
             stopMotionCapture()
             return
@@ -354,11 +502,15 @@ final class ControllerCoordinator {
                     return
                 }
                 self.motionRetryBackoff.recordSuccessfulSample()
-                self.client.setOrientation(
-                    .init(
-                        x: Float(quaternion.x), y: Float(quaternion.y),
-                        z: Float(quaternion.z), w: Float(quaternion.w)
-                    ))
+                let orientation = OrientationQuaternion(
+                    x: Float(quaternion.x), y:Float(quaternion.y),
+                    z: Float(quaternion.z), w: Float(quaternion.w)
+                )
+                self.client.setInput(
+                    axisX: orientation.horizontalTiltAxis() - self.motionNeutralAxisX,
+                    axisY: orientation.verticalTiltAxis() - self.motionNeutralAxisY
+                )
+                self.client.setOrientation(orientation)
             }
         }
     }
@@ -370,6 +522,7 @@ final class ControllerCoordinator {
         motionRetryBackoff.reset()
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
         client.setOrientation(.identity, available: false)
+        client.setInput(axisX: 0, axisY: 0)
     }
 
     private func handleMotionCaptureFailure(generation: UUID) {
@@ -508,16 +661,16 @@ final class ControllerCoordinator {
         case "menu":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .menu(.init(
-                items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"],
-                details: ["Winner stays", "Your night"],
+                items: ["FOUR-WAY PONG", "SIGNAL SNAP", "GRAVITY GRAB", "SNAKE PIT", "LAST LIGHT", "PARTY CUP", "HISTORY & LEADERBOARD"],
+                details: ["Pong, expanded", "Match the TV", "Swing around the ring", "Three quick lives", "Dodge the red", "Three-event championship", "Your night"],
                 selected: 0,
                 control: captainControl
             ))
         case "menu-member":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
             layout = .menu(.init(
-                items: ["FOUR-WAY PONG", "HISTORY & LEADERBOARD"],
-                details: ["Winner stays", "Your night"],
+                items: ["FOUR-WAY PONG", "SIGNAL SNAP", "GRAVITY GRAB", "SNAKE PIT", "LAST LIGHT", "PARTY CUP", "HISTORY & LEADERBOARD"],
+                details: ["Pong, expanded", "Match the TV", "Swing around the ring", "Three quick lives", "Dodge the red", "Three-event championship", "Your night"],
                 selected: 0,
                 control: memberControl
             ))
@@ -529,6 +682,54 @@ final class ControllerCoordinator {
                 .axisSurface(.init(id: "controller.paddle.track", binding: .horizontal, instruction: "DRAG TO MOVE")),
             ])
             layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "signal-snap":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.signal-snap",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "signal.rule", text: "MATCH THE SYMBOL ON THE TV", style: .caption)),
+                    .directionPad(.init(id: "signal.direction", instruction: "TAP THE MATCHING ARROW")),
+                ]
+            )
+            layout = .game(.init(gameID: "signal-snap", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "gravity-grab":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.gravity-grab",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "gravity.rule", text: "STEER AROUND THE RING", style: .caption)),
+                    .axisSurface(.init(id: "gravity.steer", binding: .twoDimensional, instruction: "DRAG TO AIM")),
+                ]
+            )
+            layout = .game(.init(gameID: "gravity-grab", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "snake-pit":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.snake-pit",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "snake.rule", text: "TURN • SURVIVE • THREE LIVES", style: .caption)),
+                    .directionPad(.init(id: "snake.direction", instruction: "CHOOSE YOUR NEXT TURN")),
+                ]
+            )
+            layout = .game(.init(gameID: "snake-pit", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "last-light":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.last-light",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "light.rule", text: "DODGE THE RED", style: .caption)),
+                    .axisSurface(.init(id: "light.steer", binding: .twoDimensional, instruction: "DRAG TO MOVE")),
+                ]
+            )
+            layout = .game(.init(gameID: "last-light", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
         case "spectator":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let game = GameDescriptor(id: "pong", title: "Pong", summary: "Winner stays", minimumPlayers: 1, maximumPlayers: 4, modifiers: [
@@ -540,7 +741,7 @@ final class ControllerCoordinator {
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .gameOver(.init(
                 title: "P1 ADA WINS",
-                subtitle: "Winner stays",
+                subtitle: "Select to play again",
                 control: captainControl,
                 botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
             ))
@@ -548,7 +749,7 @@ final class ControllerCoordinator {
             client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
             layout = .gameOver(.init(
                 title: "P1 ADA WINS",
-                subtitle: "Winner stays",
+                subtitle: "Select to play again",
                 control: memberControl,
                 botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
             ))

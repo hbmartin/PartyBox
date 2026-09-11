@@ -2,7 +2,7 @@ import Foundation
 
 public enum PartyNetConstants {
     public static let serviceType = "_partybox._tcp"
-    public static let protocolVersion: UInt16 = 4
+    public static let protocolVersion: UInt16 = 5
     public static let maximumControllers = 8
     public static let maximumApplicationPayloadBytes = 65_536
     public static let reconnectGrace: Duration = .seconds(15)

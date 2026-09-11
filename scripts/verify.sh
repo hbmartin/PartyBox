@@ -125,11 +125,11 @@ ensure_tvos_destination() {
 
 start_fault_rig() {
     if [[ -n "$FAULT_PID" ]] && kill -0 "$FAULT_PID" 2>/dev/null; then return; fi
-    run_logged partyfault-build swift build --package-path "$ROOT_DIR/PartyNet" --product partyfault
+    run_logged partybox-fault-build swift build --package-path "$ROOT_DIR/PartyNet" --product partybox-fault
     run_logged partyload-build swift build --package-path "$ROOT_DIR/PartyNet" --product partyload
     FAULT_READY="$ARTIFACT_DIR/partyfault-ready.json"
     rm -f "$FAULT_READY"
-    "$ROOT_DIR/PartyNet/.build/debug/partyfault" serve \
+    "$ROOT_DIR/PartyNet/.build/debug/partybox-fault" serve \
         --ready-file "$FAULT_READY" --seed 42 >"$ARTIFACT_DIR/partyfault.log" 2>&1 &
     FAULT_PID=$!
     for _ in $(seq 1 200); do
@@ -137,7 +137,7 @@ start_fault_rig() {
         kill -0 "$FAULT_PID" 2>/dev/null || { cat "$ARTIFACT_DIR/partyfault.log"; exit 1; }
         sleep 0.05
     done
-    [[ -s "$FAULT_READY" ]] || { echo "partyfault did not become ready" >&2; exit 1; }
+    [[ -s "$FAULT_READY" ]] || { echo "partybox-fault did not become ready" >&2; exit 1; }
     local host tcp_port control_port
     host="$(plutil -extract host raw "$FAULT_READY")"
     tcp_port="$(plutil -extract tcpPort raw "$FAULT_READY")"
@@ -147,7 +147,7 @@ start_fault_rig() {
 }
 
 fault_control() {
-    "$ROOT_DIR/PartyNet/.build/debug/partyfault" control --address "$CONTROL_ADDRESS" "$@"
+    "$ROOT_DIR/PartyNet/.build/debug/partybox-fault" control --address "$CONTROL_ADDRESS" "$@"
 }
 
 normal() {

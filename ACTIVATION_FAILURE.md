@@ -143,7 +143,7 @@ are present, not merely when `App.init` completes.
 
 ## Related but separate: controller PartyFault smoke test
 
-`testLiveConnectionThroughPartyFault` requires a running `partyfault` process and a
+`testLiveConnectionThroughPartyFault` requires a running `partybox-fault` process and a
 non-empty `PARTYFAULT_HOST`. `scripts/verify.sh normal` supplies both. A direct
 controller `xcodebuild test` invocation without that setup is not a valid live-smoke
 run; fixture and interaction tests can still pass while this one fails to connect.

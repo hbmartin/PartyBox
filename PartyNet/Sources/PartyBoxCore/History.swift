@@ -150,6 +150,85 @@ public struct PersonalMatchRecord: Codable, Equatable, Identifiable, Sendable {
     public var isCompetitive: Bool { isPartyMatch }
 }
 
+public struct CupStandingRecord: Codable, Equatable, Sendable {
+    public let controllerID: ControllerID
+    public let displayName: String
+    public let colorHex: String
+    public let kind: PlayerKind
+    public let rank: Int
+    public let points: Int
+    public let eventWins: Int
+
+    public init(
+        controllerID: ControllerID,
+        displayName: String,
+        colorHex: String,
+        kind: PlayerKind,
+        rank: Int,
+        points: Int,
+        eventWins: Int
+    ) {
+        self.controllerID = controllerID
+        self.displayName = displayName
+        self.colorHex = colorHex
+        self.kind = kind
+        self.rank = max(1, rank)
+        self.points = max(0, points)
+        self.eventWins = max(0, eventWins)
+    }
+}
+
+public struct CupRecord: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let endedAt: Date
+    public let gameIDs: [String]
+    public let matchRecordIDs: [UUID]
+    public let standings: [CupStandingRecord]
+
+    public init(
+        id: UUID = UUID(),
+        endedAt: Date,
+        gameIDs: [String],
+        matchRecordIDs: [UUID],
+        standings: [CupStandingRecord]
+    ) {
+        self.id = id
+        self.endedAt = endedAt
+        self.gameIDs = Array(gameIDs.prefix(3))
+        self.matchRecordIDs = matchRecordIDs
+        self.standings = standings.sorted { $0.rank < $1.rank }
+    }
+}
+
+public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let endedAt: Date
+    public let gameIDs: [String]
+    public let rank: Int
+    public let points: Int
+    public let eventWins: Int
+    public let participantCount: Int
+    public let isChampion: Bool
+
+    public init(record: CupRecord, controllerID: ControllerID) {
+        id = record.id
+        endedAt = record.endedAt
+        gameIDs = record.gameIDs
+        participantCount = record.standings.count
+        let own = record.standings.first { $0.controllerID == controllerID }
+        rank = own?.rank ?? record.standings.count
+        points = own?.points ?? 0
+        eventWins = own?.eventWins ?? 0
+        isChampion = own?.rank == 1
+    }
+}
+
+public struct CupStatistics: Equatable, Sendable {
+    public let played: Int
+    public let won: Int
+    public let podiums: Int
+}
+
 public struct HistoryStatistics: Equatable, Sendable {
     public let played: Int
     public let won: Int
@@ -197,6 +276,14 @@ public enum HistoryAggregation {
     public static func solo(_ records: [PersonalMatchRecord]) -> HistoryStatistics {
         let solo = records.filter(\.isSoloBotMatch)
         return HistoryStatistics(played: solo.count, won: solo.count { $0.ownOutcome == .won })
+    }
+
+    public static func cups(_ records: [PersonalCupRecord]) -> CupStatistics {
+        CupStatistics(
+            played: records.count,
+            won: records.count { $0.isChampion },
+            podiums: records.count { $0.rank <= 3 }
+        )
     }
 }
 

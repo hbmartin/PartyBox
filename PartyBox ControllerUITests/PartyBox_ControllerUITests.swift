@@ -42,6 +42,10 @@ final class PartyBox_ControllerUITests: XCTestCase {
             ("paddle-top", "controller.layout.paddle.top"),
             ("paddle-left", "controller.layout.paddle.left"),
             ("paddle-right", "controller.layout.paddle.right"),
+            ("signal-snap", "controller.layout.signal-snap"),
+            ("gravity-grab", "controller.layout.gravity-grab"),
+            ("snake-pit", "controller.layout.snake-pit"),
+            ("last-light", "controller.layout.last-light"),
             ("spectator", "controller.layout.spectator"),
             ("game-over", "controller.layout.gameOver"),
             ("history", "controller.layout.history"),
@@ -57,6 +61,16 @@ final class PartyBox_ControllerUITests: XCTestCase {
             XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
             if scenario == "spectator" {
                 XCTAssertEqual(element("controller.spectator.position", in: app).label, "#2 IN QUEUE")
+            } else if scenario == "signal-snap" {
+                for direction in ["up", "down", "left", "right"] {
+                    XCTAssertTrue(element("signal.direction.\(direction)", in: app).exists)
+                }
+            } else if scenario == "snake-pit" {
+                XCTAssertTrue(element("snake.direction", in: app).exists)
+            } else if scenario == "gravity-grab" {
+                XCTAssertTrue(element("gravity.steer", in: app).exists)
+            } else if scenario == "last-light" {
+                XCTAssertTrue(element("light.steer", in: app).exists)
             } else if scenario == "game-over" {
                 XCTAssertTrue(element("controller.gameOver.next", in: app).exists)
                 XCTAssertTrue(element("controller.gameOver.menu", in: app).exists)
@@ -140,7 +154,9 @@ final class PartyBox_ControllerUITests: XCTestCase {
 
     @MainActor
     func testLiveConnectionThroughPartyFault() throws {
-        guard let address = ProcessInfo.processInfo.environment["PARTYFAULT_HOST"] else {
+        guard let address = ProcessInfo.processInfo.environment["PARTYFAULT_HOST"],
+              !address.isEmpty,
+              address != "$(PARTYFAULT_HOST)" else {
             throw XCTSkip("scripts/verify.sh supplies PARTYFAULT_HOST for the live smoke flow")
         }
         let app = launch(additional: [

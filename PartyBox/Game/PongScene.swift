@@ -78,9 +78,6 @@ final class PongScene: SKScene {
     }
 
     static func paddlePosition(from frame: InputFrame) -> Double {
-        if frame.flags.contains(.motionAvailable) {
-            return Double(frame.orientation.horizontalTiltAxis())
-        }
         return Double(frame.axisX)
     }
 

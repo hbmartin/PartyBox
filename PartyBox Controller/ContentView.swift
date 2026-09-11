@@ -37,6 +37,14 @@ struct ContentView: View {
                 }
             }
             .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            if let cue = coordinator.currentDeviceCue {
+                Color.controllerHex(cue.colorHex)
+                    .opacity(0.42)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
         }
         .animation(coordinator.configuration.disableAnimations ? nil : .easeOut(duration: 0.24), value: coordinator.client.state)
         .preferredColorScheme(.dark)
@@ -182,6 +190,7 @@ private struct ConnectedControllerView: View {
     @Bindable var coordinator: ControllerCoordinator
     let hostName: String
     @State private var showingHistory = false
+    @State private var showingSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -209,6 +218,10 @@ private struct ConnectedControllerView: View {
                     Image(systemName: "clock.arrow.circlepath").font(.title3).foregroundStyle(.white.opacity(0.55))
                 }
                 .accessibilityIdentifier("controller.history.open")
+                Button { showingSettings = true } label: {
+                    Image(systemName: "gearshape.fill").font(.title3).foregroundStyle(.white.opacity(0.55))
+                }
+                .accessibilityIdentifier("controller.settings.open")
                 Button {
                     Task { await coordinator.returnToPicker() }
                 } label: {
@@ -240,6 +253,9 @@ private struct ConnectedControllerView: View {
         }
         .sheet(isPresented: $showingHistory) {
             PersonalHistoryView(coordinator: coordinator) { showingHistory = false }
+        }
+        .sheet(isPresented: $showingSettings) {
+            ControllerSettingsView(coordinator: coordinator) { showingSettings = false }
         }
     }
 
@@ -320,7 +336,7 @@ private struct MenuControllerView: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text("GAME SELECT")
+            Text(layout.items.contains("START PARTY CUP") ? "PARTY CUP SETUP" : "GAME SELECT")
                 .font(.caption.monospaced().weight(.black))
                 .foregroundStyle(ControllerTheme.cyan)
                 .accessibilityIdentifier("controller.layout.menu")
@@ -347,7 +363,8 @@ private struct MenuControllerView: View {
                 Button("BACK") { Task { await coordinator.sendMenu(.back) } }
                     .buttonStyle(ArcadeButtonStyle(color: .white.opacity(0.35)))
                     .accessibilityIdentifier("controller.menu.back")
-            } else if layout.selected < max(0, layout.items.count - 1) {
+            } else if layout.items.indices.contains(layout.selected),
+                      layout.items[layout.selected] != "HISTORY & LEADERBOARD" {
                 Button(layout.control.isReady ? "CANCEL READY" : "READY") {
                     Task { await coordinator.sendMenu(.select) }
                 }
@@ -431,6 +448,8 @@ private struct ControllerComponentView: View {
             Button(value.label) { trigger(value) }
                 .buttonStyle(ArcadeButtonStyle(color: accent))
                 .accessibilityIdentifier(value.id)
+        case .directionPad(let value):
+            DirectionPad(component: value, accent: accent, gameID: gameID, coordinator: coordinator)
         case .choiceGroup(let value):
             VStack(spacing: 10) {
                 Text(value.title).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.6))
@@ -510,6 +529,51 @@ private struct ControllerComponentView: View {
     }
 }
 
+private struct DirectionPad: View {
+    let component: DirectionPadComponent
+    let accent: Color
+    let gameID: String
+    @Bindable var coordinator: ControllerCoordinator
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Spacer()
+                directionButton("arrow.up", label: component.upLabel, value: "up")
+                Spacer()
+            }
+            HStack(spacing: 54) {
+                directionButton("arrow.left", label: component.leftLabel, value: "left")
+                directionButton("arrow.right", label: component.rightLabel, value: "right")
+            }
+            HStack {
+                Spacer()
+                directionButton("arrow.down", label: component.downLabel, value: "down")
+                Spacer()
+            }
+            Text(component.instruction)
+                .font(.caption.monospaced().weight(.black))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(component.id)
+    }
+
+    private func directionButton(_ symbol: String, label: String, value: String) -> some View {
+        Button {
+            Task { await coordinator.sendGameAction(id: component.id, value: .choice(value), gameID: gameID) }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: symbol).font(.title2.weight(.black))
+                Text(label).font(.caption2.monospaced().weight(.black))
+            }
+            .frame(width: 82, height: 64)
+        }
+        .buttonStyle(ArcadeButtonStyle(color: accent))
+        .accessibilityIdentifier("\(component.id).\(value)")
+    }
+}
+
 private struct AxisSurface: View {
     let component: AxisSurfaceComponent
     let accent: Color
@@ -535,7 +599,7 @@ private struct AxisSurface: View {
                         .position(
                             x: (CGFloat(coordinator.displayedInputAxisX) + 1) * 0.5 * max(width - knobDiameter, 0) + knobRadius,
                             y: component.binding == .twoDimensional
-                                ? (CGFloat(coordinator.client.inputAxisY) + 1) * 0.5 * max(height - knobDiameter, 0) + knobRadius
+                                ? (1 - CGFloat(coordinator.client.inputAxisY)) * 0.5 * max(height - knobDiameter, 0) + knobRadius
                                 : height / 2
                         )
                 }
@@ -546,7 +610,7 @@ private struct AxisSurface: View {
                         extent: width
                     )
                     let y = component.binding == .twoDimensional
-                        ? AxisSurfaceGeometry.normalizedCoordinate(
+                        ? -AxisSurfaceGeometry.normalizedCoordinate(
                             location: value.location.y,
                             extent: height
                         ) : 0
@@ -619,6 +683,7 @@ private struct PersonalHistoryView: View {
     @Bindable var coordinator: ControllerCoordinator
     let dismiss: () -> Void
     @State private var confirmingClear = false
+    @State private var diagnosticsURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -631,6 +696,10 @@ private struct PersonalHistoryView: View {
                     HStack(spacing: 16) {
                         statistic(title: "SOLO", value: coordinator.soloStatistics.played)
                         statistic(title: "SOLO WINS", value: coordinator.soloStatistics.won)
+                    }
+                    HStack(spacing: 16) {
+                        statistic(title: "CUPS", value: coordinator.cupStatistics.played)
+                        statistic(title: "TROPHIES", value: coordinator.cupStatistics.won)
                     }
                     Text("Party totals require two humans. Solo totals track one-human bot matches.")
                         .font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -668,8 +737,39 @@ private struct PersonalHistoryView: View {
                         }
                     }
 
+                    if !coordinator.personalCupHistory.isEmpty {
+                        Text("PARTY CUP TROPHIES")
+                            .font(.headline.monospaced().weight(.black))
+                            .foregroundStyle(ControllerTheme.cyan)
+                        ForEach(coordinator.personalCupHistory) { record in
+                            let cupTitle = record.isChampion ? "PARTY CUP CHAMPION" : "PARTY CUP — #\(record.rank)"
+                            HStack {
+                                Image(systemName: record.isChampion ? "trophy.fill" : "medal.fill")
+                                    .foregroundStyle(record.isChampion ? .yellow : ControllerTheme.cyan)
+                                VStack(alignment: .leading) {
+                                    Text(cupTitle)
+                                        .font(.headline.weight(.black))
+                                    Text("\(record.points) points  •  \(record.eventWins) event wins")
+                                        .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.6))
+                                }
+                                Spacer()
+                            }
+                            .padding(14)
+                            .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+                        }
+                    }
+
                     Button("CLEAR MY HISTORY", role: .destructive) { confirmingClear = true }
                         .buttonStyle(ArcadeButtonStyle(color: .red))
+                    if let diagnosticsURL {
+                        ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
+                            .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                    } else {
+                        Button("PREPARE REDACTED DIAGNOSTICS") {
+                            diagnosticsURL = coordinator.makeRedactedDiagnosticsFile()
+                        }
+                        .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                    }
                 }
                 .padding(20)
             }
@@ -695,6 +795,34 @@ private struct PersonalHistoryView: View {
         .frame(maxWidth: .infinity)
         .padding(18)
         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct ControllerSettingsView: View {
+    @Bindable var coordinator: ControllerCoordinator
+    let dismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("CONTROLS") {
+                    Toggle("Motion controls", isOn: $coordinator.motionControlEnabled)
+                    Button("CALIBRATE CURRENT POSITION") { coordinator.calibrateMotion() }
+                        .disabled(!coordinator.motionControlEnabled)
+                    Text("Touch is the default. Turn on motion to steer by tilting this phone.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("PHONE EFFECTS") {
+                    Toggle("Screen color cues", isOn: $coordinator.deviceEffectsEnabled)
+                    Toggle("Haptics", isOn: $coordinator.hapticsEnabled)
+                    Text("Cues are brief and gentle. PartyBox never uses the torch or phone speakers.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Controller Settings")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("DONE", action: dismiss) } }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
