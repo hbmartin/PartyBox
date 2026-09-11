@@ -355,7 +355,7 @@ final class HostCoordinator {
         hostEventsTask = nil
         let botsToStop = prepareRuntimeForShutdown()
         await host.stop()
-        for bot in botsToStop { await bot.stop() }
+        await stopBotsConcurrently(botsToStop)
     }
 
     func perform(
@@ -1093,9 +1093,17 @@ final class HostCoordinator {
         let botsToStop = prepareRuntimeForShutdown()
         statusMessage = "Restarting after a host event overload…"
         await host.stop()
-        for bot in botsToStop { await bot.stop() }
+        await stopBotsConcurrently(botsToStop)
         guard !isStarted, lifecycleGeneration == recoveryGeneration else { return }
         await start(preservingHostInstanceID: preservedHostInstanceID)
+    }
+
+    private func stopBotsConcurrently(_ bots: [PartyClient]) async {
+        await withTaskGroup(of: Void.self) { group in
+            for bot in bots {
+                group.addTask { await bot.stop() }
+            }
+        }
     }
 
     private func prepareRuntimeForShutdown() -> [PartyClient] {

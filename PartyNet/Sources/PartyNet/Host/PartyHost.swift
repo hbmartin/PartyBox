@@ -231,18 +231,17 @@ public final class PartyHost {
                   $0.botControllerID == requesterID
               }) else { return false }
 
-        let holders = sessions.filter {
-            $0.key != requesterID && $0.value.mark == mark
-        }
-        if !holders.isEmpty {
+        let holders = sessions.lazy
+            .filter { $0.key != requesterID && $0.value.mark == mark }
+            .prefix(2)
+        if let holderEntry = holders.first {
             guard requester.kind == .human,
                   holders.count == 1,
-                  let holderID = holders.first?.key,
-                  var holder = sessions[holderID],
-                  holder.isAdmitted,
-                  holder.kind == .bot else { return false }
+                  holderEntry.value.isAdmitted,
+                  holderEntry.value.kind == .bot else { return false }
+            var holder = holderEntry.value
             holder.mark = requester.mark
-            sessions[holderID] = holder
+            sessions[holderEntry.key] = holder
         }
 
         requester.mark = mark

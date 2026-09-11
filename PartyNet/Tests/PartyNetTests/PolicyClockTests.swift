@@ -287,8 +287,10 @@ extension NetworkIntegrationTests {
         await clock.advance(by: .milliseconds(16))
         try await waitUntil { client.inputFramesSent == 1 }
         let baselineSendCount = client.inputFramesSent
+        let baselineEnqueueCount = client.inputEnqueueCountForTesting
 
         client.setOrientation(.identity, available: false)
+        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount)
         await settle()
         await clock.advance(by: .milliseconds(16))
         await settle()
@@ -296,10 +298,12 @@ extension NetworkIntegrationTests {
 
         let orientation = OrientationQuaternion(x: 0, y: 0, z: 1, w: 0)
         client.setOrientation(orientation)
+        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount + 1)
         await clock.advance(by: .milliseconds(16))
         try await waitUntil { client.inputFramesSent == baselineSendCount + 1 }
 
         client.setOrientation(orientation)
+        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount + 1)
         await settle()
         await clock.advance(by: .milliseconds(16))
         await settle()
