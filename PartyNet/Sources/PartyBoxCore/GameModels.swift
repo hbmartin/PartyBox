@@ -20,6 +20,9 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
     public let minimumPlayers: Int
     public let maximumPlayers: Int
     public let modifiers: [GameModifierDescriptor]
+    public let estimatedDurationSeconds: Int
+    public let supportsMotion: Bool
+    public let isCupEligible: Bool
 
     public init(
         id: String,
@@ -27,7 +30,10 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
         summary: String,
         minimumPlayers: Int,
         maximumPlayers: Int,
-        modifiers: [GameModifierDescriptor] = []
+        modifiers: [GameModifierDescriptor] = [],
+        estimatedDurationSeconds: Int = 90,
+        supportsMotion: Bool = true,
+        isCupEligible: Bool = true
     ) {
         precondition((1...PartyNetConstants.maximumControllers).contains(minimumPlayers))
         precondition((minimumPlayers...PartyNetConstants.maximumControllers).contains(maximumPlayers))
@@ -37,6 +43,9 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
         self.minimumPlayers = minimumPlayers
         self.maximumPlayers = maximumPlayers
         self.modifiers = modifiers
+        self.estimatedDurationSeconds = max(15, estimatedDurationSeconds)
+        self.supportsMotion = supportsMotion
+        self.isCupEligible = isCupEligible
     }
 }
 

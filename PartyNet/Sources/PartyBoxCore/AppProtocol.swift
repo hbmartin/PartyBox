@@ -27,8 +27,8 @@ public enum PartyBoxWireError: Error, Sendable {
 }
 
 public enum PartyBoxRuntimeLimits {
-    public static let releasePartySize = 4
-    public static let maximumLobbyBots = 3
+    public static let releasePartySize = PartyNetConstants.maximumControllers
+    public static let maximumLobbyBots = PartyNetConstants.maximumControllers - 1
 }
 
 public enum MenuAction: String, Codable, CaseIterable, Sendable {
@@ -40,6 +40,25 @@ public enum HapticPattern: String, Codable, Equatable, Sendable {
     case heavyImpact
     case error
     case success
+}
+
+public struct DeviceCue: Codable, Equatable, Sendable {
+    public let id: UUID
+    public let colorHex: String
+    public let durationMilliseconds: Int
+    public let haptic: HapticPattern?
+
+    public init(
+        id: UUID = UUID(),
+        colorHex: String,
+        durationMilliseconds: Int = 220,
+        haptic: HapticPattern? = nil
+    ) {
+        self.id = id
+        self.colorHex = colorHex
+        self.durationMilliseconds = min(max(durationMilliseconds, 80), 250)
+        self.haptic = haptic
+    }
 }
 
 public struct GameLayoutEnvelope: Codable, Equatable, Sendable {
@@ -220,5 +239,7 @@ public enum HostPresentation: Codable, Equatable, Sendable {
     case roster([PlayerInfo])
     case layout(ControllerLayout)
     case haptic(HapticPattern)
+    case deviceCue(DeviceCue)
     case matchCompleted(PersonalMatchRecord)
+    case cupCompleted(PersonalCupRecord)
 }

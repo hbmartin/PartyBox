@@ -24,6 +24,12 @@ struct ContentView: View {
                     phaseMarker("host.phase.menu", label: "Game menu")
                 }
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
+            case .cupSetup:
+                ZStack {
+                    CupSetupView(coordinator: coordinator)
+                    phaseMarker("host.phase.cupSetup", label: "Party Cup setup")
+                }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
             case .playing:
                 if let scene = coordinator.currentScene {
                     ZStack {
@@ -33,7 +39,7 @@ struct ContentView: View {
                         ReactionOverlay(bursts: coordinator.reactionBursts)
                         VoteOverlay(tallies: coordinator.displayedVoteTallies)
                         VStack {
-                            Text("Pong match in progress")
+                            Text("\(coordinator.currentGameTitle) in progress")
                                 .accessibilityIdentifier("host.phase.playing")
                         }
                         .font(.system(size: 1))
@@ -46,6 +52,18 @@ struct ContentView: View {
                 ZStack {
                     GameOverView(result: result, coordinator: coordinator)
                     phaseMarker("host.phase.gameOver", label: "Game over")
+                }
+                .transition(.opacity.combined(with: .scale(scale: 1.04)))
+            case let .cupStandings(result):
+                ZStack {
+                    CupStandingsView(result: result, coordinator: coordinator)
+                    phaseMarker("host.phase.cupStandings", label: "Party Cup standings")
+                }
+                .transition(.opacity.combined(with: .scale(scale: 1.02)))
+            case let .cupComplete(record):
+                ZStack {
+                    CupCompleteView(record: record, coordinator: coordinator)
+                    phaseMarker("host.phase.cupComplete", label: "Party Cup complete")
                 }
                 .transition(.opacity.combined(with: .scale(scale: 1.04)))
             case .history:
@@ -174,31 +192,126 @@ private struct GameMenuView: View {
     @Bindable var coordinator: HostCoordinator
 
     var body: some View {
-        VStack(spacing: 42) {
+        VStack(spacing: 20) {
             PartyWordmark(kicker: "CHOOSE YOUR CHAOS", title: "GAME SELECT")
-            ForEach(Array(coordinator.menuItems.enumerated()), id: \.offset) { index, item in
-                HStack(spacing: 24) {
-                    Text(index == coordinator.menuSelection ? "▶" : "")
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(item).font(.system(size: 48, weight: .black, design: .rounded))
-                        Text(coordinator.menuDetails[index])
-                            .font(.title3.monospaced())
-                            .foregroundStyle(.white.opacity(0.6))
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                    ForEach(Array(coordinator.menuItems.enumerated()), id: \.offset) { index, item in
+                        HStack(spacing: 16) {
+                            Text(index == coordinator.menuSelection ? "▶" : "")
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item).font(.system(size: 31, weight: .black, design: .rounded))
+                                Text(coordinator.menuDetails[index])
+                                    .font(.subheadline.monospaced())
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }
+                            Spacer()
+                        }
+                        .foregroundStyle(index == coordinator.menuSelection ? PartyTheme.magenta : .white)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+                        .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 20))
+                        .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.menuSelection ? PartyTheme.magenta.opacity(0.8) : .white.opacity(0.1), lineWidth: 2))
+                        .accessibilityIdentifier("host.menu.action.\(index)")
                     }
                 }
-                .foregroundStyle(index == coordinator.menuSelection ? PartyTheme.magenta : .white)
-                .padding(34)
-                .frame(maxWidth: 850, alignment: .leading)
-                .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 24))
-                .overlay(RoundedRectangle(cornerRadius: 24).stroke(PartyTheme.magenta.opacity(0.6), lineWidth: 2))
-                .accessibilityIdentifier("host.menu.action.\(index)")
+                .frame(maxWidth: 1_350)
             }
             Text("SELECT TO PLAY  •  MENU/ESC TO RETURN")
                 .font(.headline.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.72))
             PartyReadyStatus(coordinator: coordinator)
         }
-        .padding(64)
+        .padding(44)
+    }
+}
+
+private struct CupSetupView: View {
+    @Bindable var coordinator: HostCoordinator
+
+    var body: some View {
+        VStack(spacing: 20) {
+            PartyWordmark(kicker: "THREE EVENTS • ONE CHAMPION", title: "PARTY CUP")
+            Text("Captain: choose three different games. Everyone else: ready up on your phone.")
+                .font(.title3.monospaced()).foregroundStyle(.white.opacity(0.72))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                ForEach(Array(coordinator.cupSetupItems.enumerated()), id: \.offset) { index, item in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item).font(.system(size: 30, weight: .black, design: .rounded))
+                        Text(coordinator.cupSetupDetails[index])
+                            .font(.subheadline.monospaced()).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .foregroundStyle(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white)
+                    .padding(22)
+                    .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+                    .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 20))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white.opacity(0.1), lineWidth: 2))
+                }
+            }
+            .frame(maxWidth: 1_300)
+            PartyReadyStatus(coordinator: coordinator)
+            Text("SELECT TO ADD/REMOVE  •  PICK START PARTY CUP WHEN 3/3 ARE READY")
+                .font(.headline.monospaced().weight(.bold)).foregroundStyle(.white.opacity(0.68))
+        }
+        .padding(44)
+    }
+}
+
+private struct CupStandingsView: View {
+    let result: GameOutcome
+    @Bindable var coordinator: HostCoordinator
+
+    var body: some View {
+        VStack(spacing: 22) {
+            PartyWordmark(kicker: result.title, title: "CUP STANDINGS")
+            CupStandingsList(standings: coordinator.cupLeaderboard)
+            PartyReadyStatus(coordinator: coordinator)
+            Text("SELECT WHEN READY FOR EVENT \(coordinator.cupEventIndex + 2) OF 3")
+                .font(.headline.monospaced().weight(.bold)).foregroundStyle(PartyTheme.lime)
+        }
+        .padding(50)
+    }
+}
+
+private struct CupCompleteView: View {
+    let record: CupRecord
+    @Bindable var coordinator: HostCoordinator
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Text("PARTY CUP CHAMPION")
+                .font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
+            Text(record.standings.first?.displayName.uppercased() ?? "CHAMPION")
+                .font(.system(size: 76, weight: .black, design: .rounded))
+                .shadow(color: .yellow, radius: 24)
+            CupStandingsList(standings: record.standings)
+            Text("SELECT TO RETURN TO THE GAME LIBRARY")
+                .font(.headline.monospaced().weight(.bold)).foregroundStyle(PartyTheme.lime)
+        }
+        .padding(50)
+    }
+}
+
+private struct CupStandingsList: View {
+    let standings: [CupStandingRecord]
+
+    var body: some View {
+        VStack(spacing: 9) {
+            ForEach(Array(standings.enumerated()), id: \.element.controllerID) { index, standing in
+                HStack(spacing: 18) {
+                    Text("#\(standing.rank)").font(.title2.monospaced().weight(.black)).frame(width: 54)
+                    Circle().fill(Color.partyHex(standing.colorHex)).frame(width: 18, height: 18)
+                    Text(standing.displayName).font(.title2.weight(.black))
+                    if standing.kind == .bot { Text("BOT").font(.caption.monospaced().weight(.black)) }
+                    Spacer()
+                    Text("\(standing.eventWins) WINS").font(.headline.monospaced()).foregroundStyle(.white.opacity(0.55))
+                    Text("\(standing.points) PTS").font(.title2.monospaced().weight(.black)).foregroundStyle(index == 0 ? .yellow : PartyTheme.cyan)
+                }
+                .padding(.horizontal, 24).padding(.vertical, 12)
+                .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+        .frame(maxWidth: 1_050)
     }
 }
 
@@ -344,6 +457,7 @@ private struct VoteOverlay: View {
 
 private struct HistoryView: View {
     @Bindable var coordinator: HostCoordinator
+    @State private var diagnosticsURL: URL?
 
     var body: some View {
         ScrollView {
@@ -370,6 +484,26 @@ private struct HistoryView: View {
                                 Spacer()
                                 Text("\(entry.statistics.won) W  /  \(entry.statistics.played) PLAYED")
                                     .font(.subheadline.monospaced().weight(.bold))
+                            }
+                            .padding(14)
+                            .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    .frame(maxWidth: 900)
+                }
+
+                if !coordinator.cupRecords.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("PARTY CUP TROPHIES").font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
+                        ForEach(coordinator.cupRecords) { record in
+                            HStack {
+                                Image(systemName: "trophy.fill").foregroundStyle(.yellow)
+                                Text(record.standings.first?.displayName ?? "Champion").font(.headline.weight(.black))
+                                Spacer()
+                                Text(record.standings.first.map { "\($0.points) PTS" } ?? "")
+                                    .font(.subheadline.monospaced().weight(.black)).foregroundStyle(PartyTheme.cyan)
+                                Text(record.endedAt.formatted(date: .abbreviated, time: .omitted))
+                                    .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.5))
                             }
                             .padding(14)
                             .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
@@ -414,6 +548,19 @@ private struct HistoryView: View {
                     }
                 } else {
                     Button("CLEAR TV HISTORY") { coordinator.requestHistoryClear() }
+                }
+                if let diagnosticsURL {
+#if os(macOS)
+                    ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
+#else
+                    Text("DIAGNOSTICS SAVED: \(diagnosticsURL.lastPathComponent)")
+                        .font(.caption.monospaced().weight(.black))
+                        .foregroundStyle(PartyTheme.cyan)
+#endif
+                } else {
+                    Button("PREPARE REDACTED DIAGNOSTICS") {
+                        diagnosticsURL = coordinator.makeRedactedDiagnosticsFile()
+                    }
                 }
                 Text("MENU/ESC TO RETURN")
                     .font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))

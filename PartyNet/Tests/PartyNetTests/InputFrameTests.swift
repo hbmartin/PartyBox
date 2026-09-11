@@ -103,4 +103,13 @@ struct InputFrameTests {
         #expect(OrientationQuaternion(x: 0, y: 1, z: 0, w: 1).horizontalTiltAxis() == 1)
         #expect(OrientationQuaternion.identity.horizontalTiltAxis(sensitivity: .nan) == 0)
     }
+
+    @Test func verticalTiltAxisIsCenteredSymmetricAndBounded() {
+        #expect(OrientationQuaternion.identity.verticalTiltAxis() == 0)
+        let halfAngle = Float.pi / 12
+        let forward = OrientationQuaternion(x: sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
+        let backward = OrientationQuaternion(x: -sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
+        #expect(abs(forward - 0.75) < 0.001)
+        #expect(abs(backward + 0.75) < 0.001)
+    }
 }

@@ -17,12 +17,34 @@ public struct GameSessionContext: Sendable {
     public let inputs: InputStore
     public let seed: UInt64
     public let modifierID: String?
+    public let isCupEvent: Bool
 
-    public init(participants: [GameParticipant], inputs: InputStore, seed: UInt64, modifierID: String?) {
+    public init(
+        participants: [GameParticipant],
+        inputs: InputStore,
+        seed: UInt64,
+        modifierID: String?,
+        isCupEvent: Bool = false
+    ) {
         self.participants = participants
         self.inputs = inputs
         self.seed = seed
         self.modifierID = modifierID
+        self.isCupEvent = isCupEvent
+    }
+}
+
+public struct GameStanding: Equatable, Sendable {
+    public let playerID: PlayerID
+    public let rank: Int
+    public let score: Int
+    public let detail: String
+
+    public init(playerID: PlayerID, rank: Int, score: Int, detail: String = "") {
+        self.playerID = playerID
+        self.rank = max(1, rank)
+        self.score = score
+        self.detail = detail
     }
 }
 
@@ -42,19 +64,29 @@ public struct GameOutcome: Equatable, Sendable {
     public let winner: PlayerID?
     public let playerOutcomes: [PlayerMatchOutcome]
     public let metrics: [MatchMetric]
+    public let standings: [GameStanding]
 
-    public init(title: String, subtitle: String, winner: PlayerID?, playerOutcomes: [PlayerMatchOutcome], metrics: [MatchMetric]) {
+    public init(
+        title: String,
+        subtitle: String,
+        winner: PlayerID?,
+        playerOutcomes: [PlayerMatchOutcome],
+        metrics: [MatchMetric],
+        standings: [GameStanding] = []
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.winner = winner
         self.playerOutcomes = playerOutcomes
         self.metrics = metrics
+        self.standings = standings
     }
 }
 
 public enum GameEvent: Equatable, Sendable {
     case audio(HapticPattern)
     case haptic(PlayerID, HapticPattern)
+    case deviceCue(PlayerID, DeviceCue)
     case eliminated(PlayerID)
     case completed(GameOutcome)
 }

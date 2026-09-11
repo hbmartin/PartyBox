@@ -16,6 +16,7 @@ struct CoreModelsTests {
             components: [
                 .text(.init(id: "title", text: "Tilt", style: .title)),
                 .axisSurface(.init(id: "move", binding: .twoDimensional, instruction: "Move")),
+                .directionPad(.init(id: "direction", instruction: "Choose")),
             ]
         )
         let screenData = try PartyBoxWireCodec.encode(screen)
@@ -31,6 +32,9 @@ struct CoreModelsTests {
         let encoded = try PartyBoxWireCodec.encode(presentation)
         #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: encoded) == presentation)
 
+        let cue = HostPresentation.deviceCue(.init(colorHex: "#39FF88", durationMilliseconds: 999, haptic: .success))
+        #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: PartyBoxWireCodec.encode(cue)) == cue)
+
         let command = ControllerCommand.game(.init(
             gameID: "motion-game",
             action: .init(id: "boost", value: .trigger)
@@ -39,6 +43,23 @@ struct CoreModelsTests {
             #expect(actionEnvelope.schemaVersion == ControllerScreen.schemaVersion)
         }
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
+    }
+
+    @Test func partyCupRecordsProducePrivatePersistentTrophies() {
+        let cup = CupRecord(
+            endedAt: Date(timeIntervalSince1970: 100),
+            gameIDs: ["pong", "signal-snap", "snake-pit", "ignored"],
+            matchRecordIDs: [UUID()],
+            standings: [
+                .init(controllerID: secondID, displayName: "Grace", colorHex: "#FF3EC8", kind: .human, rank: 2, points: 14, eventWins: 1),
+                .init(controllerID: firstID, displayName: "Ada", colorHex: "#32E6FF", kind: .human, rank: 1, points: 18, eventWins: 2),
+            ]
+        )
+        let personal = PersonalCupRecord(record: cup, controllerID: firstID)
+        #expect(cup.gameIDs.count == 3)
+        #expect(cup.standings.first?.displayName == "Ada")
+        #expect(personal.isChampion)
+        #expect(HistoryAggregation.cups([personal]) == .init(played: 1, won: 1, podiums: 1))
     }
 
     @Test func schemaRejectsDuplicateAndExcessiveComponentIDs() {

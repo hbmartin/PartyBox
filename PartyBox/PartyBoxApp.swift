@@ -8,6 +8,79 @@
 import SwiftUI
 import PartyNet
 
+#if os(macOS)
+import AppKit
+
+@MainActor
+private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
+    private let coordinator: HostCoordinator
+    private var window: NSWindow?
+    private var lifecycleTask: Task<Void, Never>?
+
+    override init() {
+        preparePartyNetLiveClock()
+        coordinator = HostCoordinator()
+        super.init()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let contentView = ContentView(coordinator: coordinator)
+        let hostingView = NSHostingView(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "PartyBox"
+        window.contentView = hostingView
+        window.contentMinSize = NSSize(width: 960, height: 540)
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        self.window = window
+
+        NSApplication.shared.unhide(nil)
+        NSApplication.shared.activate()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        lifecycleTask = Task { @MainActor [coordinator] in
+            await coordinator.start()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+            }
+            await coordinator.stop()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        lifecycleTask?.cancel()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+#endif
+
+#if os(macOS)
+@main
+enum PartyBoxApp {
+    static func main() {
+        let application = NSApplication.shared
+        let applicationDelegate = PartyBoxApplicationDelegate()
+        application.delegate = applicationDelegate
+        application.setActivationPolicy(.regular)
+        withExtendedLifetime(applicationDelegate) {
+            application.run()
+        }
+    }
+}
+#else
 @main
 struct PartyBoxApp: App {
     @State private var coordinator: HostCoordinator
@@ -18,26 +91,16 @@ struct PartyBoxApp: App {
     }
 
     var body: some Scene {
-#if os(macOS)
-        Window("PartyBox", id: "partybox-main") {
-            appContent
-        }
-        .defaultSize(width: 1280, height: 720)
-#else
         WindowGroup {
-            appContent
-        }
-#endif
-    }
-
-    private var appContent: some View {
-        ContentView(coordinator: coordinator)
-            .task {
-                await coordinator.start()
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+            ContentView(coordinator: coordinator)
+                .task {
+                    await coordinator.start()
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+                    }
+                    await coordinator.stop()
                 }
-                await coordinator.stop()
-            }
+        }
     }
 }
+#endif

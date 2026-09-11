@@ -76,6 +76,31 @@ public struct ActionButtonComponent: Codable, Equatable, Sendable {
     }
 }
 
+public struct DirectionPadComponent: Codable, Equatable, Sendable {
+    public let id: String
+    public let instruction: String
+    public let upLabel: String
+    public let downLabel: String
+    public let leftLabel: String
+    public let rightLabel: String
+
+    public init(
+        id: String,
+        instruction: String,
+        upLabel: String = "UP",
+        downLabel: String = "DOWN",
+        leftLabel: String = "LEFT",
+        rightLabel: String = "RIGHT"
+    ) {
+        self.id = id
+        self.instruction = instruction
+        self.upLabel = upLabel
+        self.downLabel = downLabel
+        self.leftLabel = leftLabel
+        self.rightLabel = rightLabel
+    }
+}
+
 public struct ChoiceItem: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let title: String
@@ -123,12 +148,13 @@ public enum ScreenComponent: Codable, Equatable, Sendable {
     case status(StatusComponent)
     case axisSurface(AxisSurfaceComponent)
     case actionButton(ActionButtonComponent)
+    case directionPad(DirectionPadComponent)
     case choiceGroup(ChoiceGroupComponent)
     case emojiPalette(EmojiPaletteComponent)
 }
 
 public struct ControllerScreen: Codable, Equatable, Sendable {
-    public static let schemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
 
     public let accessibilityID: String
     public let accentColorHex: String
@@ -160,6 +186,7 @@ public struct ControllerScreen: Codable, Equatable, Sendable {
             case .status(let value): value.id
             case .axisSurface(let value): value.id
             case .actionButton(let value): value.id
+            case .directionPad(let value): value.id
             case .choiceGroup(let value): value.id
             case .emojiPalette(let value): value.id
             }

@@ -19,6 +19,13 @@ final class PartyBoxUITests: XCTestCase {
             ("four-player-lobby", "host.phase.lobby"),
             ("menu", "host.phase.menu"),
             ("four-way-match", "host.phase.playing"),
+            ("signal-snap-match", "host.phase.playing"),
+            ("gravity-grab-match", "host.phase.playing"),
+            ("snake-pit-match", "host.phase.playing"),
+            ("last-light-match", "host.phase.playing"),
+            ("cup-setup", "host.phase.cupSetup"),
+            ("cup-standings", "host.phase.cupStandings"),
+            ("cup-complete", "host.phase.cupComplete"),
             ("game-over", "host.phase.gameOver"),
             ("history", "host.phase.history"),
         ] {

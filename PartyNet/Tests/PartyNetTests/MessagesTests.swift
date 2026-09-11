@@ -41,8 +41,8 @@ struct MessagesTests {
         try assertRoundTrips(messages)
     }
 
-    @Test func protocolV4CarriesPreferredMarksAndHostAssignedIdentity() throws {
-        #expect(PartyNetConstants.protocolVersion == 4)
+    @Test func protocolV5CarriesPreferredMarksAndHostAssignedIdentity() throws {
+        #expect(PartyNetConstants.protocolVersion == 5)
         let controllerID = ControllerID()
         let hello = Hello(controllerID: controllerID, displayName: "Ada", preferredMark: .ring)
         let decodedHello = try JSONDecoder().decode(Hello.self, from: JSONEncoder().encode(hello))

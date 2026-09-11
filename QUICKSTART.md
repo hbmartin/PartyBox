@@ -31,10 +31,12 @@ PartyBox is a **star topology**. One host owns the game; every phone is a dumb-i
 Facts worth knowing before you start:
 
 - **8 controllers max.** The 9th phone is rejected with *"This PartyBox already has 8 controllers."*
-- **4 play at a time.** Paddles are assigned to the arena edges in order: bottom, top, left, right.
-  Controllers 5–8 sit in a spectator queue.
+- **All 8 play.** Four-Way Pong uses its four-seat arena for up to four players and a short qualifier
+  format for five to eight; the other games put everyone straight into the same round.
 - **1 player is enough to start** — a solo match is a practice run.
-- **One game right now:** Four-Way Pong. Three lives each, winner stays.
+- **Five games:** Four-Way Pong, Signal Snap, Gravity Grab, Snake Pit, and Last Light.
+- **Two ways to play:** pick any game in Free Play, or let the captain choose three distinct events for a Party Cup.
+- **Phone controls:** touch by default; calibrated motion is optional in Controller Settings.
 - **No encryption and no join code.** Anyone on the same LAN who has the app can join your party. Use a
   network you trust; don't run this on conference Wi-Fi.
 
@@ -99,8 +101,8 @@ You should see these schemes:
 ```
 PartyBox              ← the host app (tvOS + macOS)
 PartyBox Controller   ← the iPhone app
-partyfault            ┐
-partyload             ├ PartyNet package tools, not needed for a normal party
+partybox-fault        ┐
+partyload             ├ PartyNet test tools, not needed for a normal party
 PartyNet              │
 PartyNetTestSupport   ┘
 ```
@@ -112,6 +114,7 @@ Repo layout, briefly:
 | `PartyBox/` | Host app: `PartyBoxApp.swift`, `ContentView.swift`, `HostCoordinator.swift`, `Game/` |
 | `PartyBox Controller/` | iPhone app: `ContentView.swift`, `ControllerCoordinator.swift` |
 | `PartyNet/` | Local SPM package — all networking, shared by both apps |
+| `PartyFault/` | Standalone generic fault-proxy package; its CLI is named `partyfault` |
 | `Config/` | The two hand-maintained Info.plists (Bonjour + Local Network strings) |
 | `scripts/verify.sh` | The automated verification suite (not needed to play) |
 
@@ -356,6 +359,10 @@ This is the sane path for a real party where friends arrive with their own phone
 Because you are only shipping the **controller** through TestFlight, the host app never leaves your Mac or
 Apple TV — that's the only piece you personally have to run.
 
+Use Apple's TestFlight crash and hang reports for the private beta. PartyBox adds no custom analytics.
+If a tester reports a problem, **My History ▸ Prepare Redacted Diagnostics** creates an on-device JSON
+file containing state and transport counters but no names, controller IDs, IP addresses, or payloads.
+
 ### 7.3 What friends need to know
 
 - The app is **iPhone only** and **portrait only**. It will run letterboxed on iPad but was not designed
@@ -421,38 +428,28 @@ button.
 
 ### Step 5 — Add three more phones
 
-Repeat steps 2–4. Slots P2, P3, P4 fill. Each gets a different color, and every one of them shows
-`ACTIVE SEAT`.
+Repeat steps 2–4. Slots P2, P3, P4 fill. Each gets a different color and mark.
 
 ### Step 6 — Add phones 5 through 8
 
-They connect exactly the same way, but their TV slots read **`SPECTATOR QUEUE`** instead of `ACTIVE SEAT`.
-
-✅ **On those phones**, once a match starts, you should see:
-
-```
-      👥
-   SPECTATING
-   #1 IN QUEUE
-Winner stays — you're in the queue
-```
+They connect exactly the same way. All eight can play Signal Snap, Gravity Grab, Snake Pit, Last Light,
+and Pong's qualifier format. Classic Four-Way Pong rounds still use the four-seat arena.
 
 ✅ A **9th** phone is rejected with **CAN'T JOIN** and
 *"This PartyBox already has 8 controllers."*
 
 ### Step 7 — Open the game menu
 
-Tap **OPEN GAME MENU** on any connected phone (or press Select on the remote / Return on the Mac).
-Any connected player can drive the menus — the phone says so:
-*"Anyone connected can move the party forward."*
+The captain taps **OPEN GAME MENU** (or you press Select on the remote / Return on the Mac).
+The crown identifies the captain; other phones ready up instead of changing shared navigation.
 
-✅ TV: **GAME SELECT** with one entry, **FOUR-WAY PONG**, subtitled
-`1–4 players • Three lives • Winner stays`.
+✅ TV: **GAME SELECT** with five games, **PARTY CUP**, and **HISTORY & LEADERBOARD**.
 ✅ Every phone switches to the menu layout: the game name plus **▲ ▼**, **SELECT**, **BACK**.
 
 ### Step 8 — Start the match
 
-Tap **SELECT**.
+Pick a game and complete the ready check, then tap **SELECT**. For Party Cup, the captain first chooses
+three distinct games; placement points carry through all three events.
 
 ✅ TV: the Pong arena, with a life counter (`◆◆◆`) along each occupied edge.
 ✅ Each of the four active phones becomes a **paddle track** in that player's color, labelled
@@ -465,8 +462,8 @@ Tap **SELECT**.
 | 3rd | left | `BOTTOM ← PADDLE → TOP` |
 | 4th | right | `BOTTOM ← PADDLE → TOP` |
 
-Drag anywhere on the track to move — you don't have to grab the paddle itself
-(`DRAG ANYWHERE ON THE TRACK`).
+Drag anywhere on the track to move — you don't have to grab the paddle itself. Touch is the default.
+Use the gear on the phone to enable and calibrate optional motion controls.
 
 ### Step 9 — Play, and watch the diagnostics
 
@@ -486,19 +483,21 @@ Haptics confirm the round trip is working end to end:
 | You're eliminated | Error buzz |
 | You win | Success double-tap |
 
+Some events also wash your phone briefly with your result color. These effects can be disabled from
+the gear menu; PartyBox never uses phone torches or phone speakers.
+
 Also note: **a running match can't be exited early.** There's no quit button by design. Let it finish.
 
 ### Step 10 — Game over and rotation
 
 Last player standing wins.
 
-✅ TV: **ROUND COMPLETE**, then `P<n> <NAME> WINS`, subtitle `Winner stays • Select for the next match`,
+✅ TV: **ROUND COMPLETE**, then `P<n> <NAME> WINS`, subtitle `Select to play again`,
 and the controls hint `SELECT: NEXT MATCH • MENU/ESC: GAME SELECT`.
 ✅ Phones: the same title with **NEXT MATCH** and **GAME MENU** buttons.
 
-Press **NEXT MATCH** and watch the seats rotate: the winner keeps their seat, the other three go to the
-back of the queue, and the next spectators in line are promoted into the free seats. This is the whole
-point of the spectator queue — with 8 phones, everyone plays.
+Press **NEXT MATCH** for a rematch. In a Party Cup, the standings screen instead advances the room to
+the next selected event after everyone completes the ready check.
 
 If only one player was in the match, you get **PRACTICE COMPLETE** with your rally count instead.
 

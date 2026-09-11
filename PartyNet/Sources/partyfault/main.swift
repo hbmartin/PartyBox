@@ -193,7 +193,7 @@ enum PartyFaultCommand {
                 throw usageError()
             }
         } catch {
-            FileHandle.standardError.write(Data("partyfault: \(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data("partybox-fault: \(error.localizedDescription)\n".utf8))
             Foundation.exit(EXIT_FAILURE)
         }
     }
@@ -218,7 +218,7 @@ enum PartyFaultCommand {
             )
             let controlPort = try await server.start()
             try await server.writeReadyFile(controlPort: controlPort)
-            print("partyfault ready tcp=\(metadata.tcpPort) udp=\(metadata.udpPort) control=\(controlPort)")
+            print("partybox-fault ready tcp=\(metadata.tcpPort) udp=\(metadata.udpPort) control=\(controlPort)")
             fflush(stdout)
             await server.waitUntilStopped()
         } catch {
@@ -300,10 +300,10 @@ enum PartyFaultCommand {
     private static func usageError() -> PartyFaultError {
         .usage("""
         usage:
-          partyfault serve --ready-file PATH [--seed N]
-          partyfault control --address HOST:PORT reset
-          partyfault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N]
-          partyfault control --address HOST:PORT cut-tcp|restart-host|metrics
+          partybox-fault serve --ready-file PATH [--seed N]
+          partybox-fault control --address HOST:PORT reset
+          partybox-fault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N]
+          partybox-fault control --address HOST:PORT cut-tcp|restart-host|metrics
         """)
     }
 }
