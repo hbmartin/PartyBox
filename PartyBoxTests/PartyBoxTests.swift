@@ -305,6 +305,82 @@ struct PartyBoxTests {
         #expect(coordinator.currentScene == nil)
     }
 
+    @Test func stoppedCoordinatorCannotBeRevivedBySuspendedCupCompletion() async throws {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "cup-final-match", "--disable-effects",
+        ]))
+        await coordinator.start()
+        let gate = CleanupGate()
+        coordinator.setFinishCupCheckpointForTesting { await gate.wait() }
+        let players = coordinator.host.players
+        let outcome = GameOutcome(
+            title: "CUP COMPLETE",
+            subtitle: "Done",
+            winner: players.first?.id,
+            playerOutcomes: players.map {
+                .init(playerID: $0.id, outcome: $0.id == players.first?.id ? .won : .lost)
+            },
+            metrics: [],
+            standings: players.enumerated().map {
+                .init(playerID: $0.element.id, rank: $0.offset + 1, score: 100 - $0.offset)
+            }
+        )
+        let completion = Task { await coordinator.finishCurrentMatchForTesting(outcome) }
+        defer {
+            gate.release()
+            completion.cancel()
+        }
+        try await waitUntil { gate.isWaiting }
+
+        await coordinator.stop()
+        gate.release()
+        await completion.value
+
+        #expect(coordinator.phase == .lobby)
+        #expect(coordinator.currentScene == nil)
+        #expect(coordinator.cupRecords.isEmpty)
+    }
+
+    @Test func failedCupEventStartDoesNotAdvanceTheEventIndex() async {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "cup-standings", "--disable-effects",
+        ]))
+        await coordinator.start()
+        #expect(coordinator.cupEventIndex == 0)
+
+        coordinator.perform(.select)
+
+        #expect(coordinator.cupEventIndex == 0)
+        guard case .cupStandings = coordinator.phase else {
+            Issue.record("A failed event start must leave the Cup on its standings screen")
+            await coordinator.stop()
+            return
+        }
+        await coordinator.stop()
+    }
+
+    @Test func centralizedGameStartEligibilityEnforcesMinimumAndMaximumPlayers() {
+        let descriptor = GameDescriptor(
+            id: "two-player", title: "Two Player", summary: "Test",
+            minimumPlayers: 2, maximumPlayers: 2
+        )
+        let participants = (0..<3).map { index in
+            let player = PlayerInfo(
+                id: PlayerID(UInt8(index)),
+                displayName: "P\(index)",
+                colorHex: PlayerPalette.color(for: PlayerID(UInt8(index)))
+            )
+            return GameParticipant(player: player, controllerID: ControllerID())
+        }
+
+        #expect(HostCoordinator.participantsForStart(
+            Array(participants.prefix(1)), descriptor: descriptor
+        ) == nil)
+        #expect(HostCoordinator.participantsForStart(
+            participants, descriptor: descriptor
+        ) == Array(participants.prefix(2)))
+    }
+
     @Test func emptyEdgeActsAsWall() {
         var game = PongSimulation(assignments: [.init(playerID: bottom, edge: .bottom)])
         game.setBallForTesting(position: PongPoint(x: 480, y: 0), velocity: PongPoint(x: 100, y: 0))

@@ -35,6 +35,16 @@ struct CoreModelsTests {
         let cue = HostPresentation.deviceCue(.init(colorHex: "#39FF88", durationMilliseconds: 999, haptic: .success))
         #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: PartyBoxWireCodec.encode(cue)) == cue)
 
+        let nextEvent = HostPresentation.layout(.gameOver(.init(
+            title: "EVENT COMPLETE",
+            subtitle: "Party Cup continues",
+            nextUp: "GRAVITY GRAB"
+        )))
+        #expect(try PartyBoxWireCodec.decode(
+            HostPresentation.self,
+            from: PartyBoxWireCodec.encode(nextEvent)
+        ) == nextEvent)
+
         let command = ControllerCommand.game(.init(
             gameID: "motion-game",
             action: .init(id: "boost", value: .trigger)
@@ -45,7 +55,7 @@ struct CoreModelsTests {
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 
-    @Test func partyCupRecordsProducePrivatePersistentTrophies() {
+    @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),
             gameIDs: ["pong", "signal-snap", "snake-pit", "ignored"],
@@ -55,11 +65,66 @@ struct CoreModelsTests {
                 .init(controllerID: firstID, displayName: "Ada", colorHex: "#32E6FF", kind: .human, rank: 1, points: 18, eventWins: 2),
             ]
         )
-        let personal = PersonalCupRecord(record: cup, controllerID: firstID)
-        #expect(cup.gameIDs.count == 3)
+        let personal = try #require(PersonalCupRecord(record: cup, controllerID: firstID))
+        #expect(cup.gameIDs == ["pong", "signal-snap", "snake-pit", "ignored"])
         #expect(cup.standings.first?.displayName == "Ada")
         #expect(personal.isChampion)
         #expect(HistoryAggregation.cups([personal]) == .init(played: 1, won: 1, podiums: 1))
+        #expect(PersonalCupRecord(record: cup, controllerID: ControllerID()) == nil)
+    }
+
+    @Test func malformedCupRanksDoNotCountAsPodiums() throws {
+        let cup = CupRecord(
+            endedAt: Date(timeIntervalSince1970: 100),
+            gameIDs: ["pong", "signal-snap", "snake-pit"],
+            matchRecordIDs: [],
+            standings: [
+                .init(
+                    controllerID: firstID,
+                    displayName: "Ada",
+                    colorHex: "#32E6FF",
+                    kind: .human,
+                    rank: 1,
+                    points: 18,
+                    eventWins: 2
+                ),
+            ]
+        )
+        let valid = try #require(PersonalCupRecord(record: cup, controllerID: firstID))
+        var object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as? [String: Any]
+        )
+        object["rank"] = 0
+        object["isChampion"] = false
+        let malformed = try JSONDecoder().decode(
+            PersonalCupRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(HistoryAggregation.cups([malformed]) == .init(played: 1, won: 0, podiums: 0))
+    }
+
+    @Test func diagnosticsExportReplacesItsStableRoleFile() throws {
+        struct Report: Codable, Equatable {
+            let value: String
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let firstURL = try RedactedDiagnosticsExporter.write(
+            Report(value: "first"), role: .host, directory: directory
+        )
+        let secondURL = try RedactedDiagnosticsExporter.write(
+            Report(value: "second"), role: .host, directory: directory
+        )
+
+        #expect(firstURL == secondURL)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [
+            "PartyBox-host-diagnostics.json",
+        ])
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: secondURL)) == .init(value: "second"))
     }
 
     @Test func schemaRejectsDuplicateAndExcessiveComponentIDs() {

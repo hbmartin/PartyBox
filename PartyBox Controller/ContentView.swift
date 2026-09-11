@@ -659,8 +659,8 @@ private struct GameOverControllerView: View {
                     .foregroundStyle(ControllerTheme.cyan)
                     .accessibilityIdentifier("controller.gameOver.botDifficulty")
             }
-            if let modifier = layout.nextModifier {
-                Text("NEXT: \(modifier)").font(.headline.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
+            if let nextUp = layout.nextUp {
+                Text("NEXT: \(nextUp)").font(.headline.monospaced().weight(.black)).foregroundStyle(ControllerTheme.cyan)
             }
             ControlStatusView(status: layout.control)
             Button(layout.control.isCaptain ? "NEXT MATCH" : (layout.control.isReady ? "CANCEL READY" : "READY")) {

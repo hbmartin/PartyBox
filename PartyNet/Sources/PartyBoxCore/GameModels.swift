@@ -117,8 +117,24 @@ public struct TurnOrder: Equatable, Sendable {
         players.removeAll { $0 == playerID }
     }
 
-    public func participants(connected: Set<PlayerID>, maximum: Int) -> [PlayerID] {
-        Array(players.filter { connected.contains($0) }.prefix(maximum))
+    public func participants(
+        connected: Set<PlayerID>,
+        maximum: Int,
+        including newlyAdmitted: [PlayerID] = []
+    ) -> [PlayerID] {
+        guard maximum > 0 else { return [] }
+        var seen: Set<PlayerID> = []
+        var result: [PlayerID] = []
+        result.reserveCapacity(min(maximum, connected.count))
+        for playerID in players where connected.contains(playerID) && seen.insert(playerID).inserted {
+            result.append(playerID)
+            if result.count == maximum { return result }
+        }
+        for playerID in newlyAdmitted where connected.contains(playerID) && seen.insert(playerID).inserted {
+            result.append(playerID)
+            if result.count == maximum { return result }
+        }
+        return result
     }
 
     public mutating func rotateAfterMatch(active: [PlayerID], winner: PlayerID?) {

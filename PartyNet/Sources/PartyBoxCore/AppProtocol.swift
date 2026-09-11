@@ -186,20 +186,20 @@ public struct LobbyLayout: Codable, Equatable, Sendable {
 public struct GameOverLayout: Codable, Equatable, Sendable {
     public let title: String
     public let subtitle: String
-    public let nextModifier: String?
+    public let nextUp: String?
     public let control: PartyControlStatus
     public let botDifficultyChange: String?
 
     public init(
         title: String,
         subtitle: String,
-        nextModifier: String? = nil,
+        nextUp: String? = nil,
         control: PartyControlStatus = .uncontrolled,
         botDifficultyChange: String? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
-        self.nextModifier = nextModifier
+        self.nextUp = nextUp
         self.control = control
         self.botDifficultyChange = botDifficultyChange
     }

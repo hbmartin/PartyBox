@@ -231,12 +231,13 @@ public final class PartyHost {
                   $0.botControllerID == requesterID
               }) else { return false }
 
-        let holders = sessions.lazy
-            .filter { $0.key != requesterID && $0.value.mark == mark }
-            .prefix(2)
-        if let holderEntry = holders.first {
+        var holderEntry: (key: ControllerID, value: PlayerSession)?
+        for entry in sessions where entry.key != requesterID && entry.value.mark == mark {
+            guard holderEntry == nil else { return false }
+            holderEntry = entry
+        }
+        if let holderEntry {
             guard requester.kind == .human,
-                  holders.count == 1,
                   holderEntry.value.isAdmitted,
                   holderEntry.value.kind == .bot else { return false }
             var holder = holderEntry.value

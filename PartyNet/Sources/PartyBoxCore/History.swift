@@ -194,7 +194,7 @@ public struct CupRecord: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.endedAt = endedAt
-        self.gameIDs = Array(gameIDs.prefix(3))
+        self.gameIDs = gameIDs
         self.matchRecordIDs = matchRecordIDs
         self.standings = standings.sorted { $0.rank < $1.rank }
     }
@@ -210,16 +210,18 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
     public let participantCount: Int
     public let isChampion: Bool
 
-    public init(record: CupRecord, controllerID: ControllerID) {
+    public init?(record: CupRecord, controllerID: ControllerID) {
+        guard let own = record.standings.first(where: { $0.controllerID == controllerID }) else {
+            return nil
+        }
         id = record.id
         endedAt = record.endedAt
         gameIDs = record.gameIDs
         participantCount = record.standings.count
-        let own = record.standings.first { $0.controllerID == controllerID }
-        rank = own?.rank ?? record.standings.count
-        points = own?.points ?? 0
-        eventWins = own?.eventWins ?? 0
-        isChampion = own?.rank == 1
+        rank = own.rank
+        points = own.points
+        eventWins = own.eventWins
+        isChampion = own.rank == 1
     }
 }
 
@@ -279,10 +281,14 @@ public enum HistoryAggregation {
     }
 
     public static func cups(_ records: [PersonalCupRecord]) -> CupStatistics {
-        CupStatistics(
+        let podiums = records.count { record in
+            guard record.participantCount > 0 else { return false }
+            return record.rank >= 1 && record.rank <= min(3, record.participantCount)
+        }
+        return CupStatistics(
             played: records.count,
-            won: records.count { $0.isChampion },
-            podiums: records.count { $0.rank <= 3 }
+            won: records.count { $0.participantCount > 0 && $0.rank == 1 && $0.isChampion },
+            podiums: podiums
         )
     }
 }

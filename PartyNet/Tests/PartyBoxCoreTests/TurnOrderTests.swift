@@ -11,6 +11,17 @@ struct TurnOrderTests {
         #expect(order.participants(connected: connected, maximum: 8).count == 8)
     }
 
+    @Test func newlyAdmittedConnectedPlayersAreAppendedOnceWithoutLosingOrder() {
+        let order = TurnOrder(joinOrder: [PlayerID(0), PlayerID(1)])
+        let connected = Set([PlayerID(0), PlayerID(1), PlayerID(2)])
+
+        #expect(order.participants(
+            connected: connected,
+            maximum: 3,
+            including: [PlayerID(2), PlayerID(2), PlayerID(1)]
+        ) == [PlayerID(0), PlayerID(1), PlayerID(2)])
+    }
+
     @Test func winnerStaysAndWaitersMoveAheadOfLosers() {
         var order = TurnOrder(joinOrder: (0..<6).map { PlayerID(UInt8($0)) })
         order.rotateAfterMatch(active: (0..<4).map { PlayerID(UInt8($0)) }, winner: PlayerID(2))

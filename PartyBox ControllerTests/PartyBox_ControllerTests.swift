@@ -8,6 +8,22 @@ import Testing
 @Suite("Controller identity")
 @MainActor
 struct PartyBox_ControllerTests {
+    @MainActor
+    private final class CleanupGate {
+        private(set) var isWaiting = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            isWaiting = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     @Test func controllerLaunchArgumentsParseStableIdentityAndHost() throws {
         let configuration = ControllerLaunchConfiguration(arguments: [
             "PartyBox Controller", "--ui-testing", "--scenario", "spectator",
@@ -229,5 +245,123 @@ struct PartyBox_ControllerTests {
 
         #expect(backoff.failureCount == 0)
         #expect(backoff.recordFailure() == .seconds(1))
+    }
+
+    @Test func passiveLayoutRefreshDoesNotNeutralizeTouchInput() async {
+        await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = ControllerCoordinator(configuration: .init(arguments: [
+                "PartyBox Controller", "--ui-testing", "--scenario", "paddle-bottom",
+                "--disable-effects",
+            ]))
+            await coordinator.start()
+            coordinator.client.setInput(axisX: 0.7, axisY: -0.3)
+
+            coordinator.refreshMotionCaptureForTesting()
+
+            #expect(coordinator.client.inputAxisX == 0.7)
+            #expect(coordinator.client.inputAxisY == -0.3)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func transientMissingMotionSamplesRequireAConsecutiveFailureBurst() {
+        var tolerance = ControllerCoordinator.MotionSampleTolerance()
+
+        let firstMissingSampleFailed = tolerance.recordMissingSample()
+        let secondMissingSampleFailed = tolerance.recordMissingSample()
+        #expect(!firstMissingSampleFailed)
+        #expect(!secondMissingSampleFailed)
+        tolerance.recordSuccessfulSample()
+        let firstMissingSampleAfterRecoveryFailed = tolerance.recordMissingSample()
+        let secondMissingSampleAfterRecoveryFailed = tolerance.recordMissingSample()
+        let thirdMissingSampleAfterRecoveryFailed = tolerance.recordMissingSample()
+        #expect(!firstMissingSampleAfterRecoveryFailed)
+        #expect(!secondMissingSampleAfterRecoveryFailed)
+        #expect(thirdMissingSampleAfterRecoveryFailed)
+    }
+
+    @Test func deviceCueHapticsRemainIndependentFromScreenEffects() {
+        let policy = ControllerCoordinator.deviceCueDeliveryPolicy(
+            effectsGloballyDisabled: false,
+            deviceEffectsEnabled: false,
+            hapticsEnabled: true,
+            containsHaptic: true
+        )
+
+        #expect(policy.playsHaptic)
+        #expect(!policy.presentsColor)
+        #expect(ControllerCoordinator.deviceCueDeliveryPolicy(
+            effectsGloballyDisabled: true,
+            deviceEffectsEnabled: true,
+            hapticsEnabled: true,
+            containsHaptic: true
+        ) == .init(playsHaptic: false, presentsColor: false))
+    }
+
+    @Test func stoppedCoordinatorCannotInstallHistoryLoadedDuringStart() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let historyURL = directory.appendingPathComponent("history.json")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let controllerUUID = UUID()
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--controller-id", controllerUUID.uuidString,
+                "--disable-effects",
+            ])
+            let writer = ControllerCoordinator(configuration: configuration, historyFileURL: historyURL)
+            let record = PersonalMatchRecord(record: MatchRecord(
+                gameID: "pong",
+                gameTitle: "Pong",
+                endedAt: Date(timeIntervalSince1970: 10),
+                durationSeconds: 5,
+                modifierTitle: nil,
+                participants: [
+                    .init(
+                        controllerID: writer.client.controllerID,
+                        displayName: "Ada",
+                        colorHex: "#32E6FF",
+                        outcome: .won
+                    ),
+                ],
+                metrics: []
+            ), controllerID: writer.client.controllerID)
+            await writer.appendPersonalHistoryForTesting(record)
+
+            let reader = ControllerCoordinator(configuration: configuration, historyFileURL: historyURL)
+            let gate = CleanupGate()
+            reader.setStartLoadCheckpointForTesting { await gate.wait() }
+            let start = Task { await reader.start() }
+            defer {
+                gate.release()
+                start.cancel()
+            }
+            try await waitUntil { gate.isWaiting }
+
+            await reader.stop()
+            gate.release()
+            await start.value
+
+            #expect(reader.personalHistory.isEmpty)
+            #expect(reader.personalCupHistory.isEmpty)
+            #expect(reader.layout == .lobby(.waiting))
+        }
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(3),
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition(), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(condition())
     }
 }
