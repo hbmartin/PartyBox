@@ -59,7 +59,12 @@ final class HostCoordinator {
     private(set) var voteTallies: [String: Int] = [:]
     private(set) var historyRecords: [MatchRecord] = []
     private(set) var cupRecords: [CupRecord] = []
-    private(set) var historyPersistenceError: String?
+    private(set) var matchHistoryPersistenceError: String?
+    private(set) var cupHistoryPersistenceError: String?
+    var historyPersistenceError: String? {
+        let failures = [matchHistoryPersistenceError, cupHistoryPersistenceError].compactMap { $0 }
+        return failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
     private(set) var historySelection = 0
     private(set) var confirmsHistoryClear = false
     private(set) var captainID: PlayerID?
@@ -606,7 +611,6 @@ final class HostCoordinator {
             cupEventWins = [:]
             return
         }
-        cupEventIndex = 0
     }
 
     private func startNextCupEvent() {
@@ -722,23 +726,21 @@ final class HostCoordinator {
 
     func confirmHistoryClear(source: HostInputSource = .local) async {
         guard source == .local, confirmsHistoryClear else { return }
-        var failures: [String] = []
         do {
             try await historyStore.clear()
             historyRecords = []
             historySelection = 0
+            matchHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            matchHistoryPersistenceError = "Match history could not be cleared: \(error.localizedDescription)"
         }
         do {
             try await cupHistoryStore.clear()
             cupRecords = []
+            cupHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            cupHistoryPersistenceError = "Party Cup history could not be cleared: \(error.localizedDescription)"
         }
-        historyPersistenceError = failures.isEmpty
-            ? nil
-            : "History could not be cleared: \(failures.joined(separator: "; "))"
         confirmsHistoryClear = false
     }
 
@@ -1137,14 +1139,7 @@ final class HostCoordinator {
         if let checkpoint = finishCupCheckpointForTesting { await checkpoint() }
 #endif
         guard isCurrentLifecycle(lifecycleGeneration) else { return false }
-        if result.wasInserted, !cupRecords.contains(where: { $0.id == record.id }) {
-            cupRecords.insert(record, at: 0)
-        }
-        if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
-        } else {
-            historyPersistenceError = nil
-        }
+        applyCupHistoryAppend(record, result: result)
         for participant in cupParticipants {
             guard isCurrentLifecycle(lifecycleGeneration) else { return false }
             guard let live = livePlayer(for: participant), live.isConnected else { continue }
@@ -1292,9 +1287,21 @@ final class HostCoordinator {
             historyRecords.insert(record, at: 0)
         }
         if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This match is available for this session but could not be saved: \(error)"
+            matchHistoryPersistenceError = "This match is available for this session but could not be saved: \(error)"
         } else {
-            historyPersistenceError = nil
+            matchHistoryPersistenceError = nil
+        }
+    }
+
+    private func applyCupHistoryAppend(_ record: CupRecord, result: JSONRecordAppendResult) {
+        guard result.wasInserted else { return }
+        if !cupRecords.contains(where: { $0.id == record.id }) {
+            cupRecords.insert(record, at: 0)
+        }
+        if let error = result.persistenceErrorDescription {
+            cupHistoryPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+        } else {
+            cupHistoryPersistenceError = nil
         }
     }
 
@@ -1311,6 +1318,7 @@ final class HostCoordinator {
             ))
         case .cupSetup:
             return .menu(.init(
+                kind: .cupSetup,
                 items: cupSetupItems,
                 details: cupSetupDetails,
                 selected: cupSetupSelection,
@@ -1640,6 +1648,11 @@ final class HostCoordinator {
 
     func appendHistoryForTesting(_ record: MatchRecord) async {
         await appendHistory(record)
+    }
+
+    func appendCupHistoryForTesting(_ record: CupRecord) async {
+        let result = await cupHistoryStore.append(record)
+        applyCupHistoryAppend(record, result: result)
     }
 
     func setStartCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {

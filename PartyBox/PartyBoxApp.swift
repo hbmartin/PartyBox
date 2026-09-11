@@ -12,14 +12,20 @@ import PartyNet
 import AppKit
 
 @MainActor
-private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
+final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
     private let coordinator: HostCoordinator
     private var window: NSWindow?
     private var lifecycleTask: Task<Void, Never>?
+    private var terminationTask: Task<Void, Never>?
 
     override init() {
         preparePartyNetLiveClock()
         coordinator = HostCoordinator()
+        super.init()
+    }
+
+    init(coordinator: HostCoordinator) {
+        self.coordinator = coordinator
         super.init()
     }
 
@@ -59,6 +65,27 @@ private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate
 
     func applicationWillTerminate(_ notification: Notification) {
         lifecycleTask?.cancel()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard terminationTask == nil else { return .terminateLater }
+        terminationTask = Task { @MainActor [weak self] in
+            if let self { await self.stopForTermination() }
+            sender.reply(toApplicationShouldTerminate: true)
+            self?.terminationTask = nil
+        }
+        return .terminateLater
+    }
+
+    func stopForTermination() async {
+        let activeLifecycleTask = lifecycleTask
+        activeLifecycleTask?.cancel()
+        if let activeLifecycleTask {
+            await activeLifecycleTask.value
+        } else {
+            await coordinator.stop()
+        }
+        lifecycleTask = nil
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -50,28 +50,54 @@ public struct OrientationQuaternion: Codable, Equatable, Sendable {
         )
     }
 
+    /// Returns the unclamped left/right gravity projection used for calibration.
+    public func horizontalTiltProjection() -> Float {
+        tiltProjections?.horizontal ?? 0
+    }
+
+    /// Returns the unclamped forward/back gravity projection used for calibration.
+    public func verticalTiltProjection() -> Float {
+        tiltProjections?.vertical ?? 0
+    }
+
     /// Maps the device's left/right lean to a normalized horizontal control axis.
-    /// The gravity projection makes the result independent of yaw, while the
-    /// sensitivity reaches full travel at a comfortable handheld tilt.
-    public func horizontalTiltAxis(sensitivity: Float = 1.5) -> Float {
-        guard sensitivity.isFinite, sensitivity > 0, let normalized else { return 0 }
-        let gravityX = 2 * (
-            (normalized.x * normalized.z) - (normalized.w * normalized.y)
-        )
-        let scaled = -gravityX * sensitivity
+    /// Calibration is applied before the dead zone and clamp so neutral offsets do
+    /// not consume travel or create an off-center plateau.
+    public func horizontalTiltAxis(sensitivity: Float = 1.5, neutral: Float = 0) -> Float {
+        guard sensitivity.isFinite, sensitivity > 0, neutral.isFinite,
+              let projection = tiltProjections?.horizontal else { return 0 }
+        return Self.normalizedTiltAxis(projection: projection, neutral: neutral, sensitivity: sensitivity)
+    }
+
+    /// Maps the device's forward/back lean to a normalized vertical control axis.
+    public func verticalTiltAxis(sensitivity: Float = 1.5, neutral: Float = 0) -> Float {
+        guard sensitivity.isFinite, sensitivity > 0, neutral.isFinite,
+              let projection = tiltProjections?.vertical else { return 0 }
+        return Self.normalizedTiltAxis(projection: projection, neutral: neutral, sensitivity: sensitivity)
+    }
+
+    private static func normalizedTiltAxis(projection: Float, neutral: Float, sensitivity: Float) -> Float {
+        let neutral = min(max(neutral, -1), 1)
+        let centered = projection - neutral
+        let availableTravel = centered >= 0 ? 1 - neutral : 1 + neutral
+        guard availableTravel > 0 else { return 0 }
+        let calibratedSensitivity = max(sensitivity, 1 / availableTravel)
+        let scaled = centered * calibratedSensitivity
         guard scaled.isFinite, abs(scaled) >= 0.04 else { return 0 }
         return min(max(scaled, -1), 1)
     }
 
-    /// Maps the device's forward/back lean to a normalized vertical control axis.
-    public func verticalTiltAxis(sensitivity: Float = 1.5) -> Float {
-        guard sensitivity.isFinite, sensitivity > 0, let normalized else { return 0 }
+    private var tiltProjections: (horizontal: Float, vertical: Float)? {
+        guard let normalized else { return nil }
+        let gravityX = 2 * (
+            (normalized.x * normalized.z) - (normalized.w * normalized.y)
+        )
         let gravityY = 2 * (
             (normalized.y * normalized.z) + (normalized.w * normalized.x)
         )
-        let scaled = gravityY * sensitivity
-        guard scaled.isFinite, abs(scaled) >= 0.04 else { return 0 }
-        return min(max(scaled, -1), 1)
+        let horizontal = -gravityX
+        guard horizontal.isFinite, gravityY.isFinite else { return nil }
+        return (horizontal, gravityY)
     }
 }
 

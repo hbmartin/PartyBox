@@ -49,6 +49,23 @@ struct PartyBoxTests {
         #expect(configuration.seed == nil)
     }
 
+    #if os(macOS)
+    @Test func applicationTerminationWaitsForTheHostToStop() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            try #require(coordinator.host.port != nil)
+
+            let applicationDelegate = PartyBoxApplicationDelegate(coordinator: coordinator)
+            await applicationDelegate.stopForTermination()
+
+            #expect(coordinator.host.port == nil)
+        }
+    }
+    #endif
+
     @Test func uiFixtureIsAppliedOnStartAndRestoredAfterRestart() async {
         let configuration = HostLaunchConfiguration(arguments: [
             "PartyBox", "--ui-testing", "--scenario", "menu", "--disable-effects",
@@ -201,6 +218,59 @@ struct PartyBoxTests {
 
         #expect(coordinator.historyRecords == [record])
         #expect(coordinator.historyPersistenceError?.contains("could not be cleared") == true)
+    }
+
+    @Test func successfulCupPersistenceDoesNotHideAMatchPersistenceFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let historyURL = directory.appendingPathComponent("history.json", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: historyURL, withIntermediateDirectories: true)
+        let coordinator = HostCoordinator(
+            configuration: .init(arguments: ["PartyBox", "--disable-effects"]),
+            historyFileURL: historyURL
+        )
+        let controllerID = ControllerID()
+        let match = MatchRecord(
+            gameID: "pong",
+            gameTitle: "Pong",
+            endedAt: Date(timeIntervalSince1970: 20),
+            durationSeconds: 5,
+            modifierTitle: nil,
+            participants: [
+                .init(
+                    controllerID: controllerID,
+                    displayName: "Ada",
+                    colorHex: "#32E6FF",
+                    outcome: .won
+                ),
+            ],
+            metrics: []
+        )
+        let cup = CupRecord(
+            endedAt: Date(timeIntervalSince1970: 21),
+            gameIDs: ["pong"],
+            matchRecordIDs: [match.id],
+            standings: [
+                .init(
+                    controllerID: controllerID,
+                    displayName: "Ada",
+                    colorHex: "#32E6FF",
+                    kind: .human,
+                    rank: 1,
+                    points: 8,
+                    eventWins: 1
+                ),
+            ]
+        )
+
+        await coordinator.appendHistoryForTesting(match)
+        #expect(coordinator.matchHistoryPersistenceError != nil)
+        await coordinator.appendCupHistoryForTesting(cup)
+
+        #expect(coordinator.matchHistoryPersistenceError != nil)
+        #expect(coordinator.cupHistoryPersistenceError == nil)
+        #expect(coordinator.historyPersistenceError?.contains("match") == true)
     }
 
     @Test func oversizedNestedControllerLayoutFallsBackToASendableScreen() throws {
@@ -645,6 +715,96 @@ struct PartyBoxTests {
         session.updateForTesting(0.40)
 
         #expect(session.scoreForTesting(playerID) == firstScore)
+    }
+
+    @Test func heldSignalInputIsAcceptedAfterTheRoundActivationDelay() throws {
+        let playerID = PlayerID(0)
+        let inputs = InputStore()
+        let session = ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: inputs,
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+        let axes: (Float, Float) = switch session.signalDirectionForTesting() {
+        case "up": (0, 1)
+        case "down": (0, -1)
+        case "left": (-1, 0)
+        default: (1, 0)
+        }
+        #expect(inputs.update(
+            .init(token: 1, sequence: 1, clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+            for: playerID
+        ))
+
+        for step in 0...5 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+
+        #expect(try #require(session.scoreForTesting(playerID)) > 0)
+    }
+
+    @Test func soloArcadeEliminationCompletesImmediately() throws {
+        let playerID = PlayerID(0)
+        var events: [GameEvent] = []
+        let session = ArcadeChallengeSession(
+            mode: .lastLight,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: InputStore(),
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { events.append(contentsOf: $0) }
+        )
+        session.setLivesForTesting(1, playerID: playerID)
+
+        session.loseLifeForTesting(playerID)
+
+        #expect(try #require(session.snapshotForTesting()[playerID]).alive == false)
+        #expect(events.contains { if case .completed = $0 { true } else { false } })
+    }
+
+    @Test func seededLastLightCollisionsIgnoreDictionaryStorageOrder() {
+        let participants = (0..<6).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        let first = ArcadeChallengeSession(
+            mode: .lastLight,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        let second = ArcadeChallengeSession(
+            mode: .lastLight,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { _ in }
+        )
+        second.reverseStorageForTesting()
+        first.prepareLastLightCollisionForTesting()
+        second.prepareLastLightCollisionForTesting()
+
+        first.updateForTesting(0)
+        second.updateForTesting(0)
+
+        #expect(first.snapshotForTesting() == second.snapshotForTesting())
     }
 
     @Test func seededSnakeSimulationIgnoresDictionaryStorageOrder() {

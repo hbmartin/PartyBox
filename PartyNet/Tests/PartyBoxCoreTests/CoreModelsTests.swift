@@ -76,6 +76,34 @@ struct CoreModelsTests {
         )).canToggleReady)
     }
 
+    @Test func legacyMenusAndGameDescriptorsDecodeWithCompatibleDefaults() throws {
+        let legacyMenu = Data(
+            #"{"items":["PONG"],"details":["Winner stays"],"selected":0}"#.utf8
+        )
+        let menu = try PartyBoxWireCodec.decode(MenuLayout.self, from: legacyMenu)
+        #expect(menu.kind == .gameSelection)
+        #expect(menu.control == .uncontrolled)
+
+        let legacyGame = Data(
+            #"{"id":"pong","title":"PONG","summary":"Winner stays","minimumPlayers":1,"maximumPlayers":4,"modifiers":[]}"#.utf8
+        )
+        let game = try PartyBoxWireCodec.decode(GameDescriptor.self, from: legacyGame)
+        #expect(game.estimatedDurationSeconds == 90)
+        #expect(game.supportsMotion)
+        #expect(game.isCupEligible)
+
+        let cupMenu = MenuLayout(
+            kind: .cupSetup,
+            items: ["START PARTY CUP"],
+            details: ["3/3 events selected"],
+            selected: 0
+        )
+        #expect(try PartyBoxWireCodec.decode(
+            MenuLayout.self,
+            from: PartyBoxWireCodec.encode(cupMenu)
+        ) == cupMenu)
+    }
+
     @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),

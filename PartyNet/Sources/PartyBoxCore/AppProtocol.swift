@@ -114,22 +114,45 @@ public struct GameActionEnvelope: Codable, Equatable, Sendable {
     }
 }
 
+public enum MenuKind: String, Codable, Equatable, Sendable {
+    case gameSelection
+    case cupSetup
+}
+
 public struct MenuLayout: Codable, Equatable, Sendable {
+    public let kind: MenuKind
     public let items: [String]
     public let details: [String]
     public let selected: Int
     public let control: PartyControlStatus
 
     public init(
+        kind: MenuKind = .gameSelection,
         items: [String],
         details: [String],
         selected: Int,
         control: PartyControlStatus = .uncontrolled
     ) {
+        self.kind = kind
         self.items = items
         self.details = details
         self.selected = selected
         self.control = control
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, items, details, selected, control
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            kind: try values.decodeIfPresent(MenuKind.self, forKey: .kind) ?? .gameSelection,
+            items: try values.decode([String].self, forKey: .items),
+            details: try values.decode([String].self, forKey: .details),
+            selected: try values.decode(Int.self, forKey: .selected),
+            control: try values.decodeIfPresent(PartyControlStatus.self, forKey: .control) ?? .uncontrolled
+        )
     }
 }
 

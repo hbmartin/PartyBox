@@ -47,6 +47,26 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
         self.supportsMotion = supportsMotion
         self.isCupEligible = isCupEligible
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, summary, minimumPlayers, maximumPlayers, modifiers
+        case estimatedDurationSeconds, supportsMotion, isCupEligible
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decode(String.self, forKey: .id),
+            title: try values.decode(String.self, forKey: .title),
+            summary: try values.decode(String.self, forKey: .summary),
+            minimumPlayers: try values.decode(Int.self, forKey: .minimumPlayers),
+            maximumPlayers: try values.decode(Int.self, forKey: .maximumPlayers),
+            modifiers: try values.decodeIfPresent([GameModifierDescriptor].self, forKey: .modifiers) ?? [],
+            estimatedDurationSeconds: try values.decodeIfPresent(Int.self, forKey: .estimatedDurationSeconds) ?? 90,
+            supportsMotion: try values.decodeIfPresent(Bool.self, forKey: .supportsMotion) ?? true,
+            isCupEligible: try values.decodeIfPresent(Bool.self, forKey: .isCupEligible) ?? true
+        )
+    }
 }
 
 public enum PlayerRole: Equatable, Sendable {
