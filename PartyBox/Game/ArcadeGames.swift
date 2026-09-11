@@ -202,6 +202,10 @@ final class ArcadeChallengeSession: PartyGameSession {
     func reverseStorageForTesting() {
         challengeScene.reverseStorageForTesting()
     }
+
+    func snakeTrailNodeIdentitiesForTesting() -> [PlayerID: [ObjectIdentifier]] {
+        challengeScene.snakeTrailNodeIdentitiesForTesting()
+    }
 #endif
 }
 
@@ -244,6 +248,8 @@ private final class ArcadeChallengeScene: SKScene {
     private var scoreLabels: [PlayerID: SKLabelNode] = [:]
     private var snakeTrails: [PlayerID: [CGPoint]] = [:]
     private let snakeTrailLayer = SKNode()
+    private var snakeTrailContainers: [PlayerID: SKNode] = [:]
+    private var snakeTrailNodes: [PlayerID: [SKShapeNode]] = [:]
     private var hazards: [Hazard] = []
     private var previousUpdateTime: TimeInterval?
     private var elapsed: TimeInterval = 0
@@ -388,6 +394,12 @@ private final class ArcadeChallengeScene: SKScene {
                 lastHitAt: -10
             )
             snakeTrails[participant.player.id] = []
+            if mode == .snakePit {
+                let trailContainer = SKNode()
+                snakeTrailLayer.addChild(trailContainer)
+                snakeTrailContainers[participant.player.id] = trailContainer
+                snakeTrailNodes[participant.player.id] = []
+            }
             let node = SKShapeNode(circleOfRadius: mode == .snakePit ? 23 : 31)
             node.fillColor = Self.color(participant.player.colorHex)
             node.strokeColor = .white
@@ -467,10 +479,7 @@ private final class ArcadeChallengeScene: SKScene {
             signalAccumulator = 0
             signalRound += 1
             if signalRound >= 24 { complete(); return }
-            signalDirection = nextRandom().isMultiple(of: 2) ? "left" : "right"
-            promptLabel.text = signalDirection == "left" ? "← GATE" : "GATE →"
-            promptLabel.fontSize = 86
-            for playerID in states.keys { states[playerID]?.lastInput = nil }
+            beginSignalRound()
         }
     }
 
@@ -726,17 +735,31 @@ private final class ArcadeChallengeScene: SKScene {
 
     private func rebuildSnakeTrails() {
         guard mode == .snakePit else { return }
-        snakeTrailLayer.removeAllChildren()
         for participant in context.participants {
+            let playerID = participant.player.id
+            guard let container = snakeTrailContainers[playerID] else { continue }
             let color = Self.color(participant.player.colorHex)
-            for (index, point) in snakeTrails[participant.player.id, default: []].enumerated() {
+            let points = snakeTrails[playerID, default: []]
+            var nodes = snakeTrailNodes[playerID, default: []]
+            while nodes.count < points.count {
                 let segment = SKShapeNode(circleOfRadius: 7)
-                segment.position = arenaPoint(x: point.x, y: point.y)
-                segment.fillColor = color.withAlphaComponent(0.35 + CGFloat(index) / 55)
                 segment.strokeColor = .clear
                 segment.glowWidth = 4
-                snakeTrailLayer.addChild(segment)
+                container.addChild(segment)
+                nodes.append(segment)
             }
+            for (index, point) in points.enumerated() {
+                let segment = nodes[index]
+                segment.position = arenaPoint(x: point.x, y: point.y)
+                segment.fillColor = color.withAlphaComponent(0.35 + CGFloat(index) / 55)
+                segment.isHidden = false
+            }
+            if nodes.count > points.count {
+                for index in points.count..<nodes.count {
+                    nodes[index].isHidden = true
+                }
+            }
+            snakeTrailNodes[playerID] = nodes
         }
     }
 
@@ -791,6 +814,10 @@ private final class ArcadeChallengeScene: SKScene {
         snakeTrails = Dictionary(uniqueKeysWithValues: snakeTrails.sorted {
             $0.key.rawValue > $1.key.rawValue
         })
+    }
+
+    func snakeTrailNodeIdentitiesForTesting() -> [PlayerID: [ObjectIdentifier]] {
+        snakeTrailNodes.mapValues { $0.map(ObjectIdentifier.init) }
     }
 #endif
 

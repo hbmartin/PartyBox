@@ -77,7 +77,12 @@ final class ControllerCoordinator {
     private(set) var controllerScreen: ControllerScreen?
     private(set) var personalHistory: [PersonalMatchRecord] = []
     private(set) var personalCupHistory: [PersonalCupRecord] = []
-    private(set) var historyPersistenceError: String?
+    private(set) var matchHistoryPersistenceError: String?
+    private(set) var cupHistoryPersistenceError: String?
+    var historyPersistenceError: String? {
+        let failures = [matchHistoryPersistenceError, cupHistoryPersistenceError].compactMap { $0 }
+        return failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
     private(set) var currentDeviceCue: DeviceCue?
     var motionControlEnabled: Bool {
         didSet {
@@ -379,22 +384,20 @@ final class ControllerCoordinator {
     }
 
     func clearPersonalHistory() async {
-        var failures: [String] = []
         do {
             try await historyStore.clear()
             personalHistory = []
+            matchHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            matchHistoryPersistenceError = "Match history could not be cleared: \(error.localizedDescription)"
         }
         do {
             try await cupHistoryStore.clear()
             personalCupHistory = []
+            cupHistoryPersistenceError = nil
         } catch {
-            failures.append(error.localizedDescription)
+            cupHistoryPersistenceError = "Party Cup history could not be cleared: \(error.localizedDescription)"
         }
-        historyPersistenceError = failures.isEmpty
-            ? nil
-            : "History could not be cleared: \(failures.joined(separator: "; "))"
     }
 
     func scenePhaseChanged(isActive: Bool) {
@@ -516,9 +519,9 @@ final class ControllerCoordinator {
             personalHistory.insert(record, at: 0)
         }
         if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This match is available for this session but could not be saved: \(error)"
+            matchHistoryPersistenceError = "This match is available for this session but could not be saved: \(error)"
         } else {
-            historyPersistenceError = nil
+            matchHistoryPersistenceError = nil
         }
     }
 
@@ -529,7 +532,9 @@ final class ControllerCoordinator {
             personalCupHistory.insert(record, at: 0)
         }
         if let error = result.persistenceErrorDescription {
-            historyPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+            cupHistoryPersistenceError = "This Party Cup is available now but could not be saved: \(error)"
+        } else {
+            cupHistoryPersistenceError = nil
         }
     }
 
@@ -661,6 +666,10 @@ final class ControllerCoordinator {
 #if DEBUG
     func appendPersonalHistoryForTesting(_ record: PersonalMatchRecord) async {
         await appendPersonalHistory(record)
+    }
+
+    func appendPersonalCupHistoryForTesting(_ record: PersonalCupRecord) async {
+        await appendPersonalCupHistory(record)
     }
 
     func setStartLoadCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {

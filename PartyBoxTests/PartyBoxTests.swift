@@ -680,6 +680,37 @@ struct PartyBoxTests {
         #expect(first.snapshotForTesting() == second.snapshotForTesting())
     }
 
+    @Test func snakeTrailRenderingReusesItsBoundedNodePool() throws {
+        let playerID = PlayerID(0)
+        let session = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: InputStore(),
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+
+        for step in 0...20 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let initial = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
+        #expect(!initial.isEmpty)
+
+        for step in 21...60 {
+            session.updateForTesting(Double(step) * 0.05)
+        }
+        let later = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
+
+        #expect(Array(later.prefix(initial.count)) == initial)
+        #expect(later.count <= 36)
+    }
+
     @Test func everyGameBuildsAValidEightPlayerControllerAndBotSession() {
         let participants = (0..<8).map { index in
             let playerID = PlayerID(UInt8(index))

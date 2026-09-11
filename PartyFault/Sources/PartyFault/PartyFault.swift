@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import OSLog
 
 public enum TrafficDirection: String, Codable, CaseIterable, Sendable {
     case clientToServer
@@ -162,13 +163,36 @@ public struct ProxyEndpoints: Codable, Equatable, Sendable {
     public let host: String
     public let tcpPort: UInt16
     public let udpPort: UInt16
+    public let controlHost: String
     public let controlPort: UInt16
 
-    public init(host: String, tcpPort: UInt16, udpPort: UInt16, controlPort: UInt16) {
+    public init(
+        host: String,
+        tcpPort: UInt16,
+        udpPort: UInt16,
+        controlHost: String = "127.0.0.1",
+        controlPort: UInt16
+    ) {
         self.host = host
         self.tcpPort = tcpPort
         self.udpPort = udpPort
+        self.controlHost = controlHost
         self.controlPort = controlPort
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case host, tcpPort, udpPort, controlHost, controlPort
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            host: try values.decode(String.self, forKey: .host),
+            tcpPort: try values.decode(UInt16.self, forKey: .tcpPort),
+            udpPort: try values.decode(UInt16.self, forKey: .udpPort),
+            controlHost: try values.decodeIfPresent(String.self, forKey: .controlHost) ?? "127.0.0.1",
+            controlPort: try values.decode(UInt16.self, forKey: .controlPort)
+        )
     }
 }
 
@@ -262,15 +286,40 @@ public actor ImpairmentEngine {
 
 public enum PartyFaultError: Error, LocalizedError, Sendable {
     case invalidPort
-    case listenerDidNotStart
+    case listenerDidNotStart(reason: String? = nil)
     case forcedTermination(reset: Bool)
+    case forwardingFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .invalidPort: "A TCP or UDP port was invalid."
-        case .listenerDidNotStart: "A proxy listener did not become ready."
+        case .listenerDidNotStart(let reason):
+            reason.map { "A proxy listener did not become ready: \($0)" }
+                ?? "A proxy listener did not become ready."
         case .forcedTermination(let reset): reset ? "Connection reset by fault profile." : "Connection cut by fault profile."
+        case .forwardingFailed(let reason): "Proxy forwarding failed: \(reason)"
         }
+    }
+}
+
+package enum PartyFaultNetworkSupport {
+    package static func isLoopback(_ host: String) -> Bool {
+        host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    package static func waitForBoundPort<ProtocolStack>(
+        _ listener: NetworkListener<ProtocolStack>,
+        attempts: Int = 500,
+        failureDescription: @escaping @Sendable () async -> String? = { nil }
+    ) async throws -> UInt16 {
+        for _ in 0..<attempts {
+            if let raw = listener.port?.rawValue, raw != 0 { return raw }
+            if let failure = await failureDescription() {
+                throw PartyFaultError.listenerDidNotStart(reason: failure)
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw PartyFaultError.listenerDidNotStart(reason: await failureDescription())
     }
 }
 
@@ -301,15 +350,23 @@ public actor GenericFaultProxy {
         case finished
     }
 
+    private enum UDPDeliveryResult: Sendable {
+        case forwarded(index: Int, delayed: Bool)
+        case failed(index: Int, delayed: Bool, reason: String)
+        case cancelled(index: Int)
+    }
+
     private static let udpReorderIdleFlushDelay = Duration.milliseconds(50)
 
     private let engine: ImpairmentEngine
+    private let logger = Logger(subsystem: "PartyFault", category: "GenericFaultProxy")
     private var metrics = FaultMetrics()
     private var tcpListener: NetworkListener<TCP>?
     private var udpListener: NetworkListener<UDP>?
     private var listenerTasks: [Task<Void, Never>] = []
     private var flowTasks: [UUID: Task<Void, Never>] = [:]
     private var generation: UInt64 = 0
+    private var listenerFailureDescription: String?
     private var upstreamHost = NWEndpoint.Host("127.0.0.1")
     private var upstreamTCPPort = NWEndpoint.Port.any
     private var upstreamUDPPort = NWEndpoint.Port.any
@@ -334,31 +391,51 @@ public actor GenericFaultProxy {
         self.upstreamHost = NWEndpoint.Host(upstreamHost)
         self.upstreamTCPPort = tcpPort
         self.upstreamUDPPort = udpPort
+        listenerFailureDescription = nil
         let currentGeneration = generation
 
         let tcpParameters = NWParametersBuilder.parameters { TCP().noDelay(true) }
             .localEndpoint(.hostPort(host: NWEndpoint.Host(bindHost), port: .any))
-            .localOnly(Self.isLoopback(bindHost))
+            .localOnly(PartyFaultNetworkSupport.isLoopback(bindHost))
             .peerToPeerIncluded(false)
         let tcpListener = try NetworkListener<TCP>(for: nil, using: tcpParameters)
         self.tcpListener = tcpListener
         listenerTasks.append(Task { [tcpListener] in
-            do { try await tcpListener.run { self.acceptTCP($0, generation: currentGeneration) } } catch {}
+            do {
+                try await tcpListener.run { self.acceptTCP($0, generation: currentGeneration) }
+            } catch where Task.isCancelled {
+            } catch {
+                self.recordListenerFailure(error, role: "TCP", generation: currentGeneration)
+            }
         })
 
         let udpParameters = NWParametersBuilder.parameters { UDP() }
             .localEndpoint(.hostPort(host: NWEndpoint.Host(bindHost), port: .any))
-            .localOnly(Self.isLoopback(bindHost))
+            .localOnly(PartyFaultNetworkSupport.isLoopback(bindHost))
             .peerToPeerIncluded(false)
         let udpListener = try NetworkListener<UDP>(for: nil, using: udpParameters)
         self.udpListener = udpListener
         listenerTasks.append(Task { [udpListener] in
-            do { try await udpListener.run { self.acceptUDP($0, generation: currentGeneration) } } catch {}
+            do {
+                try await udpListener.run { self.acceptUDP($0, generation: currentGeneration) }
+            } catch where Task.isCancelled {
+            } catch {
+                self.recordListenerFailure(error, role: "UDP", generation: currentGeneration)
+            }
         })
 
-        let boundTCP = try await boundPort(tcpListener)
-        let boundUDP = try await boundPort(udpListener)
-        return (boundTCP, boundUDP)
+        async let boundTCP = PartyFaultNetworkSupport.waitForBoundPort(tcpListener) {
+            await self.startupListenerFailure(generation: currentGeneration)
+        }
+        async let boundUDP = PartyFaultNetworkSupport.waitForBoundPort(udpListener) {
+            await self.startupListenerFailure(generation: currentGeneration)
+        }
+        do {
+            return try await (boundTCP, boundUDP)
+        } catch {
+            stop()
+            throw error
+        }
     }
 
     public func stop() {
@@ -369,6 +446,7 @@ public actor GenericFaultProxy {
         flowTasks.removeAll()
         tcpListener = nil
         udpListener = nil
+        listenerFailureDescription = nil
         metrics.activeTCPConnections = 0
         metrics.activeUDPFlows = 0
     }
@@ -442,7 +520,10 @@ public actor GenericFaultProxy {
                     if message.metadata.endOfStream { return }
                 }
             }
-        } catch {}
+        } catch where Task.isCancelled {
+        } catch {
+            logger.error("TCP forwarding failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func acceptUDP(_ downstream: NetworkConnection<UDP>, generation: UInt64) {
@@ -499,7 +580,10 @@ public actor GenericFaultProxy {
                         return
                     }
                 }
-            } catch {}
+            } catch where Task.isCancelled {
+            } catch {
+                self.logger.error("UDP receive failed: \(error.localizedDescription, privacy: .public)")
+            }
             continuation.yield(.finished)
             continuation.finish()
         }
@@ -566,7 +650,10 @@ public actor GenericFaultProxy {
                     break eventLoop
                 }
             }
-        } catch {}
+        } catch where Task.isCancelled {
+        } catch {
+            logger.error("UDP forwarding failed: \(error.localizedDescription, privacy: .public)")
+        }
         receiveTask.cancel()
         idleTask?.cancel()
         continuation.finish()
@@ -587,11 +674,22 @@ public actor GenericFaultProxy {
         if reordered, payloads.count > 1 {
             noteUDPReordered(payloads.count, direction: direction)
         }
-        for (index, payload) in payloads.enumerated() {
-            do {
+        try await withThrowingTaskGroup(of: UDPDeliveryResult.self) { group in
+            var forwardedPayloads: Set<Int> = []
+            var impairmentDrops: Set<Int> = []
+            var firstFailure: String?
+            var wasCancelled = false
+
+            payloadLoop: for (index, payload) in payloads.enumerated() {
+                if Task.isCancelled {
+                    wasCancelled = true
+                    group.cancelAll()
+                    break
+                }
                 let plan = await engine.udpPlan(direction: direction)
                 if plan.isDropped {
                     noteUDPDropped(direction: direction)
+                    impairmentDrops.insert(index)
                     continue
                 }
                 if plan.delays.count > 1 {
@@ -599,16 +697,56 @@ public actor GenericFaultProxy {
                 }
                 for delay in plan.delays {
                     if delay > .zero {
-                        try await Task.sleep(for: delay)
-                        noteDelay(direction: direction)
+                        group.addTask {
+                            do {
+                                try await Task.sleep(for: delay)
+                                try await destination.send(payload)
+                                return .forwarded(index: index, delayed: true)
+                            } catch where Task.isCancelled {
+                                return .cancelled(index: index)
+                            } catch {
+                                return .failed(index: index, delayed: true, reason: error.localizedDescription)
+                            }
+                        }
+                        continue
                     }
-                    try await destination.send(payload)
-                    noteUDPForwarded(direction: direction)
+                    do {
+                        try await destination.send(payload)
+                        noteUDPForwarded(direction: direction)
+                        forwardedPayloads.insert(index)
+                    } catch where Task.isCancelled {
+                        wasCancelled = true
+                        group.cancelAll()
+                        break payloadLoop
+                    } catch {
+                        firstFailure = error.localizedDescription
+                        group.cancelAll()
+                        break payloadLoop
+                    }
                 }
-            } catch {
-                noteUDPDropped(payloads.count - index, direction: direction)
-                throw error
             }
+
+            for try await result in group {
+                switch result {
+                case .forwarded(let index, let delayed):
+                    if delayed { noteDelay(direction: direction) }
+                    noteUDPForwarded(direction: direction)
+                    forwardedPayloads.insert(index)
+                case .failed(_, let delayed, let reason):
+                    if delayed { noteDelay(direction: direction) }
+                    firstFailure = firstFailure ?? reason
+                    group.cancelAll()
+                case .cancelled:
+                    wasCancelled = wasCancelled || Task.isCancelled
+                }
+            }
+
+            let droppedPayloads = payloads.indices.count {
+                !forwardedPayloads.contains($0) && !impairmentDrops.contains($0)
+            }
+            if droppedPayloads > 0 { noteUDPDropped(droppedPayloads, direction: direction) }
+            if wasCancelled || Task.isCancelled { throw CancellationError() }
+            if let firstFailure { throw PartyFaultError.forwardingFailed(firstFailure) }
         }
     }
 
@@ -620,16 +758,16 @@ public actor GenericFaultProxy {
         if flowTasks.removeValue(forKey: id) != nil { metrics.activeUDPFlows = max(0, metrics.activeUDPFlows - 1) }
     }
 
-    private func boundPort<P>(_ listener: NetworkListener<P>) async throws -> UInt16 {
-        for _ in 0..<500 {
-            if let raw = listener.port?.rawValue, raw != 0 { return raw }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        throw PartyFaultError.listenerDidNotStart
+    private func startupListenerFailure(generation: UInt64) -> String? {
+        guard generation == self.generation else { return "Proxy startup was cancelled." }
+        return listenerFailureDescription
     }
 
-    private nonisolated static func isLoopback(_ host: String) -> Bool {
-        host == "localhost" || host == "127.0.0.1" || host == "::1"
+    private func recordListenerFailure(_ error: any Error, role: String, generation: UInt64) {
+        guard generation == self.generation else { return }
+        let description = "\(role) listener: \(error.localizedDescription)"
+        listenerFailureDescription = listenerFailureDescription ?? description
+        logger.error("\(description, privacy: .public)")
     }
 
     private func updateDirection(_ direction: TrafficDirection, _ body: (inout DirectionMetrics) -> Void) {

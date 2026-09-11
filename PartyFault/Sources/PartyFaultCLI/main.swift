@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import OSLog
 import PartyFault
 
 private typealias ControlServerProtocol = Coder<ControlResponse, ControlRequest, NetworkJSONCoder>
@@ -7,17 +8,15 @@ private typealias ControlClientProtocol = Coder<ControlRequest, ControlResponse,
 
 private actor ControlServer {
     private let proxy: GenericFaultProxy
-    private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
-    private let localOnly: Bool
-    private var task: Task<Void, Never>?
+    private let logger = Logger(subsystem: "PartyFault", category: "ControlServer")
+    private var task: Task<Void, Error>?
+    private var listenerFailureDescription: String?
 
-    init(proxy: GenericFaultProxy, host: String, port: UInt16) throws {
+    init(proxy: GenericFaultProxy, port: UInt16) throws {
         guard let port = NWEndpoint.Port(rawValue: port) else { throw PartyFaultError.invalidPort }
         self.proxy = proxy
-        self.host = NWEndpoint.Host(host)
         self.port = port
-        localOnly = host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     func start() async throws -> UInt16 {
@@ -25,22 +24,37 @@ private actor ControlServer {
             TCP().noDelay(true).connectionTimeout(5)
         }
         let parameters = NWParametersBuilder.parameters { stack }
-            .localEndpoint(.hostPort(host: host, port: port))
-            .localOnly(localOnly)
+            .localEndpoint(.hostPort(host: "127.0.0.1", port: port))
+            .localOnly(true)
             .peerToPeerIncluded(false)
         let listener = try NetworkListener<ControlServerProtocol>(for: nil, using: parameters)
         task = Task { [listener] in
-            do { try await listener.run { await self.handle($0) } } catch {}
+            do {
+                try await listener.run { await self.handle($0) }
+            } catch where Task.isCancelled {
+                throw CancellationError()
+            } catch {
+                self.recordListenerFailure(error)
+                throw error
+            }
         }
-        for _ in 0..<500 {
-            if let value = listener.port?.rawValue, value != 0 { return value }
-            try await Task.sleep(for: .milliseconds(10))
+        do {
+            return try await PartyFaultNetworkSupport.waitForBoundPort(listener) {
+                await self.listenerFailureDescription
+            }
+        } catch {
+            task?.cancel()
+            throw error
         }
-        task?.cancel()
-        throw PartyFaultError.listenerDidNotStart
     }
 
-    func wait() async { await task?.value }
+    func wait() async throws { try await task?.value }
+
+    private func recordListenerFailure(_ error: any Error) {
+        let description = error.localizedDescription
+        listenerFailureDescription = listenerFailureDescription ?? description
+        logger.error("Control listener failed: \(description, privacy: .public)")
+    }
 
     private func handle(_ connection: NetworkConnection<ControlServerProtocol>) async {
         do {
@@ -126,14 +140,20 @@ private enum PartyFaultCommand {
             upstreamUDPPort: udp,
             bindHost: bindHost
         )
-        let server = try ControlServer(proxy: proxy, host: bindHost, port: control)
+        let server = try ControlServer(proxy: proxy, port: control)
         let controlPort = try await server.start()
-        let metadata = ProxyEndpoints(host: bindHost, tcpPort: endpoints.tcp, udpPort: endpoints.udp, controlPort: controlPort)
+        let metadata = ProxyEndpoints(
+            host: bindHost,
+            tcpPort: endpoints.tcp,
+            udpPort: endpoints.udp,
+            controlHost: "127.0.0.1",
+            controlPort: controlPort
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         FileHandle.standardOutput.write(try encoder.encode(metadata))
         FileHandle.standardOutput.write(Data("\n".utf8))
-        await server.wait()
+        try await server.wait()
     }
 
     private static func control(_ arguments: [String]) async throws {

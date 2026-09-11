@@ -174,6 +174,72 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    @Test func successfulMatchPersistenceDoesNotHideACupPersistenceFailure() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let historyURL = directory.appendingPathComponent("history.json")
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer {
+                defaults.removePersistentDomain(forName: suiteName)
+                try? FileManager.default.removeItem(at: directory)
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let controllerID = ControllerID()
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--disable-effects",
+                "--controller-id", controllerID.rawValue.uuidString,
+            ])
+            let cupURL = directory.appendingPathComponent("cups-\(controllerID.rawValue.uuidString)-v1.json")
+            try FileManager.default.createDirectory(at: cupURL, withIntermediateDirectories: false)
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: configuration,
+                historyFileURL: historyURL
+            )
+            let cup = CupRecord(
+                endedAt: Date(timeIntervalSince1970: 20),
+                gameIDs: ["pong"],
+                matchRecordIDs: [],
+                standings: [
+                    .init(
+                        controllerID: controllerID,
+                        displayName: "Ada",
+                        colorHex: "#32E6FF",
+                        kind: .human,
+                        rank: 1,
+                        points: 3,
+                        eventWins: 1
+                    ),
+                ]
+            )
+            let personalCup = try #require(PersonalCupRecord(record: cup, controllerID: controllerID))
+            await coordinator.appendPersonalCupHistoryForTesting(personalCup)
+            #expect(coordinator.cupHistoryPersistenceError != nil)
+
+            let match = MatchRecord(
+                gameID: "pong",
+                gameTitle: "Pong",
+                endedAt: Date(timeIntervalSince1970: 21),
+                durationSeconds: 5,
+                modifierTitle: nil,
+                participants: [
+                    .init(controllerID: controllerID, displayName: "Ada", colorHex: "#32E6FF", outcome: .won),
+                ],
+                metrics: []
+            )
+            await coordinator.appendPersonalHistoryForTesting(
+                PersonalMatchRecord(record: match, controllerID: controllerID)
+            )
+
+            #expect(coordinator.matchHistoryPersistenceError == nil)
+            #expect(coordinator.cupHistoryPersistenceError != nil)
+            #expect(coordinator.historyPersistenceError?.contains("Party Cup") == true)
+        }
+    }
+
     @Test func sessionAndGameLayoutChangesClearPresentationAndNeutralizeInput() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()

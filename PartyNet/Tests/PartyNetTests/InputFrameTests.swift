@@ -111,5 +111,14 @@ struct InputFrameTests {
         let backward = OrientationQuaternion(x: -sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
         #expect(abs(forward - 0.75) < 0.001)
         #expect(abs(backward + 0.75) < 0.001)
+        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1).verticalTiltAxis() == 1)
+        #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1).verticalTiltAxis() == -1)
+
+        let insideDeadZone = OrientationQuaternion(x: sin(0.01), y: 0, z: 0, w: cos(0.01))
+        #expect(insideDeadZone.verticalTiltAxis() == 0)
+        #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: 0) == 0)
+        #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: .infinity) == 0)
+        #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: .nan) == 0)
+        #expect(OrientationQuaternion(x: .nan, y: 0, z: 0, w: 1).verticalTiltAxis() == 0)
     }
 }
