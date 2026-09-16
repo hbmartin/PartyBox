@@ -80,6 +80,9 @@ struct ContentView: View {
             value: coordinator.phase
         )
         .focusable()
+#if os(macOS)
+        .focusEffectDisabled()
+#endif
         .focused($focused)
         .onAppear { focused = true }
         .onMoveCommand { direction in
