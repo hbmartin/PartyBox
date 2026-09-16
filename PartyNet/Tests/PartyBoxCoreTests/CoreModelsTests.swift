@@ -55,6 +55,19 @@ struct CoreModelsTests {
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 
+    @Test(arguments: [(0, 4), (9, 9), (4, 3), (1, 9)])
+    func invalidGamePlayerBoundsFailDecoding(minimumPlayers: Int, maximumPlayers: Int) {
+        let data = Data(
+            """
+            {"id":"invalid","title":"Invalid","summary":"Invalid player bounds","minimumPlayers":\(minimumPlayers),"maximumPlayers":\(maximumPlayers)}
+            """.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try PartyBoxWireCodec.decode(GameDescriptor.self, from: data)
+        }
+    }
+
     @Test func wireDecodedDeviceCuesClampDurationsAndOlderControlStatusDefaultsSafely() throws {
         let identifier = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
         let longCue = Data(

@@ -200,6 +200,71 @@ struct PartyFaultTests {
         }
     }
 
+    @Test func defaultUDPWindowPreservesSendOrderForEqualDelays() async throws {
+        let datagramCount = 64
+        let tcpServer = try NetworkListener<TCP>(
+            for: nil,
+            using: .parameters { TCP().noDelay(true) }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let udpServer = try NetworkListener<UDP>(
+            for: nil,
+            using: .parameters { UDP() }
+                .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+                .localOnly(true)
+                .peerToPeerIncluded(false)
+        )
+        let (receivedDatagrams, receivedContinuation) = AsyncStream.makeStream(of: Data.self)
+        let tcpServerTask = Task { try await tcpServer.run { _ in } }
+        let udpServerTask = Task {
+            try await udpServer.run { connection in
+                for _ in 0..<datagramCount {
+                    receivedContinuation.yield(try await connection.receive().content)
+                }
+            }
+        }
+        defer {
+            receivedContinuation.finish()
+            tcpServerTask.cancel()
+            udpServerTask.cancel()
+        }
+
+        let tcpPort = try await PartyFaultNetworkSupport.waitForBoundPort(tcpServer, attempts: 300)
+        let udpPort = try await PartyFaultNetworkSupport.waitForBoundPort(udpServer, attempts: 300)
+        let proxy = GenericFaultProxy(profile: .init(
+            clientToServer: .init(udp: .init(delayMilliseconds: 1))
+        ))
+        let proxyPorts = try await proxy.start(
+            upstreamHost: "127.0.0.1",
+            upstreamTCPPort: tcpPort,
+            upstreamUDPPort: udpPort
+        )
+
+        try await withAsyncCleanup {
+            let client = NetworkConnection<UDP>(
+                to: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: proxyPorts.udp)!),
+                using: .parameters { UDP() }.peerToPeerIncluded(false)
+            )
+            let payloads = (0..<datagramCount).map { Data("datagram \($0)".utf8) }
+            let receivedTask = Task {
+                var received: [Data] = []
+                for await datagram in receivedDatagrams {
+                    received.append(datagram)
+                    if received.count == datagramCount { break }
+                }
+                return received
+            }
+            for payload in payloads { try await client.send(payload) }
+
+            let received = try await withTimeout { await receivedTask.value }
+            #expect(received == payloads)
+        } cleanup: {
+            await proxy.stop()
+        }
+    }
+
     @Test func udpFullLossDropsTheDatagramAndRecordsIt() async throws {
         let tcpServer = try NetworkListener<TCP>(
             for: nil,
