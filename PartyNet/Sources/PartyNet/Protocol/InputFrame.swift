@@ -64,26 +64,47 @@ public struct OrientationQuaternion: Codable, Equatable, Sendable {
     /// Calibration is applied before the dead zone and clamp so neutral offsets do
     /// not consume travel or create an off-center plateau.
     public func horizontalTiltAxis(sensitivity: Float = 1.5, neutral: Float = 0) -> Float {
-        guard sensitivity.isFinite, sensitivity > 0, neutral.isFinite,
-              let projection = tiltProjections?.horizontal else { return 0 }
-        return Self.normalizedTiltAxis(projection: projection, neutral: neutral, sensitivity: sensitivity)
+        tiltAxes(sensitivity: sensitivity, horizontalNeutral: neutral).horizontal
     }
 
     /// Maps the device's forward/back lean to a normalized vertical control axis.
     public func verticalTiltAxis(sensitivity: Float = 1.5, neutral: Float = 0) -> Float {
-        guard sensitivity.isFinite, sensitivity > 0, neutral.isFinite,
-              let projection = tiltProjections?.vertical else { return 0 }
-        return Self.normalizedTiltAxis(projection: projection, neutral: neutral, sensitivity: sensitivity)
+        tiltAxes(sensitivity: sensitivity, verticalNeutral: neutral).vertical
+    }
+
+    /// Maps both gravity projections to calibrated control axes with one normalization pass.
+    public func tiltAxes(
+        sensitivity: Float = 1.5,
+        horizontalNeutral: Float = 0,
+        verticalNeutral: Float = 0
+    ) -> (horizontal: Float, vertical: Float) {
+        guard sensitivity.isFinite, sensitivity > 0, let projections = tiltProjections else {
+            return (0, 0)
+        }
+        return (
+            Self.normalizedTiltAxis(
+                projection: projections.horizontal,
+                neutral: horizontalNeutral,
+                sensitivity: sensitivity
+            ),
+            Self.normalizedTiltAxis(
+                projection: projections.vertical,
+                neutral: verticalNeutral,
+                sensitivity: sensitivity
+            )
+        )
     }
 
     private static func normalizedTiltAxis(projection: Float, neutral: Float, sensitivity: Float) -> Float {
+        guard neutral.isFinite else { return 0 }
         let neutral = min(max(neutral, -1), 1)
         let centered = projection - neutral
+        guard abs(centered) >= 0.04 else { return 0 }
         let availableTravel = centered >= 0 ? 1 - neutral : 1 + neutral
         guard availableTravel > 0 else { return 0 }
         let calibratedSensitivity = max(sensitivity, 1 / availableTravel)
         let scaled = centered * calibratedSensitivity
-        guard scaled.isFinite, abs(scaled) >= 0.04 else { return 0 }
+        guard scaled.isFinite else { return 0 }
         return min(max(scaled, -1), 1)
     }
 
@@ -95,9 +116,7 @@ public struct OrientationQuaternion: Codable, Equatable, Sendable {
         let gravityY = 2 * (
             (normalized.y * normalized.z) + (normalized.w * normalized.x)
         )
-        let horizontal = -gravityX
-        guard horizontal.isFinite, gravityY.isFinite else { return nil }
-        return (horizontal, gravityY)
+        return (-gravityX, gravityY)
     }
 }
 

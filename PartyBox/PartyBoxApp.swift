@@ -12,20 +12,91 @@ import PartyNet
 import AppKit
 
 @MainActor
-final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
-    private let coordinator: HostCoordinator
-    private var window: NSWindow?
-    private var lifecycleTask: Task<Void, Never>?
-    private var terminationTask: Task<Void, Never>?
-
-    override init() {
-        preparePartyNetLiveClock()
-        coordinator = HostCoordinator()
-        super.init()
-    }
+final class PartyBoxApplicationLifecycle {
+    let coordinator: HostCoordinator
+    private var runTask: Task<Void, Never>?
 
     init(coordinator: HostCoordinator) {
         self.coordinator = coordinator
+    }
+
+    func start() {
+        guard runTask == nil else { return }
+        runTask = Task { @MainActor [coordinator] in
+            await coordinator.start()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
+            }
+        }
+    }
+
+    func cancel() {
+        runTask?.cancel()
+    }
+
+    func stop() async {
+        let activeRunTask = runTask
+        runTask = nil
+        activeRunTask?.cancel()
+        await activeRunTask?.value
+        await coordinator.stop()
+    }
+}
+
+@MainActor
+final class ApplicationTerminationGate {
+    enum BeginResult: Equatable {
+        case started
+        case alreadyPending
+        case alreadyFinished
+    }
+
+    private var shutdownTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+    private var didReply = false
+
+    func begin(
+        timeout: Duration,
+        shutdown: @escaping @MainActor () async -> Void,
+        reply: @escaping @MainActor () -> Void
+    ) -> BeginResult {
+        if didReply { return .alreadyFinished }
+        guard shutdownTask == nil else { return .alreadyPending }
+        shutdownTask = Task { @MainActor [weak self] in
+            await shutdown()
+            self?.finish(reply: reply)
+        }
+        timeoutTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            self?.finish(reply: reply)
+        }
+        return .started
+    }
+
+    private func finish(reply: @MainActor () -> Void) {
+        guard !didReply else { return }
+        didReply = true
+        shutdownTask?.cancel()
+        timeoutTask?.cancel()
+        shutdownTask = nil
+        timeoutTask = nil
+        reply()
+    }
+}
+
+@MainActor
+private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
+    private let lifecycle: PartyBoxApplicationLifecycle
+    private let terminationGate = ApplicationTerminationGate()
+    private var window: NSWindow?
+
+    override init() {
+        preparePartyNetLiveClock()
+        lifecycle = PartyBoxApplicationLifecycle(coordinator: HostCoordinator())
         super.init()
     }
 
@@ -34,7 +105,7 @@ final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let contentView = ContentView(coordinator: coordinator)
+        let contentView = ContentView(coordinator: lifecycle.coordinator)
         let hostingView = NSHostingView(rootView: contentView)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 720),
@@ -54,38 +125,25 @@ final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.unhide(nil)
         NSApplication.shared.activate()
         NSRunningApplication.current.activate(options: [.activateAllWindows])
-        lifecycleTask = Task { @MainActor [coordinator] in
-            await coordinator.start()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
-            }
-            await coordinator.stop()
-        }
+        lifecycle.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        lifecycleTask?.cancel()
+        lifecycle.cancel()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard terminationTask == nil else { return .terminateLater }
-        terminationTask = Task { @MainActor [weak self] in
-            if let self { await self.stopForTermination() }
-            sender.reply(toApplicationShouldTerminate: true)
-            self?.terminationTask = nil
+        let result = terminationGate.begin(
+            timeout: .seconds(10),
+            shutdown: { [lifecycle] in await lifecycle.stop() },
+            reply: { sender.reply(toApplicationShouldTerminate: true) }
+        )
+        switch result {
+        case .started, .alreadyPending:
+            return .terminateLater
+        case .alreadyFinished:
+            return .terminateNow
         }
-        return .terminateLater
-    }
-
-    func stopForTermination() async {
-        let activeLifecycleTask = lifecycleTask
-        activeLifecycleTask?.cancel()
-        if let activeLifecycleTask {
-            await activeLifecycleTask.value
-        } else {
-            await coordinator.stop()
-        }
-        lifecycleTask = nil
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

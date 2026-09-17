@@ -325,7 +325,7 @@ private final class ArcadeChallengeScene: SKScene {
         states[playerID]?.alive = false
         states[playerID]?.lives = 0
         onEvents([.eliminated(playerID)])
-        if states.values.filter(\.alive).count <= 1 { complete() }
+        completeIfEliminationFinished()
     }
 
     func botInput(for playerID: PlayerID, difficulty: GameBotDifficulty) -> GameBotInput? {
@@ -444,7 +444,8 @@ private final class ArcadeChallengeScene: SKScene {
 
     private func readInputs() {
         let snapshot = context.inputs.snapshot()
-        for (playerID, frame) in snapshot where states[playerID]?.alive == true {
+        for playerID in playerIDs {
+            guard let frame = snapshot[playerID], states[playerID]?.alive == true else { continue }
             let x = Double(frame.axisX)
             let y = Double(frame.axisY)
             switch mode {
@@ -558,7 +559,8 @@ private final class ArcadeChallengeScene: SKScene {
             let targetAngle = Double(nextRandom() % 628) / 100
             promptLabel.text = "✦"
             promptLabel.position = CGPoint(x: 960 + cos(targetAngle) * 320, y: 525 + sin(targetAngle) * 320)
-            for (playerID, state) in states where state.alive {
+            for playerID in playerIDs {
+                guard let state = states[playerID], state.alive else { continue }
                 let playerAngle = atan2(state.y, state.x)
                 let distance = abs(atan2(sin(playerAngle - targetAngle), cos(playerAngle - targetAngle)))
                 if distance < 0.34 {

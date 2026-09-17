@@ -150,4 +150,45 @@ struct InputFrameTests {
         #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1)
             .verticalTiltAxis(neutral: verticalProjection) == -1)
     }
+
+    @Test func calibratedTiltAppliesDeadZoneBeforeGain() {
+        let neutral: Float = 0.9
+        let insideDeadZone: Float = 0.92
+        let outsideDeadZone: Float = 0.95
+
+        func verticalOrientation(projection: Float) -> OrientationQuaternion {
+            let halfAngle = asin(projection) / 2
+            return OrientationQuaternion(x: sin(halfAngle), y: 0, z: 0, w: cos(halfAngle))
+        }
+
+        #expect(verticalOrientation(projection: insideDeadZone).verticalTiltAxis(neutral: neutral) == 0)
+        #expect(verticalOrientation(projection: outsideDeadZone).verticalTiltAxis(neutral: neutral) > 0)
+    }
+
+    @Test func combinedTiltAxesMatchSingleAxisAPIsWithoutCrossCoupling() {
+        let orientation = OrientationQuaternion(x: 0.2, y: -0.3, z: 0.1, w: 0.9)
+        let horizontalNeutral: Float = -0.12
+        let verticalNeutral: Float = 0.18
+        let axes = orientation.tiltAxes(
+            horizontalNeutral: horizontalNeutral,
+            verticalNeutral: verticalNeutral
+        )
+
+        #expect(axes.horizontal == orientation.horizontalTiltAxis(neutral: horizontalNeutral))
+        #expect(axes.vertical == orientation.verticalTiltAxis(neutral: verticalNeutral))
+
+        let verticalOnly = OrientationQuaternion(
+            x: sin(Float.pi / 12), y: 0, z: 0, w: cos(Float.pi / 12)
+        ).tiltAxes(horizontalNeutral: .nan)
+        #expect(verticalOnly.horizontal == 0)
+        #expect(verticalOnly.vertical > 0)
+
+        let horizontalOnly = orientation.tiltAxes(verticalNeutral: .nan)
+        #expect(horizontalOnly.horizontal != 0)
+        #expect(horizontalOnly.vertical == 0)
+
+        let invalid = OrientationQuaternion(x: .nan, y: 0, z: 0, w: 1).tiltAxes()
+        #expect(invalid.horizontal == 0)
+        #expect(invalid.vertical == 0)
+    }
 }

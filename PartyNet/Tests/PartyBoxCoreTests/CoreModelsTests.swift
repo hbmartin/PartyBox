@@ -97,6 +97,11 @@ struct CoreModelsTests {
         #expect(menu.kind == .gameSelection)
         #expect(menu.control == .uncontrolled)
 
+        let legacyCupMenu = Data(
+            #"{"items":["SIGNAL SNAP","START PARTY CUP"],"details":["Ready","3/3 events selected"],"selected":1}"#.utf8
+        )
+        #expect(try PartyBoxWireCodec.decode(MenuLayout.self, from: legacyCupMenu).kind == .cupSetup)
+
         let legacyGame = Data(
             #"{"id":"pong","title":"PONG","summary":"Winner stays","minimumPlayers":1,"maximumPlayers":4,"modifiers":[]}"#.utf8
         )
@@ -115,6 +120,17 @@ struct CoreModelsTests {
             MenuLayout.self,
             from: PartyBoxWireCodec.encode(cupMenu)
         ) == cupMenu)
+
+        let explicitGameMenu = MenuLayout(
+            kind: .gameSelection,
+            items: ["START PARTY CUP"],
+            details: ["Choose a mode"],
+            selected: 0
+        )
+        #expect(try PartyBoxWireCodec.decode(
+            MenuLayout.self,
+            from: PartyBoxWireCodec.encode(explicitGameMenu)
+        ).kind == .gameSelection)
     }
 
     @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {

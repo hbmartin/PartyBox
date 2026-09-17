@@ -380,7 +380,6 @@ public actor GenericFaultProxy {
         var forwardedCount = 0
         var delayedCount = 0
         var failureReason: String?
-        var wasCancelled = false
     }
 
     private static let udpReorderIdleFlushDelay = Duration.milliseconds(50)
@@ -812,7 +811,7 @@ public actor GenericFaultProxy {
                     summary.failureReason = summary.failureReason ?? reason
                     group.cancelAll()
                 case .cancelled:
-                    summary.wasCancelled = true
+                    break
                 }
             }
             return summary

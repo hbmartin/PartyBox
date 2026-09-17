@@ -146,9 +146,11 @@ public struct MenuLayout: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        let items = try values.decode([String].self, forKey: .items)
+        let legacyKind: MenuKind = items.contains("START PARTY CUP") ? .cupSetup : .gameSelection
         self.init(
-            kind: try values.decodeIfPresent(MenuKind.self, forKey: .kind) ?? .gameSelection,
-            items: try values.decode([String].self, forKey: .items),
+            kind: try values.decodeIfPresent(MenuKind.self, forKey: .kind) ?? legacyKind,
+            items: items,
             details: try values.decode([String].self, forKey: .details),
             selected: try values.decode(Int.self, forKey: .selected),
             control: try values.decodeIfPresent(PartyControlStatus.self, forKey: .control) ?? .uncontrolled

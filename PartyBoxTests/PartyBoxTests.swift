@@ -12,6 +12,34 @@ struct PartyBoxTests {
     private let bottom = PlayerID(0)
     private let top = PlayerID(1)
 
+    private enum EventSignature: Equatable {
+        case audio(HapticPattern)
+        case haptic(PlayerID, HapticPattern)
+        case deviceCue(PlayerID, colorHex: String, durationMilliseconds: Int, haptic: HapticPattern?)
+        case eliminated(PlayerID)
+        case completed(GameOutcome)
+    }
+
+    private func eventSignature(_ event: GameEvent) -> EventSignature {
+        switch event {
+        case .audio(let pattern):
+            .audio(pattern)
+        case .haptic(let playerID, let pattern):
+            .haptic(playerID, pattern)
+        case .deviceCue(let playerID, let cue):
+            .deviceCue(
+                playerID,
+                colorHex: cue.colorHex,
+                durationMilliseconds: cue.durationMilliseconds,
+                haptic: cue.haptic
+            )
+        case .eliminated(let playerID):
+            .eliminated(playerID)
+        case .completed(let outcome):
+            .completed(outcome)
+        }
+    }
+
     @MainActor
     private final class CleanupGate {
         private(set) var isWaiting = false
@@ -50,19 +78,65 @@ struct PartyBoxTests {
     }
 
     #if os(macOS)
-    @Test func applicationTerminationWaitsForTheHostToStop() async throws {
+    @Test func applicationLifecycleStopsTheHostFromAnUncancelledTask() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
             let coordinator = isolatedHostCoordinator()
-            await coordinator.start()
-            try #require(coordinator.host.port != nil)
+            let lifecycle = PartyBoxApplicationLifecycle(coordinator: coordinator)
+            lifecycle.start()
+            try await waitUntil { coordinator.host.port != nil }
 
-            let applicationDelegate = PartyBoxApplicationDelegate(coordinator: coordinator)
-            await applicationDelegate.stopForTermination()
+            await lifecycle.stop()
 
             #expect(coordinator.host.port == nil)
         }
+    }
+
+    @Test func applicationTerminationGateRepliesOnceAfterShutdown() async throws {
+        let gate = ApplicationTerminationGate()
+        let cleanup = CleanupGate()
+        var replyCount = 0
+
+        #expect(gate.begin(
+            timeout: .seconds(1),
+            shutdown: { await cleanup.wait() },
+            reply: { replyCount += 1 }
+        ) == .started)
+        try await waitUntil { cleanup.isWaiting }
+        #expect(gate.begin(
+            timeout: .seconds(1),
+            shutdown: {},
+            reply: { replyCount += 100 }
+        ) == .alreadyPending)
+
+        cleanup.release()
+        try await waitUntil { replyCount == 1 }
+        #expect(gate.begin(
+            timeout: .seconds(1),
+            shutdown: {},
+            reply: { replyCount += 100 }
+        ) == .alreadyFinished)
+        #expect(replyCount == 1)
+    }
+
+    @Test func applicationTerminationGateTimesOutHungShutdownAndRepliesOnce() async throws {
+        let gate = ApplicationTerminationGate()
+        let cleanup = CleanupGate()
+        var replyCount = 0
+        defer { cleanup.release() }
+
+        #expect(gate.begin(
+            timeout: .milliseconds(20),
+            shutdown: { await cleanup.wait() },
+            reply: { replyCount += 1 }
+        ) == .started)
+        try await waitUntil { cleanup.isWaiting }
+        try await waitUntil { replyCount == 1 }
+
+        cleanup.release()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(replyCount == 1)
     }
     #endif
 
@@ -751,6 +825,122 @@ struct PartyBoxTests {
         #expect(try #require(session.scoreForTesting(playerID)) > 0)
     }
 
+    @Test func signalInputEventsIgnoreInputInsertionAndStateStorageOrder() throws {
+        let participants = (0..<4).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        let firstInputs = InputStore()
+        let secondInputs = InputStore()
+        var firstEvents: [GameEvent] = []
+        var secondEvents: [GameEvent] = []
+        let first = ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
+            onEvents: { firstEvents.append(contentsOf: $0) }
+        )
+        let second = ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
+            onEvents: { secondEvents.append(contentsOf: $0) }
+        )
+        second.reverseStorageForTesting()
+        let axes: (Float, Float) = switch first.signalDirectionForTesting() {
+        case "up": (0, 1)
+        case "down": (0, -1)
+        case "left": (-1, 0)
+        default: (1, 0)
+        }
+        #expect(second.signalDirectionForTesting() == first.signalDirectionForTesting())
+        for (index, participant) in participants.enumerated() {
+            #expect(firstInputs.update(
+                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+                for: participant.player.id
+            ))
+        }
+        for (index, participant) in participants.reversed().enumerated() {
+            #expect(secondInputs.update(
+                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+                for: participant.player.id
+            ))
+        }
+
+        for step in 0...5 {
+            let time = Double(step) * 0.05
+            first.updateForTesting(time)
+            second.updateForTesting(time)
+        }
+
+        #expect(firstEvents.map(eventSignature) == secondEvents.map(eventSignature))
+        let cueOrder = firstEvents.compactMap { event -> PlayerID? in
+            if case .deviceCue(let playerID, _) = event { playerID } else { nil }
+        }
+        #expect(cueOrder == participants.map(\.player.id))
+    }
+
+    @Test func gravityEventsIgnoreInputInsertionAndStateStorageOrder() {
+        let participants = (0..<4).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        let firstInputs = InputStore()
+        let secondInputs = InputStore()
+        var firstEvents: [GameEvent] = []
+        var secondEvents: [GameEvent] = []
+        let first = ArcadeChallengeSession(
+            mode: .gravityGrab,
+            context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
+            onEvents: { firstEvents.append(contentsOf: $0) }
+        )
+        let second = ArcadeChallengeSession(
+            mode: .gravityGrab,
+            context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
+            onEvents: { secondEvents.append(contentsOf: $0) }
+        )
+        second.reverseStorageForTesting()
+        var random = ArcadeRandomNumberGenerator(seed: 42)
+        let targetAngle = Double(random.next() % 628) / 100
+        let axes = (Float(cos(targetAngle)), Float(sin(targetAngle)))
+        for (index, participant) in participants.enumerated() {
+            #expect(firstInputs.update(
+                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+                for: participant.player.id
+            ))
+        }
+        for (index, participant) in participants.reversed().enumerated() {
+            #expect(secondInputs.update(
+                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
+                for: participant.player.id
+            ))
+        }
+
+        for step in 0...13 {
+            let time = Double(step) * 0.05
+            first.updateForTesting(time)
+            second.updateForTesting(time)
+        }
+
+        #expect(firstEvents.map(eventSignature) == secondEvents.map(eventSignature))
+        let cueOrder = firstEvents.compactMap { event -> PlayerID? in
+            if case .deviceCue(let playerID, _) = event { playerID } else { nil }
+        }
+        #expect(cueOrder == participants.map(\.player.id))
+    }
+
     @Test func soloArcadeEliminationCompletesImmediately() throws {
         let playerID = PlayerID(0)
         var events: [GameEvent] = []
@@ -773,6 +963,35 @@ struct PartyBoxTests {
 
         #expect(try #require(session.snapshotForTesting()[playerID]).alive == false)
         #expect(events.contains { if case .completed = $0 { true } else { false } })
+    }
+
+    @Test(arguments: [1, 2])
+    func arcadeForfeitUsesSharedEliminationCompletion(playerCount: Int) throws {
+        let participants = (0..<playerCount).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        var events: [GameEvent] = []
+        let session = ArcadeChallengeSession(
+            mode: .snakePit,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { events.append(contentsOf: $0) }
+        )
+
+        session.forfeit(PlayerID(0))
+
+        #expect(events.contains(.eliminated(PlayerID(0))))
+        let completed = try #require(events.compactMap { event -> GameOutcome? in
+            if case .completed(let outcome) = event { outcome } else { nil }
+        }.first)
+        #expect(completed.winner == (playerCount == 1 ? nil : PlayerID(1)))
     }
 
     @Test func seededLastLightCollisionsIgnoreDictionaryStorageOrder() {
