@@ -59,6 +59,13 @@ final class ControllerCoordinator {
         let presentsColor: Bool
     }
 
+    private enum MotionCalibrationDefaults {
+        static let projectionX = "partybox.motionNeutralProjectionX"
+        static let projectionY = "partybox.motionNeutralProjectionY"
+        static let legacyAxisX = "partybox.motionNeutralAxisX"
+        static let legacyAxisY = "partybox.motionNeutralAxisY"
+    }
+
     let client: PartyClient
     let configuration: ControllerLaunchConfiguration
     var displayName: String
@@ -153,11 +160,12 @@ final class ControllerCoordinator {
             ?? configuration.defaultsSuite.flatMap(UserDefaults.init(suiteName:))
             ?? .standard
         self.defaults = defaults
+        Self.resetLegacyMotionCalibration(in: defaults)
         motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
         deviceEffectsEnabled = defaults.object(forKey: "partybox.deviceEffectsEnabled") as? Bool ?? true
         hapticsEnabled = defaults.object(forKey: "partybox.hapticsEnabled") as? Bool ?? true
-        motionNeutralProjectionX = Float(defaults.double(forKey: "partybox.motionNeutralProjectionX"))
-        motionNeutralProjectionY = Float(defaults.double(forKey: "partybox.motionNeutralProjectionY"))
+        motionNeutralProjectionX = Float(defaults.double(forKey: MotionCalibrationDefaults.projectionX))
+        motionNeutralProjectionY = Float(defaults.double(forKey: MotionCalibrationDefaults.projectionY))
         let controllerID: ControllerID
         if let configured = configuration.controllerID {
             controllerID = ControllerID(rawValue: configured)
@@ -325,8 +333,8 @@ final class ControllerCoordinator {
     func calibrateMotion() {
         motionNeutralProjectionX = client.inputOrientation.horizontalTiltProjection()
         motionNeutralProjectionY = client.inputOrientation.verticalTiltProjection()
-        defaults.set(Double(motionNeutralProjectionX), forKey: "partybox.motionNeutralProjectionX")
-        defaults.set(Double(motionNeutralProjectionY), forKey: "partybox.motionNeutralProjectionY")
+        defaults.set(Double(motionNeutralProjectionX), forKey: MotionCalibrationDefaults.projectionX)
+        defaults.set(Double(motionNeutralProjectionY), forKey: MotionCalibrationDefaults.projectionY)
         client.setInput(axisX: 0, axisY: 0)
         play(.success)
     }
@@ -570,9 +578,13 @@ final class ControllerCoordinator {
                     x: Float(quaternion.x), y:Float(quaternion.y),
                     z: Float(quaternion.z), w: Float(quaternion.w)
                 )
+                let axes = orientation.tiltAxes(
+                    horizontalNeutral: self.motionNeutralProjectionX,
+                    verticalNeutral: self.motionNeutralProjectionY
+                )
                 self.client.setInput(
-                    axisX: orientation.horizontalTiltAxis(neutral: self.motionNeutralProjectionX),
-                    axisY: orientation.verticalTiltAxis(neutral: self.motionNeutralProjectionY)
+                    axisX: axes.horizontal,
+                    axisY: axes.vertical
                 )
                 self.client.setOrientation(orientation)
             }
@@ -591,6 +603,20 @@ final class ControllerCoordinator {
         if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
         client.setOrientation(.identity, available: false)
         if wasCapturingMotion { client.setInput(axisX: 0, axisY: 0) }
+    }
+
+    private static func resetLegacyMotionCalibration(in defaults: UserDefaults) {
+        let keys = MotionCalibrationDefaults.self
+        guard defaults.object(forKey: keys.legacyAxisX) != nil
+                || defaults.object(forKey: keys.legacyAxisY) != nil else { return }
+        if defaults.object(forKey: keys.projectionX) == nil {
+            defaults.set(0.0, forKey: keys.projectionX)
+        }
+        if defaults.object(forKey: keys.projectionY) == nil {
+            defaults.set(0.0, forKey: keys.projectionY)
+        }
+        defaults.removeObject(forKey: keys.legacyAxisX)
+        defaults.removeObject(forKey: keys.legacyAxisY)
     }
 
     private func handleMotionCaptureFailure(generation: UUID) {

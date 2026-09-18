@@ -55,12 +55,28 @@ public struct GameDescriptor: Codable, Equatable, Identifiable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        let minimumPlayers = try values.decode(Int.self, forKey: .minimumPlayers)
+        let maximumPlayers = try values.decode(Int.self, forKey: .maximumPlayers)
+        guard (1...PartyNetConstants.maximumControllers).contains(minimumPlayers) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .minimumPlayers,
+                in: values,
+                debugDescription: "minimumPlayers must be between 1 and \(PartyNetConstants.maximumControllers)."
+            )
+        }
+        guard (minimumPlayers...PartyNetConstants.maximumControllers).contains(maximumPlayers) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .maximumPlayers,
+                in: values,
+                debugDescription: "maximumPlayers must be between minimumPlayers and \(PartyNetConstants.maximumControllers)."
+            )
+        }
         self.init(
             id: try values.decode(String.self, forKey: .id),
             title: try values.decode(String.self, forKey: .title),
             summary: try values.decode(String.self, forKey: .summary),
-            minimumPlayers: try values.decode(Int.self, forKey: .minimumPlayers),
-            maximumPlayers: try values.decode(Int.self, forKey: .maximumPlayers),
+            minimumPlayers: minimumPlayers,
+            maximumPlayers: maximumPlayers,
             modifiers: try values.decodeIfPresent([GameModifierDescriptor].self, forKey: .modifiers) ?? [],
             estimatedDurationSeconds: try values.decodeIfPresent(Int.self, forKey: .estimatedDurationSeconds) ?? 90,
             supportsMotion: try values.decodeIfPresent(Bool.self, forKey: .supportsMotion) ?? true,

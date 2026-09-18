@@ -108,6 +108,60 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    @Test func legacyMotionCalibrationResetsToZeroAndRemovesOldKeys() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            defaults.set(0.6, forKey: "partybox.motionNeutralAxisX")
+            defaults.set(-0.4, forKey: "partybox.motionNeutralAxisY")
+
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: ["PartyBox Controller", "--disable-effects"])
+            )
+
+            #expect(coordinator.motionControlEnabled)
+            #expect(coordinator.motionNeutralProjectionX == 0)
+            #expect(coordinator.motionNeutralProjectionY == 0)
+            #expect(defaults.object(forKey: "partybox.motionNeutralProjectionX") != nil)
+            #expect(defaults.object(forKey: "partybox.motionNeutralProjectionY") != nil)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionX") == 0)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionY") == 0)
+            #expect(defaults.object(forKey: "partybox.motionNeutralAxisX") == nil)
+            #expect(defaults.object(forKey: "partybox.motionNeutralAxisY") == nil)
+        }
+    }
+
+    @Test func newMotionCalibrationTakesPrecedenceOverStaleLegacyKeys() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(0.25, forKey: "partybox.motionNeutralProjectionX")
+            defaults.set(1.0, forKey: "partybox.motionNeutralAxisX")
+            defaults.set(-1.0, forKey: "partybox.motionNeutralAxisY")
+
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: ["PartyBox Controller", "--disable-effects"])
+            )
+
+            #expect(coordinator.motionNeutralProjectionX == 0.25)
+            #expect(coordinator.motionNeutralProjectionY == 0)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionX") == 0.25)
+            #expect(defaults.object(forKey: "partybox.motionNeutralProjectionY") != nil)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionY") == 0)
+            #expect(defaults.object(forKey: "partybox.motionNeutralAxisX") == nil)
+            #expect(defaults.object(forKey: "partybox.motionNeutralAxisY") == nil)
+        }
+    }
+
     @Test func invalidDebugHostSurfacesAnAddressError() async {
         await withDependencies {
             $0.continuousClock = ContinuousClock()

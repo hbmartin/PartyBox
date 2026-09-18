@@ -208,6 +208,9 @@ struct IdentityAssignmentTests {
 
                 await gate.open()
                 await firstConnection?.value
+                #expect(host.players.contains {
+                    host.controllerID(for: $0.id) == controllerID && $0.id == replacement.player?.id
+                })
                 #expect(host.players.count == PartyNetConstants.maximumControllers)
                 #expect(host.players.count { $0.kind == .bot } == 6)
             } cleanup: {

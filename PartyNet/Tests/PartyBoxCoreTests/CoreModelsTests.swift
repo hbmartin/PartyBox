@@ -55,6 +55,19 @@ struct CoreModelsTests {
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 
+    @Test(arguments: [(0, 4), (9, 9), (4, 3), (1, 9)])
+    func invalidGamePlayerBoundsFailDecoding(minimumPlayers: Int, maximumPlayers: Int) {
+        let data = Data(
+            """
+            {"id":"invalid","title":"Invalid","summary":"Invalid player bounds","minimumPlayers":\(minimumPlayers),"maximumPlayers":\(maximumPlayers)}
+            """.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try PartyBoxWireCodec.decode(GameDescriptor.self, from: data)
+        }
+    }
+
     @Test func wireDecodedDeviceCuesClampDurationsAndOlderControlStatusDefaultsSafely() throws {
         let identifier = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
         let longCue = Data(
@@ -84,6 +97,11 @@ struct CoreModelsTests {
         #expect(menu.kind == .gameSelection)
         #expect(menu.control == .uncontrolled)
 
+        let legacyCupMenu = Data(
+            #"{"items":["SIGNAL SNAP","START PARTY CUP"],"details":["Ready","3/3 events selected"],"selected":1}"#.utf8
+        )
+        #expect(try PartyBoxWireCodec.decode(MenuLayout.self, from: legacyCupMenu).kind == .cupSetup)
+
         let legacyGame = Data(
             #"{"id":"pong","title":"PONG","summary":"Winner stays","minimumPlayers":1,"maximumPlayers":4,"modifiers":[]}"#.utf8
         )
@@ -102,6 +120,17 @@ struct CoreModelsTests {
             MenuLayout.self,
             from: PartyBoxWireCodec.encode(cupMenu)
         ) == cupMenu)
+
+        let explicitGameMenu = MenuLayout(
+            kind: .gameSelection,
+            items: ["START PARTY CUP"],
+            details: ["Choose a mode"],
+            selected: 0
+        )
+        #expect(try PartyBoxWireCodec.decode(
+            MenuLayout.self,
+            from: PartyBoxWireCodec.encode(explicitGameMenu)
+        ).kind == .gameSelection)
     }
 
     @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {
