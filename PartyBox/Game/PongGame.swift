@@ -22,7 +22,8 @@ struct PongGame: PartyGame {
         minimumPlayers: 1,
         maximumPlayers: 8,
         modifiers: [fastBall, bigPaddles, extraLife],
-        estimatedDurationSeconds: 100
+        estimatedDurationSeconds: 100,
+        supportsMotion: true
     )
 
     static func rules(for modifierID: String?) -> PongRules {
@@ -45,9 +46,18 @@ struct PongGame: PartyGame {
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) -> any PartyGameSession {
         if context.participants.count > 4 {
-            ArcadeChallengeSession(mode: .pongQualifiers, context: context, onEvents: onEvents)
+            ArcadeChallengeSession(
+                mode: .pongQualifiers,
+                context: context,
+                supportsMotion: descriptor.supportsMotion,
+                onEvents: onEvents
+            )
         } else {
-            PongGameSession(context: context, onEvents: onEvents)
+            PongGameSession(
+                context: context,
+                supportsMotion: descriptor.supportsMotion,
+                onEvents: onEvents
+            )
         }
     }
 }
@@ -76,6 +86,7 @@ final class PongGameSession: PartyGameSession {
     }
 
     private let context: GameSessionContext
+    private let supportsMotion: Bool
     private let onEvents: @MainActor ([GameEvent]) -> Void
     private var forfeited: Set<PlayerID> = []
     private var eliminationOrder: [PlayerID] = []
@@ -84,8 +95,13 @@ final class PongGameSession: PartyGameSession {
 
     var scene: SKScene { pongScene }
 
-    init(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) {
+    init(
+        context: GameSessionContext,
+        supportsMotion: Bool = true,
+        onEvents: @escaping @MainActor ([GameEvent]) -> Void
+    ) {
         self.context = context
+        self.supportsMotion = supportsMotion
         self.onEvents = onEvents
         let assignments = zip(context.participants, PaddleEdge.allCases).map {
             SeatAssignment(playerID: $0.0.player.id, edge: $0.1)
@@ -129,7 +145,7 @@ final class PongGameSession: PartyGameSession {
         return ControllerScreen(
             accessibilityID: "controller.layout.paddle.\(edge.rawValue)",
             accentColorHex: participant.player.colorHex,
-            requestedInputs: .orientation,
+            requestedInputs: supportsMotion ? .orientation : [],
             components: [
                 .text(.init(
                     id: "pong.player",
@@ -213,7 +229,7 @@ final class PongGameSession: PartyGameSession {
                 }
                 let solo = context.participants.count == 1
                 let title: String
-                let subtitle: String
+                var subtitle: String
                 if solo {
                     title = "PRACTICE COMPLETE"
                     subtitle = "Rally: \(rally)  •  Select to rotate and play again"
@@ -224,6 +240,9 @@ final class PongGameSession: PartyGameSession {
                 } else {
                     title = "MATCH OVER"
                     subtitle = "Select for the next match"
+                }
+                if context.isCupEvent {
+                    subtitle = "Party Cup event complete"
                 }
                 let outcomes = context.participants.map { participant in
                     let outcome: MatchParticipantOutcome = if solo {

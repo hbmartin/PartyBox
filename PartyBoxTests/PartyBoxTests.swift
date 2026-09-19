@@ -394,6 +394,10 @@ struct PartyBoxTests {
             return cue
         }
         #expect(audio == [.heavyImpact, .error, .success])
+        let completed = translated.compactMap { event -> GameOutcome? in
+            if case .completed(let outcome) = event { outcome } else { nil }
+        }.first
+        #expect(completed?.subtitle != "Party Cup event complete")
     }
 
     @Test func pongCupStandingsFollowSurvivalOrder() throws {
@@ -404,7 +408,7 @@ struct PartyBoxTests {
         let session = PongGameSession(
             context: .init(
                 participants: players.map { .init(player: $0, controllerID: ControllerID()) },
-                inputs: InputStore(), seed: 42, modifierID: nil
+                inputs: InputStore(), seed: 42, modifierID: nil, isCupEvent: true
             ),
             onEvents: { _ in }
         )
@@ -421,6 +425,7 @@ struct PartyBoxTests {
 
         #expect(completed?.standings.map(\.playerID) == [bottom, left, top])
         #expect(completed?.standings.map(\.rank) == [1, 2, 3])
+        #expect(completed?.subtitle == "Party Cup event complete")
     }
 
     @Test func stoppedCoordinatorCannotBeRevivedBySuspendedMatchCompletion() async throws {
@@ -941,6 +946,37 @@ struct PartyBoxTests {
         #expect(cueOrder == participants.map(\.player.id))
     }
 
+    @Test func gravityInputIsNormalizedWithoutChangingDirection() throws {
+        let playerID = PlayerID(0)
+        let inputs = InputStore()
+        let session = ArcadeChallengeSession(
+            mode: .gravityGrab,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: inputs,
+                seed: 42,
+                modifierID: nil
+            ),
+            onEvents: { _ in }
+        )
+        #expect(inputs.update(.init(
+            token: 1,
+            sequence: 1,
+            clientTimeMs: 1,
+            axisX: 0.3,
+            axisY: 0.4
+        ), for: playerID))
+
+        session.updateForTesting(0)
+
+        let state = try #require(session.snapshotForTesting()[playerID])
+        #expect(abs(state.x - 0.6) < 0.000_001)
+        #expect(abs(state.y - 0.8) < 0.000_001)
+    }
+
     @Test func soloArcadeEliminationCompletesImmediately() throws {
         let playerID = PlayerID(0)
         var events: [GameEvent] = []
@@ -963,6 +999,36 @@ struct PartyBoxTests {
 
         #expect(try #require(session.snapshotForTesting()[playerID]).alive == false)
         #expect(events.contains { if case .completed = $0 { true } else { false } })
+    }
+
+    @Test func soloArcadeCupEventUsesCupCopyWithoutChangingPracticeOutcome() throws {
+        let playerID = PlayerID(0)
+        var events: [GameEvent] = []
+        let session = ArcadeChallengeSession(
+            mode: .lastLight,
+            context: .init(
+                participants: [.init(
+                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
+                    controllerID: ControllerID()
+                )],
+                inputs: InputStore(),
+                seed: 42,
+                modifierID: nil,
+                isCupEvent: true
+            ),
+            onEvents: { events.append(contentsOf: $0) }
+        )
+        session.setLivesForTesting(1, playerID: playerID)
+
+        session.loseLifeForTesting(playerID)
+
+        let completed = try #require(events.compactMap { event -> GameOutcome? in
+            if case .completed(let outcome) = event { outcome } else { nil }
+        }.first)
+        #expect(completed.title == "PRACTICE COMPLETE")
+        #expect(completed.subtitle == "Party Cup event complete")
+        #expect(completed.winner == nil)
+        #expect(completed.playerOutcomes == [.init(playerID: playerID, outcome: .practice)])
     }
 
     @Test(arguments: [1, 2])
@@ -1024,6 +1090,41 @@ struct PartyBoxTests {
         second.updateForTesting(0)
 
         #expect(first.snapshotForTesting() == second.snapshotForTesting())
+    }
+
+    @Test func simultaneousLastLightEliminationsFinishAfterAllCollisionEvents() {
+        let participants = (0..<2).map { index in
+            let playerID = PlayerID(UInt8(index))
+            return GameParticipant(
+                player: .init(
+                    id: playerID,
+                    displayName: "P\(index + 1)",
+                    colorHex: PlayerPalette.color(for: playerID)
+                ),
+                controllerID: ControllerID()
+            )
+        }
+        var events: [GameEvent] = []
+        let session = ArcadeChallengeSession(
+            mode: .lastLight,
+            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+            onEvents: { events.append(contentsOf: $0) }
+        )
+        for participant in participants {
+            session.setLivesForTesting(1, playerID: participant.player.id)
+        }
+        session.prepareLastLightCollisionForTesting()
+
+        session.updateForTesting(0)
+
+        #expect(events.compactMap { event -> PlayerID? in
+            if case .eliminated(let playerID) = event { playerID } else { nil }
+        } == participants.map(\.player.id))
+        #expect(events.count(where: { if case .completed = $0 { true } else { false } }) == 1)
+        #expect(events.last.map { if case .completed = $0 { true } else { false } } == true)
+        let completedEventCount = events.count
+        session.updateForTesting(1)
+        #expect(events.count == completedEventCount)
     }
 
     @Test func seededSnakeSimulationIgnoresDictionaryStorageOrder() {
@@ -1116,7 +1217,7 @@ struct PartyBoxTests {
             for participant in participants {
                 let screen = session.controllerScreen(for: participant.player.id)
                 #expect(screen.isValid, "\(game.descriptor.title) must publish a valid controller screen")
-                #expect(screen.requestedInputs == .orientation)
+                #expect(screen.requestedInputs == (game.descriptor.supportsMotion ? .orientation : []))
                 #expect(session.botInput(
                     for: participant.player.id,
                     difficulty: .normal,
@@ -1180,6 +1281,23 @@ struct PartyBoxTests {
             await captain.stop()
             await coordinator.stop()
         }
+    }
+
+    @Test func leavingACompletedCupRestoresThePartyCupMenuSelection() async {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "cup-complete", "--disable-effects",
+        ]))
+        await coordinator.start()
+        guard case .cupComplete = coordinator.phase else {
+            Issue.record("Expected the completed Party Cup fixture")
+            return
+        }
+
+        coordinator.perform(.back)
+
+        #expect(coordinator.phase == .gameMenu)
+        #expect(coordinator.menuItems[coordinator.menuSelection] == "PARTY CUP")
+        await coordinator.stop()
     }
 
     @Test func pongModifiersApplyTheSpecifiedRuleChanges() {

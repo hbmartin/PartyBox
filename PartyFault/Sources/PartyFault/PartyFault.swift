@@ -367,7 +367,7 @@ public actor GenericFaultProxy {
         case datagram(Data)
         case idle(UUID)
         case sourceFinished
-        case deliveryFinished(UUID)
+        case deliveryFinished(UUID, UDPPayloadDeliverySummary)
     }
 
     private enum UDPDeliveryAttemptResult: Sendable {
@@ -380,6 +380,13 @@ public actor GenericFaultProxy {
         var forwardedCount = 0
         var delayedCount = 0
         var failureReason: String?
+    }
+
+    private struct UDPSerialDeliveryRequest: Sendable {
+        let id: UUID
+        let payload: Data
+        let delays: [Duration]
+        let scheduledAt: ContinuousClock.Instant
     }
 
     private static let udpReorderIdleFlushDelay = Duration.milliseconds(50)
@@ -582,7 +589,7 @@ public actor GenericFaultProxy {
     ) async {
         var reorderBuffer: [Data] = []
         var deliveryTasks: [UUID: Task<UDPPayloadDeliverySummary, Never>] = [:]
-        var serializedDeliveryTail: Task<UDPPayloadDeliverySummary, Never>?
+        var serialDeliveryIDs: Set<UUID> = []
         var idleTask: Task<Void, Never>?
         var idleGeneration: UUID?
         var sourceFinished = false
@@ -591,6 +598,22 @@ public actor GenericFaultProxy {
             of: UDPForwardEvent.self,
             bufferingPolicy: .unbounded
         )
+        let (serialDeliveries, serialDeliveryContinuation) = AsyncStream.makeStream(
+            of: UDPSerialDeliveryRequest.self,
+            bufferingPolicy: .bufferingOldest(Self.maximumScheduledUDPPayloads)
+        )
+        let serialDeliveryTask = Task {
+            for await request in serialDeliveries {
+                guard !Task.isCancelled else { break }
+                let summary = await Self.deliverUDPPayload(
+                    request.payload,
+                    delays: request.delays,
+                    scheduledAt: request.scheduledAt,
+                    to: destination
+                )
+                continuation.yield(.deliveryFinished(request.id, summary))
+            }
+        }
         let receiveTask = Task {
             do {
                 while !Task.isCancelled {
@@ -646,7 +669,8 @@ public actor GenericFaultProxy {
                             to: destination,
                             direction: direction,
                             deliveryTasks: &deliveryTasks,
-                            serializedDeliveryTail: &serializedDeliveryTail,
+                            serialDeliveryIDs: &serialDeliveryIDs,
+                            serialDeliveryContinuation: serialDeliveryContinuation,
                             continuation: continuation
                         )
                     } else {
@@ -675,7 +699,8 @@ public actor GenericFaultProxy {
                         to: destination,
                         direction: direction,
                         deliveryTasks: &deliveryTasks,
-                        serializedDeliveryTail: &serializedDeliveryTail,
+                        serialDeliveryIDs: &serialDeliveryIDs,
+                        serialDeliveryContinuation: serialDeliveryContinuation,
                         continuation: continuation
                     )
                 case .sourceFinished:
@@ -693,17 +718,22 @@ public actor GenericFaultProxy {
                             to: destination,
                             direction: direction,
                             deliveryTasks: &deliveryTasks,
-                            serializedDeliveryTail: &serializedDeliveryTail,
+                            serialDeliveryIDs: &serialDeliveryIDs,
+                            serialDeliveryContinuation: serialDeliveryContinuation,
                             continuation: continuation
                         )
                     }
-                case .deliveryFinished(let id):
-                    guard let task = deliveryTasks.removeValue(forKey: id) else { continue }
-                    if let failure = applyUDPDeliverySummary(await task.value, direction: direction) {
+                case let .deliveryFinished(id, summary):
+                    let wasSerial = serialDeliveryIDs.remove(id) != nil
+                    let task = deliveryTasks.removeValue(forKey: id)
+                    guard wasSerial || task != nil else { continue }
+                    if let task { _ = await task.value }
+                    if let failure = applyUDPDeliverySummary(summary, direction: direction) {
                         throw PartyFaultError.forwardingFailed(failure)
                     }
                 }
-                if sourceFinished, reorderBuffer.isEmpty, deliveryTasks.isEmpty {
+                if sourceFinished, reorderBuffer.isEmpty,
+                   serialDeliveryIDs.isEmpty, deliveryTasks.isEmpty {
                     break eventLoop
                 }
             }
@@ -713,14 +743,25 @@ public actor GenericFaultProxy {
         }
         receiveTask.cancel()
         idleTask?.cancel()
-        continuation.finish()
-        await receiveTask.value
+        serialDeliveryContinuation.finish()
+        serialDeliveryTask.cancel()
         let unfinishedDeliveries = Array(deliveryTasks.values)
         unfinishedDeliveries.forEach { $0.cancel() }
-        for task in unfinishedDeliveries {
-            _ = applyUDPDeliverySummary(await task.value, direction: direction)
+        await receiveTask.value
+        await serialDeliveryTask.value
+        for task in unfinishedDeliveries { _ = await task.value }
+        continuation.finish()
+        for await event in events {
+            guard case let .deliveryFinished(id, summary) = event else { continue }
+            let wasSerial = serialDeliveryIDs.remove(id) != nil
+            let wasReordered = deliveryTasks.removeValue(forKey: id) != nil
+            guard wasSerial || wasReordered else { continue }
+            _ = applyUDPDeliverySummary(summary, direction: direction)
         }
-        let droppedOnExit = reorderBuffer.count + pendingDatagrams.takeAll()
+        let droppedOnExit = reorderBuffer.count
+            + pendingDatagrams.takeAll()
+            + serialDeliveryIDs.count
+            + deliveryTasks.count
         if droppedOnExit > 0 {
             noteUDPDropped(droppedOnExit, direction: direction)
         }
@@ -732,7 +773,8 @@ public actor GenericFaultProxy {
         to destination: NetworkConnection<UDP>,
         direction: TrafficDirection,
         deliveryTasks: inout [UUID: Task<UDPPayloadDeliverySummary, Never>],
-        serializedDeliveryTail: inout Task<UDPPayloadDeliverySummary, Never>?,
+        serialDeliveryIDs: inout Set<UUID>,
+        serialDeliveryContinuation: AsyncStream<UDPSerialDeliveryRequest>.Continuation,
         continuation: AsyncStream<UDPForwardEvent>.Continuation
     ) async {
         let payloads = reordered ? Array(buffered.reversed()) : buffered
@@ -749,7 +791,8 @@ public actor GenericFaultProxy {
                 noteUDPDropped(direction: direction)
                 continue
             }
-            guard deliveryTasks.count < Self.maximumScheduledUDPPayloads else {
+            guard serialDeliveryIDs.count + deliveryTasks.count
+                    < Self.maximumScheduledUDPPayloads else {
                 noteUDPDropped(direction: direction)
                 continue
             }
@@ -758,34 +801,54 @@ public actor GenericFaultProxy {
             }
             let id = UUID()
             let delays = plan.delays
-            let predecessor = reordered ? nil : serializedDeliveryTail
-            let deliveryTask = Task {
-                let summary = await Self.deliverUDPPayload(
-                    payload,
+            let scheduledAt = ContinuousClock().now
+            if reordered {
+                let deliveryTask = Task {
+                    let summary = await Self.deliverUDPPayload(
+                        payload,
+                        delays: delays,
+                        scheduledAt: scheduledAt,
+                        to: destination
+                    )
+                    continuation.yield(.deliveryFinished(id, summary))
+                    return summary
+                }
+                deliveryTasks[id] = deliveryTask
+            } else {
+                serialDeliveryIDs.insert(id)
+                let request = UDPSerialDeliveryRequest(
+                    id: id,
+                    payload: payload,
                     delays: delays,
-                    to: destination,
-                    after: predecessor
+                    scheduledAt: scheduledAt
                 )
-                continuation.yield(.deliveryFinished(id))
-                return summary
+                switch serialDeliveryContinuation.yield(request) {
+                case .enqueued:
+                    break
+                case .dropped, .terminated:
+                    serialDeliveryIDs.remove(id)
+                    noteUDPDropped(direction: direction)
+                @unknown default:
+                    serialDeliveryIDs.remove(id)
+                    noteUDPDropped(direction: direction)
+                }
             }
-            deliveryTasks[id] = deliveryTask
-            if !reordered { serializedDeliveryTail = deliveryTask }
         }
     }
 
     private nonisolated static func deliverUDPPayload(
         _ payload: Data,
         delays: [Duration],
-        to destination: NetworkConnection<UDP>,
-        after predecessor: Task<UDPPayloadDeliverySummary, Never>? = nil
+        scheduledAt: ContinuousClock.Instant,
+        to destination: NetworkConnection<UDP>
     ) async -> UDPPayloadDeliverySummary {
         await withTaskGroup(of: UDPDeliveryAttemptResult.self) { group in
             for delay in delays {
                 group.addTask {
                     do {
-                        if delay > .zero { try await Task.sleep(for: delay) }
-                        if let predecessor { _ = await predecessor.value }
+                        let deadline = scheduledAt.advanced(by: delay)
+                        let remaining = ContinuousClock().now.duration(to: deadline)
+                        if remaining > .zero { try await Task.sleep(for: remaining) }
                         try Task.checkCancellation()
                         try await destination.send(payload)
                         return .forwarded(delayed: delay > .zero)

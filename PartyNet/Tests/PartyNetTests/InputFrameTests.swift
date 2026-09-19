@@ -107,14 +107,14 @@ struct InputFrameTests {
     @Test func verticalTiltAxisIsCenteredSymmetricAndBounded() {
         #expect(OrientationQuaternion.identity.verticalTiltAxis() == 0)
         let halfAngle = Float.pi / 12
-        let forward = OrientationQuaternion(x: sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
-        let backward = OrientationQuaternion(x: -sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
+        let forward = OrientationQuaternion(x: -sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
+        let backward = OrientationQuaternion(x: sin(halfAngle), y: 0, z: 0, w: cos(halfAngle)).verticalTiltAxis()
         #expect(abs(forward - 0.75) < 0.001)
         #expect(abs(backward + 0.75) < 0.001)
-        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1).verticalTiltAxis() == 1)
-        #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1).verticalTiltAxis() == -1)
+        #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1).verticalTiltAxis() == 1)
+        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1).verticalTiltAxis() == -1)
 
-        let insideDeadZone = OrientationQuaternion(x: sin(0.01), y: 0, z: 0, w: cos(0.01))
+        let insideDeadZone = OrientationQuaternion(x: -sin(0.01), y: 0, z: 0, w: cos(0.01))
         #expect(insideDeadZone.verticalTiltAxis() == 0)
         #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: 0) == 0)
         #expect(OrientationQuaternion.identity.verticalTiltAxis(sensitivity: .infinity) == 0)
@@ -131,7 +131,7 @@ struct InputFrameTests {
             w: cos(halfAngle)
         )
         let verticalNeutral = OrientationQuaternion(
-            x: sin(halfAngle),
+            x: -sin(halfAngle),
             y: 0,
             z: 0,
             w: cos(halfAngle)
@@ -145,9 +145,9 @@ struct InputFrameTests {
             .horizontalTiltAxis(neutral: horizontalProjection) > 0.999)
         #expect(OrientationQuaternion(x: 0, y: -1, z: 0, w: 1)
             .horizontalTiltAxis(neutral: horizontalProjection) == -1)
-        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1)
-            .verticalTiltAxis(neutral: verticalProjection) > 0.999)
         #expect(OrientationQuaternion(x: -1, y: 0, z: 0, w: 1)
+            .verticalTiltAxis(neutral: verticalProjection) > 0.999)
+        #expect(OrientationQuaternion(x: 1, y: 0, z: 0, w: 1)
             .verticalTiltAxis(neutral: verticalProjection) == -1)
     }
 
@@ -158,7 +158,7 @@ struct InputFrameTests {
 
         func verticalOrientation(projection: Float) -> OrientationQuaternion {
             let halfAngle = asin(projection) / 2
-            return OrientationQuaternion(x: sin(halfAngle), y: 0, z: 0, w: cos(halfAngle))
+            return OrientationQuaternion(x: -sin(halfAngle), y: 0, z: 0, w: cos(halfAngle))
         }
 
         #expect(verticalOrientation(projection: insideDeadZone).verticalTiltAxis(neutral: neutral) == 0)
@@ -178,7 +178,7 @@ struct InputFrameTests {
         #expect(axes.vertical == orientation.verticalTiltAxis(neutral: verticalNeutral))
 
         let verticalOnly = OrientationQuaternion(
-            x: sin(Float.pi / 12), y: 0, z: 0, w: cos(Float.pi / 12)
+            x: -sin(Float.pi / 12), y: 0, z: 0, w: cos(Float.pi / 12)
         ).tiltAxes(horizontalNeutral: .nan)
         #expect(verticalOnly.horizontal == 0)
         #expect(verticalOnly.vertical > 0)

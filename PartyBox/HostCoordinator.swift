@@ -217,8 +217,11 @@ final class HostCoordinator {
 #if DEBUG
         if let checkpoint = startCheckpointForTesting { await checkpoint() }
 #endif
-        let storedHistory = await historyStore.all().sorted { $0.endedAt > $1.endedAt }
-        let storedCups = await cupHistoryStore.all().sorted { $0.endedAt > $1.endedAt }
+        async let storedHistoryLoad = historyStore.all()
+        async let storedCupsLoad = cupHistoryStore.all()
+        let (loadedHistory, loadedCups) = await (storedHistoryLoad, storedCupsLoad)
+        let storedHistory = loadedHistory.sorted { $0.endedAt > $1.endedAt }
+        let storedCups = loadedCups.sorted { $0.endedAt > $1.endedAt }
         guard isStarted, lifecycleGeneration == generation else { return }
         historyRecords = storedHistory
         cupRecords = storedCups
@@ -500,6 +503,7 @@ final class HostCoordinator {
         case .cupComplete:
             if action == .select || action == .back {
                 resetCup()
+                menuSelection = partyCupMenuIndex
                 transition(to: .gameMenu)
             }
         }
@@ -1785,6 +1789,7 @@ final class HostCoordinator {
                 metrics: []
             ))
         case "cup-complete":
+            menuSelection = max(0, games.count - 1)
             let standings = fixtureParticipants.enumerated().map { index, participant in
                 CupStandingRecord(
                     controllerID: participant.controllerID,
