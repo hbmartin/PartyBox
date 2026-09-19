@@ -116,7 +116,7 @@ public struct OrientationQuaternion: Codable, Equatable, Sendable {
         let gravityY = 2 * (
             (normalized.y * normalized.z) + (normalized.w * normalized.x)
         )
-        return (-gravityX, gravityY)
+        return (-gravityX, -gravityY)
     }
 }
 

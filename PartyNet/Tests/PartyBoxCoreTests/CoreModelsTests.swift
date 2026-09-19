@@ -182,7 +182,7 @@ struct CoreModelsTests {
         #expect(HistoryAggregation.cups([malformed]) == .init(played: 1, won: 0, podiums: 0))
     }
 
-    @Test func diagnosticsExportReplacesItsStableRoleFile() throws {
+    @Test func diagnosticsExportsAreImmutableSnapshots() throws {
         struct Report: Codable, Equatable {
             let value: String
         }
@@ -198,10 +198,13 @@ struct CoreModelsTests {
             Report(value: "second"), role: .host, directory: directory
         )
 
-        #expect(firstURL == secondURL)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [
-            "PartyBox-host-diagnostics.json",
-        ])
+        #expect(firstURL != secondURL)
+        let filenames = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        #expect(filenames.count == 2)
+        #expect(filenames.allSatisfy {
+            $0.hasPrefix("PartyBox-host-diagnostics-") && $0.hasSuffix(".json")
+        })
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: firstURL)) == .init(value: "first"))
         #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: secondURL)) == .init(value: "second"))
     }
 
