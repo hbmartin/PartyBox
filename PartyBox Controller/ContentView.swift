@@ -596,7 +596,7 @@ private struct AxisSurface: View {
                         }
                     }
                         .position(
-                            x: (CGFloat(coordinator.displayedInputAxisX) + 1) * 0.5 * max(width - knobDiameter, 0) + knobRadius,
+                            x: (CGFloat(coordinator.client.inputAxisX) + 1) * 0.5 * max(width - knobDiameter, 0) + knobRadius,
                             y: component.binding == .twoDimensional
                                 ? (1 - CGFloat(coordinator.client.inputAxisY)) * 0.5 * max(height - knobDiameter, 0) + knobRadius
                                 : height / 2
@@ -616,7 +616,7 @@ private struct AxisSurface: View {
                     coordinator.client.setInput(axisX: x, axisY: y)
                 })
                 .accessibilityIdentifier(component.id)
-                .accessibilityValue(String(format: "%.3f, %.3f", coordinator.displayedInputAxisX, coordinator.client.inputAxisY))
+                .accessibilityValue(String(format: "%.3f, %.3f", coordinator.client.inputAxisX, coordinator.client.inputAxisY))
             }
             .frame(height: component.binding == .twoDimensional ? 250 : 170)
             Text(component.instruction).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.48))
@@ -701,6 +701,7 @@ private struct PersonalHistoryView: View {
                     HStack(spacing: 16) {
                         statistic(title: "CUPS", value: coordinator.cupStatistics.played)
                         statistic(title: "TROPHIES", value: coordinator.cupStatistics.won)
+                        statistic(title: "PODIUMS", value: coordinator.cupStatistics.podiums)
                     }
                     Text("Party totals require two humans. Solo totals track one-human bot matches.")
                         .font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -809,7 +810,11 @@ private struct ControllerSettingsView: View {
                 Section("CONTROLS") {
                     Toggle("Motion controls", isOn: $coordinator.motionControlEnabled)
                     Button("CALIBRATE CURRENT POSITION") { coordinator.calibrateMotion() }
-                        .disabled(!coordinator.motionControlEnabled)
+                        .disabled(!coordinator.motionControlEnabled || !coordinator.canCalibrateMotion)
+                    if coordinator.motionControlEnabled && !coordinator.canCalibrateMotion {
+                        Text("Hold your phone steady while motion initializes.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("Touch is the default. Turn on motion to steer by tilting this phone.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -824,6 +829,8 @@ private struct ControllerSettingsView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("DONE", action: dismiss) } }
         }
         .preferredColorScheme(.dark)
+        .onAppear { coordinator.motionSettingsPresentationChanged(isPresented: true) }
+        .onDisappear { coordinator.motionSettingsPresentationChanged(isPresented: false) }
     }
 }
 

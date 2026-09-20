@@ -319,7 +319,7 @@ final class PongScene: SKScene {
     }
 }
 
-private extension SKColor {
+extension SKColor {
     static func partyHex(_ value: String) -> SKColor {
         guard let rgb = ArcadePalette.rgb(value) else { return .white }
         return SKColor(

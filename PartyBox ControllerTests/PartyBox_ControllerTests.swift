@@ -24,6 +24,30 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    private final class TestMotionSampler: MotionSampling {
+        var isAvailable = true
+        private(set) var isActive = false
+        private(set) var startCount = 0
+        private(set) var stopCount = 0
+        private var handler: (@MainActor (MotionSample) -> Void)?
+
+        func start(_ handler: @escaping @MainActor (MotionSample) -> Void) {
+            startCount += 1
+            isActive = true
+            self.handler = handler
+        }
+
+        func stop() {
+            stopCount += 1
+            isActive = false
+            handler = nil
+        }
+
+        func emit(_ sample: MotionSample) {
+            handler?(sample)
+        }
+    }
+
     @Test func controllerLaunchArgumentsParseStableIdentityAndHost() throws {
         let configuration = ControllerLaunchConfiguration(arguments: [
             "PartyBox Controller", "--ui-testing", "--scenario", "spectator",
@@ -159,6 +183,133 @@ struct PartyBox_ControllerTests {
             #expect(defaults.double(forKey: "partybox.motionNeutralProjectionY") == 0)
             #expect(defaults.object(forKey: "partybox.motionNeutralAxisX") == nil)
             #expect(defaults.object(forKey: "partybox.motionNeutralAxisY") == nil)
+        }
+    }
+
+    @Test func verticalCalibrationProjectionMigratesExactlyOnce() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(0.35, forKey: "partybox.motionNeutralProjectionY")
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--ui-testing", "--disable-effects",
+            ])
+
+            let first = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            #expect(abs(first.motionNeutralProjectionY + 0.35) < 0.000_001)
+            #expect(defaults.integer(forKey: "partybox.motionNeutralProjectionVersion") == 2)
+
+            let relaunched = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            #expect(abs(relaunched.motionNeutralProjectionY + 0.35) < 0.000_001)
+        }
+    }
+
+    @Test func settingsSamplesMotionBeforeCalibrationWithoutPublishingGameplayInput() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.client.setInput(axisX: 0.4, axisY: -0.2)
+
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            #expect(sampler.isActive)
+            #expect(!coordinator.canCalibrateMotion)
+
+            let halfAngle = Float.pi / 12
+            let orientation = OrientationQuaternion(
+                x: -sin(halfAngle),
+                y: sin(halfAngle),
+                z: 0,
+                w: cos(halfAngle)
+            )
+            sampler.emit(.orientation(orientation))
+
+            #expect(coordinator.canCalibrateMotion)
+            #expect(coordinator.client.inputAxisX == 0.4)
+            #expect(coordinator.client.inputAxisY == -0.2)
+            #expect(coordinator.client.inputOrientation == .identity)
+
+            coordinator.calibrateMotion()
+            #expect(abs(coordinator.motionNeutralProjectionX - orientation.horizontalTiltProjection()) < 0.000_001)
+            #expect(abs(coordinator.motionNeutralProjectionY - orientation.verticalTiltProjection()) < 0.000_001)
+            #expect(coordinator.client.inputAxisX == 0)
+            #expect(coordinator.client.inputAxisY == 0)
+
+            coordinator.motionSettingsPresentationChanged(isPresented: false)
+            #expect(!sampler.isActive)
+            #expect(!coordinator.canCalibrateMotion)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func calibrationWithoutAMotionSampleLeavesTheStoredNeutralUnchanged() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(2, forKey: "partybox.motionNeutralProjectionVersion")
+            defaults.set(0.2, forKey: "partybox.motionNeutralProjectionX")
+            defaults.set(-0.3, forKey: "partybox.motionNeutralProjectionY")
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--disable-effects"]),
+                motionSampler: TestMotionSampler()
+            )
+
+            coordinator.calibrateMotion()
+
+            #expect(abs(coordinator.motionNeutralProjectionX - 0.2) < 0.000_001)
+            #expect(abs(coordinator.motionNeutralProjectionY + 0.3) < 0.000_001)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionX") == 0.2)
+            #expect(defaults.double(forKey: "partybox.motionNeutralProjectionY") == -0.3)
+        }
+    }
+
+    @Test func closingSettingsKeepsMotionRunningForAMotionGame() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+
+            await coordinator.start()
+            #expect(sampler.isActive)
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            sampler.emit(.orientation(.identity))
+            #expect(coordinator.canCalibrateMotion)
+
+            coordinator.motionSettingsPresentationChanged(isPresented: false)
+
+            #expect(sampler.isActive)
+            #expect(!coordinator.canCalibrateMotion)
+            await coordinator.stop()
         }
     }
 

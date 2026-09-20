@@ -11,11 +11,17 @@ struct SignalSnapGame: PartyGame {
         summary: "1–8 players  •  Match the TV symbol first",
         minimumPlayers: 1,
         maximumPlayers: 8,
-        estimatedDurationSeconds: 75
+        estimatedDurationSeconds: 75,
+        supportsMotion: false
     )
 
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
-        ArcadeChallengeSession(mode: .signalSnap, context: context, onEvents: onEvents)
+        ArcadeChallengeSession(
+            mode: .signalSnap,
+            context: context,
+            supportsMotion: descriptor.supportsMotion,
+            onEvents: onEvents
+        )
     }
 }
 
@@ -27,11 +33,17 @@ struct GravityGrabGame: PartyGame {
         summary: "1–8 players  •  Swing your magnet around the ring",
         minimumPlayers: 1,
         maximumPlayers: 8,
-        estimatedDurationSeconds: 90
+        estimatedDurationSeconds: 90,
+        supportsMotion: true
     )
 
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
-        ArcadeChallengeSession(mode: .gravityGrab, context: context, onEvents: onEvents)
+        ArcadeChallengeSession(
+            mode: .gravityGrab,
+            context: context,
+            supportsMotion: descriptor.supportsMotion,
+            onEvents: onEvents
+        )
     }
 }
 
@@ -43,11 +55,17 @@ struct SnakePitGame: PartyGame {
         summary: "1–8 players  •  Three quick lives",
         minimumPlayers: 1,
         maximumPlayers: 8,
-        estimatedDurationSeconds: 90
+        estimatedDurationSeconds: 90,
+        supportsMotion: false
     )
 
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
-        ArcadeChallengeSession(mode: .snakePit, context: context, onEvents: onEvents)
+        ArcadeChallengeSession(
+            mode: .snakePit,
+            context: context,
+            supportsMotion: descriptor.supportsMotion,
+            onEvents: onEvents
+        )
     }
 }
 
@@ -59,11 +77,17 @@ struct LastLightGame: PartyGame {
         summary: "1–8 players  •  Dodge the TV obstacles",
         minimumPlayers: 1,
         maximumPlayers: 8,
-        estimatedDurationSeconds: 85
+        estimatedDurationSeconds: 85,
+        supportsMotion: true
     )
 
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
-        ArcadeChallengeSession(mode: .lastLight, context: context, onEvents: onEvents)
+        ArcadeChallengeSession(
+            mode: .lastLight,
+            context: context,
+            supportsMotion: descriptor.supportsMotion,
+            onEvents: onEvents
+        )
     }
 }
 
@@ -115,6 +139,7 @@ struct ArcadeRandomNumberGenerator {
 final class ArcadeChallengeSession: PartyGameSession {
     private let mode: ArcadeChallengeMode
     private let context: GameSessionContext
+    private let supportsMotion: Bool
     private let onEvents: @MainActor ([GameEvent]) -> Void
     private let challengeScene: ArcadeChallengeScene
 
@@ -123,10 +148,12 @@ final class ArcadeChallengeSession: PartyGameSession {
     init(
         mode: ArcadeChallengeMode,
         context: GameSessionContext,
+        supportsMotion: Bool = true,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) {
         self.mode = mode
         self.context = context
+        self.supportsMotion = supportsMotion
         self.onEvents = onEvents
         challengeScene = ArcadeChallengeScene(mode: mode, context: context, onEvents: onEvents)
     }
@@ -166,7 +193,7 @@ final class ArcadeChallengeSession: PartyGameSession {
         return ControllerScreen(
             accessibilityID: "controller.layout.\(mode.gameID)",
             accentColorHex: color,
-            requestedInputs: .orientation,
+            requestedInputs: supportsMotion ? .orientation : [],
             components: [.text(.init(id: "arcade.player", text: identity, style: .headline, tint: .accent))] + controls
         )
     }
@@ -463,8 +490,9 @@ private final class ArcadeChallengeScene: SKScene {
                 if direction == nil { states[playerID]?.lastInput = nil }
             case .gravityGrab:
                 if abs(x) + abs(y) > 0.12 {
-                    states[playerID]?.x = cos(atan2(y, x))
-                    states[playerID]?.y = sin(atan2(y, x))
+                    let magnitude = hypot(x, y)
+                    states[playerID]?.x = x / magnitude
+                    states[playerID]?.y = y / magnitude
                 }
             case .snakePit:
                 if let direction = dominantDirection(x: x, y: y) {
@@ -636,6 +664,7 @@ private final class ArcadeChallengeScene: SKScene {
             addChild(node)
             hazards.append(Hazard(x: (Double(nextRandom() % 190) / 100) - 0.95, y: 1.1, node: node))
         }
+        var collisions: Set<PlayerID> = []
         for index in hazards.indices.reversed() {
             hazards[index].y -= delta * 0.72
             hazards[index].node.position = arenaPoint(x: hazards[index].x, y: hazards[index].y)
@@ -644,8 +673,7 @@ private final class ArcadeChallengeScene: SKScene {
                       state.alive,
                       elapsed - state.lastHitAt > 0.8 else { continue }
                 if abs(state.x - hazards[index].x) < 0.13 && abs(state.y - hazards[index].y) < 0.13 {
-                    loseLife(playerID)
-                    states[playerID]?.lastHitAt = elapsed
+                    collisions.insert(playerID)
                 }
             }
             if hazards[index].y < -1.15 {
@@ -653,6 +681,12 @@ private final class ArcadeChallengeScene: SKScene {
                 hazards.remove(at: index)
             }
         }
+        for playerID in collisions.sorted(by: { $0.rawValue < $1.rawValue }) {
+            states[playerID]?.lastHitAt = elapsed
+            loseLife(playerID, checkForCompletion: false)
+        }
+        completeIfEliminationFinished()
+        guard !finished else { return }
         tickAccumulator += delta
         if tickAccumulator >= 0.25 {
             tickAccumulator = 0
@@ -730,7 +764,9 @@ private final class ArcadeChallengeScene: SKScene {
         if let winner { events.append(.deviceCue(winner.id, .init(colorHex: "#39FF88", haptic: .success))) }
         events.append(.completed(.init(
             title: winnerTitle,
-            subtitle: "\(mode.rawValue.capitalized) complete",
+            subtitle: context.isCupEvent
+                ? "Party Cup event complete"
+                : "\(mode.rawValue.capitalized) complete",
             winner: solo ? nil : winner?.id,
             playerOutcomes: playerOutcomes,
             metrics: [.init(id: "top-score", label: "Top score", value: "\(standings.first?.score ?? 0)")],
@@ -866,13 +902,6 @@ private final class ArcadeChallengeScene: SKScene {
 #endif
 
     private static func color(_ hex: String) -> SKColor {
-        let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        guard value.count == 6, let raw = UInt64(value, radix: 16) else { return .white }
-        return SKColor(
-            red: CGFloat((raw >> 16) & 0xFF) / 255,
-            green: CGFloat((raw >> 8) & 0xFF) / 255,
-            blue: CGFloat(raw & 0xFF) / 255,
-            alpha: 1
-        )
+        SKColor.partyHex(hex)
     }
 }

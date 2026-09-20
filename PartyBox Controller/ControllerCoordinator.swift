@@ -5,6 +5,52 @@ import PartyBoxCore
 import PartyNet
 import UIKit
 
+enum MotionSample: Sendable {
+    case orientation(OrientationQuaternion)
+    case missing
+    case failure
+}
+
+@MainActor
+protocol MotionSampling: AnyObject {
+    var isAvailable: Bool { get }
+    var isActive: Bool { get }
+    func start(_ handler: @escaping @MainActor (MotionSample) -> Void)
+    func stop()
+}
+
+@MainActor
+private final class CoreMotionSampler: MotionSampling {
+    private let manager = CMMotionManager()
+
+    var isAvailable: Bool { manager.isDeviceMotionAvailable }
+    var isActive: Bool { manager.isDeviceMotionActive }
+
+    func start(_ handler: @escaping @MainActor (MotionSample) -> Void) {
+        manager.deviceMotionUpdateInterval = 1.0 / 60.0
+        manager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { motion, error in
+            MainActor.assumeIsolated {
+                if error != nil {
+                    handler(.failure)
+                } else if let quaternion = motion?.attitude.quaternion {
+                    handler(.orientation(.init(
+                        x: Float(quaternion.x),
+                        y: Float(quaternion.y),
+                        z: Float(quaternion.z),
+                        w: Float(quaternion.w)
+                    )))
+                } else {
+                    handler(.missing)
+                }
+            }
+        }
+    }
+
+    func stop() {
+        if manager.isDeviceMotionActive { manager.stopDeviceMotionUpdates() }
+    }
+}
+
 @MainActor
 @Observable
 final class ControllerCoordinator {
@@ -64,6 +110,8 @@ final class ControllerCoordinator {
         static let projectionY = "partybox.motionNeutralProjectionY"
         static let legacyAxisX = "partybox.motionNeutralAxisX"
         static let legacyAxisY = "partybox.motionNeutralAxisY"
+        static let projectionVersion = "partybox.motionNeutralProjectionVersion"
+        static let currentProjectionVersion = 2
     }
 
     let client: PartyClient
@@ -122,16 +170,14 @@ final class ControllerCoordinator {
         guard let welcomedPlayer = client.player else { return nil }
         return roster.first(where: { $0.id == welcomedPlayer.id }) ?? welcomedPlayer
     }
-    var displayedInputAxisX: Float {
-        client.inputAxisX
-    }
     private(set) var motionNeutralProjectionX: Float
     private(set) var motionNeutralProjectionY: Float
+    private(set) var canCalibrateMotion = false
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
     @ObservationIgnored private let cupHistoryStore: JSONRecordStore<PersonalCupRecord>
-    @ObservationIgnored private let motionManager = CMMotionManager()
+    @ObservationIgnored private let motionSampler: any MotionSampling
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var eventGeneration: UUID?
     @ObservationIgnored private var discoveryHelpTask: Task<Void, Never>?
@@ -141,6 +187,9 @@ final class ControllerCoordinator {
     @ObservationIgnored private var motionRetryTask: Task<Void, Never>?
     @ObservationIgnored private var motionRetryBackoff = MotionRetryBackoff()
     @ObservationIgnored private var motionSampleTolerance = MotionSampleTolerance()
+    @ObservationIgnored private var latestMotionOrientation: OrientationQuaternion?
+    @ObservationIgnored private var isMotionSettingsVisible = false
+    @ObservationIgnored private var isPublishingMotionInput = false
     @ObservationIgnored private var deviceCueTask: Task<Void, Never>?
     @ObservationIgnored private var lifecycleGeneration: UUID?
     @ObservationIgnored private var isStarted = false
@@ -152,7 +201,8 @@ final class ControllerCoordinator {
     init(
         defaults: UserDefaults? = nil,
         configuration suppliedConfiguration: ControllerLaunchConfiguration? = nil,
-        historyFileURL: URL? = nil
+        historyFileURL: URL? = nil,
+        motionSampler: (any MotionSampling)? = nil
     ) {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
@@ -160,7 +210,9 @@ final class ControllerCoordinator {
             ?? configuration.defaultsSuite.flatMap(UserDefaults.init(suiteName:))
             ?? .standard
         self.defaults = defaults
+        self.motionSampler = motionSampler ?? CoreMotionSampler()
         Self.resetLegacyMotionCalibration(in: defaults)
+        Self.migrateMotionCalibrationProjection(in: defaults)
         motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
         deviceEffectsEnabled = defaults.object(forKey: "partybox.deviceEffectsEnabled") as? Bool ?? true
         hapticsEnabled = defaults.object(forKey: "partybox.hapticsEnabled") as? Bool ?? true
@@ -331,12 +383,26 @@ final class ControllerCoordinator {
     func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
 
     func calibrateMotion() {
-        motionNeutralProjectionX = client.inputOrientation.horizontalTiltProjection()
-        motionNeutralProjectionY = client.inputOrientation.verticalTiltProjection()
+        guard canCalibrateMotion, let orientation = latestMotionOrientation else { return }
+        motionNeutralProjectionX = orientation.horizontalTiltProjection()
+        motionNeutralProjectionY = orientation.verticalTiltProjection()
         defaults.set(Double(motionNeutralProjectionX), forKey: MotionCalibrationDefaults.projectionX)
         defaults.set(Double(motionNeutralProjectionY), forKey: MotionCalibrationDefaults.projectionY)
+        defaults.set(
+            MotionCalibrationDefaults.currentProjectionVersion,
+            forKey: MotionCalibrationDefaults.projectionVersion
+        )
         client.setInput(axisX: 0, axisY: 0)
         play(.success)
+    }
+
+    func motionSettingsPresentationChanged(isPresented: Bool) {
+        isMotionSettingsVisible = isPresented
+        if !isPresented {
+            latestMotionOrientation = nil
+            canCalibrateMotion = false
+        }
+        updateMotionCapture()
     }
 
     func makeRedactedDiagnosticsFile() -> URL? {
@@ -547,26 +613,29 @@ final class ControllerCoordinator {
     }
 
     private func updateMotionCapture() {
+        let needsGameplayMotion = requestedInputs.contains(.orientation)
         let shouldRun = isStarted && isSceneActive && isConnected
-            && motionControlEnabled && requestedInputs.contains(.orientation)
-            && motionManager.isDeviceMotionAvailable
+            && motionControlEnabled && (needsGameplayMotion || isMotionSettingsVisible)
+            && motionSampler.isAvailable
         guard shouldRun else {
             stopMotionCapture()
             return
         }
-        guard !motionManager.isDeviceMotionActive else { return }
+        guard !motionSampler.isActive else { return }
         guard motionRetryTask == nil else { return }
         let generation = UUID()
         motionCaptureGeneration = generation
-        motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
-            MainActor.assumeIsolated {
-                guard let self, self.motionCaptureGeneration == generation else { return }
-                if error != nil {
+        motionSampler.start { [weak self] sample in
+            guard let self, self.motionCaptureGeneration == generation else { return }
+            switch sample {
+            case .failure:
+                self.handleMotionCaptureFailure(generation: generation)
+            case .missing:
+                if self.motionSampleTolerance.recordMissingSample() {
                     self.handleMotionCaptureFailure(generation: generation)
-                    return
                 }
-                guard let quaternion = motion?.attitude.quaternion else {
+            case .orientation(let sampledOrientation):
+                guard let orientation = sampledOrientation.normalized else {
                     if self.motionSampleTolerance.recordMissingSample() {
                         self.handleMotionCaptureFailure(generation: generation)
                     }
@@ -574,10 +643,11 @@ final class ControllerCoordinator {
                 }
                 self.motionSampleTolerance.recordSuccessfulSample()
                 self.motionRetryBackoff.recordSuccessfulSample()
-                let orientation = OrientationQuaternion(
-                    x: Float(quaternion.x), y:Float(quaternion.y),
-                    z: Float(quaternion.z), w: Float(quaternion.w)
-                )
+                if self.isMotionSettingsVisible {
+                    self.latestMotionOrientation = orientation
+                    self.canCalibrateMotion = true
+                }
+                guard self.requestedInputs.contains(.orientation) else { return }
                 let axes = orientation.tiltAxes(
                     horizontalNeutral: self.motionNeutralProjectionX,
                     verticalNeutral: self.motionNeutralProjectionY
@@ -587,6 +657,7 @@ final class ControllerCoordinator {
                     axisY: axes.vertical
                 )
                 self.client.setOrientation(orientation)
+                self.isPublishingMotionInput = true
             }
         }
     }
@@ -594,15 +665,18 @@ final class ControllerCoordinator {
     private func stopMotionCapture() {
         let wasCapturingMotion = motionCaptureGeneration != nil
             || motionRetryTask != nil
-            || motionManager.isDeviceMotionActive
+            || motionSampler.isActive
         motionCaptureGeneration = nil
         motionRetryTask?.cancel()
         motionRetryTask = nil
         motionRetryBackoff.reset()
         motionSampleTolerance.reset()
-        if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
+        if motionSampler.isActive { motionSampler.stop() }
+        latestMotionOrientation = nil
+        canCalibrateMotion = false
         client.setOrientation(.identity, available: false)
-        if wasCapturingMotion { client.setInput(axisX: 0, axisY: 0) }
+        if wasCapturingMotion, isPublishingMotionInput { client.setInput(axisX: 0, axisY: 0) }
+        isPublishingMotionInput = false
     }
 
     private static func resetLegacyMotionCalibration(in defaults: UserDefaults) {
@@ -619,13 +693,26 @@ final class ControllerCoordinator {
         defaults.removeObject(forKey: keys.legacyAxisY)
     }
 
+    private static func migrateMotionCalibrationProjection(in defaults: UserDefaults) {
+        let keys = MotionCalibrationDefaults.self
+        let storedVersion = defaults.integer(forKey: keys.projectionVersion)
+        guard storedVersion < keys.currentProjectionVersion else { return }
+        if storedVersion < 2, defaults.object(forKey: keys.projectionY) != nil {
+            defaults.set(-defaults.double(forKey: keys.projectionY), forKey: keys.projectionY)
+        }
+        defaults.set(keys.currentProjectionVersion, forKey: keys.projectionVersion)
+    }
+
     private func handleMotionCaptureFailure(generation: UUID) {
         guard motionCaptureGeneration == generation else { return }
         motionCaptureGeneration = nil
         motionSampleTolerance.reset()
-        if motionManager.isDeviceMotionActive { motionManager.stopDeviceMotionUpdates() }
+        if motionSampler.isActive { motionSampler.stop() }
+        latestMotionOrientation = nil
+        canCalibrateMotion = false
         client.setOrientation(.identity, available: false)
-        client.setInput(axisX: 0, axisY: 0)
+        if isPublishingMotionInput { client.setInput(axisX: 0, axisY: 0) }
+        isPublishingMotionInput = false
         guard motionRetryTask == nil else { return }
         let delay = motionRetryBackoff.recordFailure()
         motionRetryTask = Task { @MainActor [weak self] in
@@ -796,7 +883,6 @@ final class ControllerCoordinator {
             let screen = ControllerScreen(
                 accessibilityID: "controller.layout.signal-snap",
                 accentColorHex: currentPlayer.colorHex,
-                requestedInputs: .orientation,
                 components: [
                     .text(.init(id: "signal.rule", text: "MATCH THE SYMBOL ON THE TV", style: .caption)),
                     .directionPad(.init(id: "signal.direction", instruction: "TAP THE MATCHING ARROW")),
@@ -820,7 +906,6 @@ final class ControllerCoordinator {
             let screen = ControllerScreen(
                 accessibilityID: "controller.layout.snake-pit",
                 accentColorHex: currentPlayer.colorHex,
-                requestedInputs: .orientation,
                 components: [
                     .text(.init(id: "snake.rule", text: "TURN • SURVIVE • THREE LIVES", style: .caption)),
                     .directionPad(.init(id: "snake.direction", instruction: "CHOOSE YOUR NEXT TURN")),

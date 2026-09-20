@@ -22,7 +22,9 @@ public enum RedactedDiagnosticsExporter {
         role: DiagnosticsRole,
         directory: URL
     ) throws -> URL {
-        let url = directory.appendingPathComponent("PartyBox-\(role.rawValue)-diagnostics.json")
+        let url = directory.appendingPathComponent(
+            "PartyBox-\(role.rawValue)-diagnostics-\(UUID().uuidString).json"
+        )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
