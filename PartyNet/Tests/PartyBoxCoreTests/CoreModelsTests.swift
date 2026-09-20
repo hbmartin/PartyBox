@@ -190,22 +190,61 @@ struct CoreModelsTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let now = Date(timeIntervalSince1970: 1_700_000_000.123)
 
         let firstURL = try RedactedDiagnosticsExporter.write(
-            Report(value: "first"), role: .host, directory: directory
+            Report(value: "first"), role: .host, directory: directory, now: now
         )
         let secondURL = try RedactedDiagnosticsExporter.write(
-            Report(value: "second"), role: .host, directory: directory
+            Report(value: "second"), role: .host, directory: directory, now: now
         )
 
         #expect(firstURL != secondURL)
         let filenames = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
         #expect(filenames.count == 2)
         #expect(filenames.allSatisfy {
-            $0.hasPrefix("PartyBox-host-diagnostics-") && $0.hasSuffix(".json")
+            $0.hasPrefix("PartyBox-host-diagnostics-20231114T221320.123Z-")
+                && $0.hasSuffix(".json")
         })
         #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: firstURL)) == .init(value: "first"))
         #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: secondURL)) == .init(value: "second"))
+    }
+
+    @Test func diagnosticsRetentionIsBoundedAndRoleScoped() throws {
+        struct Report: Codable { let sequence: Int }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let unrelatedURL = directory.appendingPathComponent("keep-me.txt")
+        try Data("unrelated".utf8).write(to: unrelatedURL)
+        let prefixedUnrelatedURL = directory.appendingPathComponent(
+            "PartyBox-host-diagnostics-do-not-delete.json"
+        )
+        try Data("unrelated".utf8).write(to: prefixedUnrelatedURL)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let controllerURL = try RedactedDiagnosticsExporter.write(
+            Report(sequence: 0), role: .controller, directory: directory, now: baseDate
+        )
+
+        var hostURLs: [URL] = []
+        for index in 0..<7 {
+            hostURLs.append(try RedactedDiagnosticsExporter.write(
+                Report(sequence: index),
+                role: .host,
+                directory: directory,
+                now: baseDate.addingTimeInterval(Double(index))
+            ))
+        }
+
+        let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        let remainingHostNames = remainingNames.intersection(
+            Set(hostURLs.map(\.lastPathComponent))
+        )
+        #expect(remainingHostNames == Set(hostURLs.suffix(5).map(\.lastPathComponent)))
+        #expect(remainingNames.contains(controllerURL.lastPathComponent))
+        #expect(remainingNames.contains(unrelatedURL.lastPathComponent))
+        #expect(remainingNames.contains(prefixedUnrelatedURL.lastPathComponent))
     }
 
     @Test func schemaRejectsDuplicateAndExcessiveComponentIDs() {

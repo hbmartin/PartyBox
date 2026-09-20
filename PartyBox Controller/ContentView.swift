@@ -812,7 +812,7 @@ private struct ControllerSettingsView: View {
                     Button("CALIBRATE CURRENT POSITION") { coordinator.calibrateMotion() }
                         .disabled(!coordinator.motionControlEnabled || !coordinator.canCalibrateMotion)
                     if coordinator.motionControlEnabled && !coordinator.canCalibrateMotion {
-                        Text("Hold your phone steady while motion initializes.")
+                        Text(motionCalibrationMessage)
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Text("Touch is the default. Turn on motion to steer by tilting this phone.")
@@ -831,6 +831,17 @@ private struct ControllerSettingsView: View {
         .preferredColorScheme(.dark)
         .onAppear { coordinator.motionSettingsPresentationChanged(isPresented: true) }
         .onDisappear { coordinator.motionSettingsPresentationChanged(isPresented: false) }
+    }
+
+    private var motionCalibrationMessage: String {
+        switch coordinator.motionCalibrationStatus {
+        case .unavailable:
+            "Motion controls aren’t available on this device."
+        case .retrying:
+            "Motion is temporarily unavailable. Retrying automatically…"
+        case .initializing, .ready:
+            "Hold your phone steady while motion initializes."
+        }
     }
 }
 

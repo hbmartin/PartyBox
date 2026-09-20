@@ -393,6 +393,10 @@ public actor GenericFaultProxy {
     private static let maximumPendingUDPDatagrams = 1_024
     private static let maximumScheduledUDPPayloads = 1_024
 
+    static func successfulUDPDuplicateCount(forwardedCount: Int) -> Int {
+        max(0, forwardedCount - 1)
+    }
+
     private let engine: ImpairmentEngine
     private let logger = Logger(subsystem: "PartyFault", category: "GenericFaultProxy")
     private var metrics = FaultMetrics()
@@ -796,9 +800,6 @@ public actor GenericFaultProxy {
                 noteUDPDropped(direction: direction)
                 continue
             }
-            if plan.delays.count > 1 {
-                noteUDPDuplicated(plan.delays.count - 1, direction: direction)
-            }
             let id = UUID()
             let delays = plan.delays
             let scheduledAt = ContinuousClock().now
@@ -886,6 +887,10 @@ public actor GenericFaultProxy {
         direction: TrafficDirection
     ) -> String? {
         for _ in 0..<summary.forwardedCount { noteUDPForwarded(direction: direction) }
+        let duplicatedCount = Self.successfulUDPDuplicateCount(
+            forwardedCount: summary.forwardedCount
+        )
+        if duplicatedCount > 0 { noteUDPDuplicated(duplicatedCount, direction: direction) }
         for _ in 0..<summary.delayedCount { noteDelay(direction: direction) }
         if summary.forwardedCount == 0 { noteUDPDropped(direction: direction) }
         return summary.failureReason

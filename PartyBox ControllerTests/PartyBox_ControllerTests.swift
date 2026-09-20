@@ -240,6 +240,7 @@ struct PartyBox_ControllerTests {
             sampler.emit(.orientation(orientation))
 
             #expect(coordinator.canCalibrateMotion)
+            #expect(coordinator.motionCalibrationStatus == .ready)
             #expect(coordinator.client.inputAxisX == 0.4)
             #expect(coordinator.client.inputAxisY == -0.2)
             #expect(coordinator.client.inputOrientation == .identity)
@@ -309,6 +310,136 @@ struct PartyBox_ControllerTests {
 
             #expect(sampler.isActive)
             #expect(!coordinator.canCalibrateMotion)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func settingsDistinguishUnavailableInitializingAndRetryingMotion() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let unavailableSuite = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let unavailableDefaults = try #require(UserDefaults(suiteName: unavailableSuite))
+            defer { unavailableDefaults.removePersistentDomain(forName: unavailableSuite) }
+            unavailableDefaults.set(true, forKey: "partybox.motionControlEnabled")
+            let unavailableSampler = TestMotionSampler()
+            unavailableSampler.isAvailable = false
+            let unavailable = ControllerCoordinator(
+                defaults: unavailableDefaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: unavailableSampler
+            )
+            await unavailable.start()
+            unavailable.motionSettingsPresentationChanged(isPresented: true)
+            #expect(unavailable.motionCalibrationStatus == .unavailable)
+            #expect(!unavailable.canCalibrateMotion)
+            #expect(!unavailableSampler.isActive)
+            await unavailable.stop()
+
+            let retrySuite = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let retryDefaults = try #require(UserDefaults(suiteName: retrySuite))
+            defer { retryDefaults.removePersistentDomain(forName: retrySuite) }
+            retryDefaults.set(true, forKey: "partybox.motionControlEnabled")
+            let retrySampler = TestMotionSampler()
+            let retrying = ControllerCoordinator(
+                defaults: retryDefaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: retrySampler
+            )
+            await retrying.start()
+            retrying.motionSettingsPresentationChanged(isPresented: true)
+            #expect(retrying.motionCalibrationStatus == .initializing)
+
+            retrySampler.emit(.failure)
+
+            #expect(retrying.motionCalibrationStatus == .retrying)
+            #expect(!retrying.canCalibrateMotion)
+            #expect(!retrySampler.isActive)
+            await retrying.stop()
+        }
+    }
+
+    @Test func stopClearsMotionSettingsPresentationBeforeRestart() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            #expect(sampler.isActive)
+
+            await coordinator.stop()
+            await coordinator.start()
+
+            #expect(!sampler.isActive)
+            #expect(!coordinator.canCalibrateMotion)
+            #expect(coordinator.motionCalibrationStatus == .initializing)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func closingSettingsDoesNotClearTouchInputAfterMotionOwnershipEnds() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            let halfAngle = Float.pi / 12
+            sampler.emit(.orientation(.init(
+                x: -sin(halfAngle), y: sin(halfAngle), z: 0, w: cos(halfAngle)
+            )))
+
+            let touchScreen = ControllerScreen(
+                accessibilityID: "controller.layout.touch-only",
+                accentColorHex: "#32E6FF",
+                components: [.axisSurface(.init(
+                    id: "touch-only.axis",
+                    binding: .twoDimensional,
+                    instruction: "DRAG TO MOVE"
+                ))]
+            )
+            let layout = PartyBoxCore.ControllerLayout.game(.init(
+                gameID: "touch-only",
+                payload: try PartyBoxWireCodec.encode(touchScreen)
+            ))
+            await coordinator.handleForTesting(.application(
+                try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
+            ))
+            #expect(sampler.isActive)
+            coordinator.client.setInput(axisX: 0.6, axisY: -0.4)
+
+            coordinator.motionSettingsPresentationChanged(isPresented: false)
+
+            #expect(!sampler.isActive)
+            #expect(coordinator.client.inputAxisX == 0.6)
+            #expect(coordinator.client.inputAxisY == -0.4)
             await coordinator.stop()
         }
     }

@@ -503,7 +503,7 @@ final class HostCoordinator {
         case .cupComplete:
             if action == .select || action == .back {
                 resetCup()
-                menuSelection = partyCupMenuIndex
+                setMenuSelection(partyCupMenuIndex)
                 transition(to: .gameMenu)
             }
         }
@@ -1790,6 +1790,7 @@ final class HostCoordinator {
             ))
         case "cup-complete":
             menuSelection = max(0, games.count - 1)
+            botDifficultyChange = "BOT DIFFICULTY INCREASED TO HARD"
             let standings = fixtureParticipants.enumerated().map { index, participant in
                 CupStandingRecord(
                     controllerID: participant.controllerID,

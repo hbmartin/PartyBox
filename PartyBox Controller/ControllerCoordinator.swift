@@ -11,6 +11,13 @@ enum MotionSample: Sendable {
     case failure
 }
 
+enum MotionCalibrationStatus: Equatable {
+    case unavailable
+    case initializing
+    case retrying
+    case ready
+}
+
 @MainActor
 protocol MotionSampling: AnyObject {
     var isAvailable: Bool { get }
@@ -173,6 +180,7 @@ final class ControllerCoordinator {
     private(set) var motionNeutralProjectionX: Float
     private(set) var motionNeutralProjectionY: Float
     private(set) var canCalibrateMotion = false
+    private(set) var motionCalibrationStatus: MotionCalibrationStatus = .initializing
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
@@ -397,12 +405,10 @@ final class ControllerCoordinator {
     }
 
     func motionSettingsPresentationChanged(isPresented: Bool) {
-        isMotionSettingsVisible = isPresented
-        if !isPresented {
-            latestMotionOrientation = nil
-            canCalibrateMotion = false
-        }
+        if isPresented { isMotionSettingsVisible = true }
+        else { resetMotionSettingsPresentation() }
         updateMotionCapture()
+        updateMotionCalibrationStatus()
     }
 
     func makeRedactedDiagnosticsFile() -> URL? {
@@ -533,6 +539,7 @@ final class ControllerCoordinator {
     }
 
     private func resetSessionPresentation() {
+        resetMotionSettingsPresentation()
         stopMotionCapture()
         layout = .lobby(.waiting)
         roster = []
@@ -614,6 +621,7 @@ final class ControllerCoordinator {
 
     private func updateMotionCapture() {
         let needsGameplayMotion = requestedInputs.contains(.orientation)
+        if !needsGameplayMotion { stopPublishingMotionInput() }
         let shouldRun = isStarted && isSceneActive && isConnected
             && motionControlEnabled && (needsGameplayMotion || isMotionSettingsVisible)
             && motionSampler.isAvailable
@@ -646,6 +654,7 @@ final class ControllerCoordinator {
                 if self.isMotionSettingsVisible {
                     self.latestMotionOrientation = orientation
                     self.canCalibrateMotion = true
+                    self.motionCalibrationStatus = .ready
                 }
                 guard self.requestedInputs.contains(.orientation) else { return }
                 let axes = orientation.tiltAxes(
@@ -675,8 +684,40 @@ final class ControllerCoordinator {
         latestMotionOrientation = nil
         canCalibrateMotion = false
         client.setOrientation(.identity, available: false)
-        if wasCapturingMotion, isPublishingMotionInput { client.setInput(axisX: 0, axisY: 0) }
+        if wasCapturingMotion { stopPublishingMotionInput() }
+        updateMotionCalibrationStatus()
+    }
+
+    private func stopPublishingMotionInput() {
+        guard isPublishingMotionInput else { return }
+        client.setInput(axisX: 0, axisY: 0)
+        client.setOrientation(.identity, available: false)
         isPublishingMotionInput = false
+    }
+
+    private func resetMotionSettingsPresentation() {
+        isMotionSettingsVisible = false
+        latestMotionOrientation = nil
+        canCalibrateMotion = false
+        motionCalibrationStatus = .initializing
+    }
+
+    private func updateMotionCalibrationStatus() {
+        guard isMotionSettingsVisible else {
+            motionCalibrationStatus = .initializing
+            return
+        }
+        guard motionSampler.isAvailable else {
+            motionCalibrationStatus = .unavailable
+            return
+        }
+        if motionRetryTask != nil {
+            motionCalibrationStatus = .retrying
+        } else if canCalibrateMotion {
+            motionCalibrationStatus = .ready
+        } else {
+            motionCalibrationStatus = .initializing
+        }
     }
 
     private static func resetLegacyMotionCalibration(in defaults: UserDefaults) {
@@ -711,8 +752,7 @@ final class ControllerCoordinator {
         latestMotionOrientation = nil
         canCalibrateMotion = false
         client.setOrientation(.identity, available: false)
-        if isPublishingMotionInput { client.setInput(axisX: 0, axisY: 0) }
-        isPublishingMotionInput = false
+        stopPublishingMotionInput()
         guard motionRetryTask == nil else { return }
         let delay = motionRetryBackoff.recordFailure()
         motionRetryTask = Task { @MainActor [weak self] in
@@ -723,8 +763,10 @@ final class ControllerCoordinator {
             }
             guard let self, !Task.isCancelled else { return }
             self.motionRetryTask = nil
+            self.updateMotionCalibrationStatus()
             self.updateMotionCapture()
         }
+        updateMotionCalibrationStatus()
     }
 
     static func motionRetryDelay(failureCount: Int) -> Duration {

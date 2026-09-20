@@ -18,8 +18,8 @@ struct SignalSnapGame: PartyGame {
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
         ArcadeChallengeSession(
             mode: .signalSnap,
-            context: context,
             supportsMotion: descriptor.supportsMotion,
+            context: context,
             onEvents: onEvents
         )
     }
@@ -40,8 +40,8 @@ struct GravityGrabGame: PartyGame {
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
         ArcadeChallengeSession(
             mode: .gravityGrab,
-            context: context,
             supportsMotion: descriptor.supportsMotion,
+            context: context,
             onEvents: onEvents
         )
     }
@@ -62,8 +62,8 @@ struct SnakePitGame: PartyGame {
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
         ArcadeChallengeSession(
             mode: .snakePit,
-            context: context,
             supportsMotion: descriptor.supportsMotion,
+            context: context,
             onEvents: onEvents
         )
     }
@@ -84,8 +84,8 @@ struct LastLightGame: PartyGame {
     func makeSession(context: GameSessionContext, onEvents: @escaping @MainActor ([GameEvent]) -> Void) -> any PartyGameSession {
         ArcadeChallengeSession(
             mode: .lastLight,
-            context: context,
             supportsMotion: descriptor.supportsMotion,
+            context: context,
             onEvents: onEvents
         )
     }
@@ -105,6 +105,13 @@ enum ArcadeChallengeMode: String {
         case .gravityGrab: "gravity-grab"
         case .snakePit: "snake-pit"
         case .lastLight: "last-light"
+        }
+    }
+
+    var supportsMotion: Bool {
+        switch self {
+        case .pongQualifiers, .gravityGrab, .lastLight: true
+        case .signalSnap, .snakePit: false
         }
     }
 
@@ -147,8 +154,8 @@ final class ArcadeChallengeSession: PartyGameSession {
 
     init(
         mode: ArcadeChallengeMode,
+        supportsMotion: Bool,
         context: GameSessionContext,
-        supportsMotion: Bool = true,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) {
         self.mode = mode
@@ -442,7 +449,7 @@ private final class ArcadeChallengeScene: SKScene {
                 snakeTrailNodes[participant.player.id] = []
             }
             let node = SKShapeNode(circleOfRadius: mode == .snakePit ? 23 : 31)
-            node.fillColor = Self.color(participant.player.colorHex)
+            node.fillColor = SKColor.partyHex(participant.player.colorHex)
             node.strokeColor = .white
             node.lineWidth = 3
             node.glowWidth = 13
@@ -685,7 +692,7 @@ private final class ArcadeChallengeScene: SKScene {
             states[playerID]?.lastHitAt = elapsed
             loseLife(playerID, checkForCompletion: false)
         }
-        completeIfEliminationFinished()
+        if !collisions.isEmpty { completeIfEliminationFinished() }
         guard !finished else { return }
         tickAccumulator += delta
         if tickAccumulator >= 0.25 {
@@ -764,9 +771,7 @@ private final class ArcadeChallengeScene: SKScene {
         if let winner { events.append(.deviceCue(winner.id, .init(colorHex: "#39FF88", haptic: .success))) }
         events.append(.completed(.init(
             title: winnerTitle,
-            subtitle: context.isCupEvent
-                ? "Party Cup event complete"
-                : "\(mode.rawValue.capitalized) complete",
+            subtitle: "\(mode.rawValue.capitalized) complete",
             winner: solo ? nil : winner?.id,
             playerOutcomes: playerOutcomes,
             metrics: [.init(id: "top-score", label: "Top score", value: "\(standings.first?.score ?? 0)")],
@@ -798,7 +803,7 @@ private final class ArcadeChallengeScene: SKScene {
         for participant in context.participants {
             let playerID = participant.player.id
             guard let container = snakeTrailContainers[playerID] else { continue }
-            let color = Self.color(participant.player.colorHex)
+            let color = SKColor.partyHex(participant.player.colorHex)
             let points = snakeTrails[playerID, default: []]
             var nodes = snakeTrailNodes[playerID, default: []]
             while nodes.count < points.count {
@@ -900,8 +905,4 @@ private final class ArcadeChallengeScene: SKScene {
         snakeTrailNodes.mapValues { $0.map(ObjectIdentifier.init) }
     }
 #endif
-
-    private static func color(_ hex: String) -> SKColor {
-        SKColor.partyHex(hex)
-    }
 }
