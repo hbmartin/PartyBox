@@ -48,14 +48,14 @@ struct PongGame: PartyGame {
         if context.participants.count > 4 {
             ArcadeChallengeSession(
                 mode: .pongQualifiers,
-                context: context,
                 supportsMotion: descriptor.supportsMotion,
+                context: context,
                 onEvents: onEvents
             )
         } else {
             PongGameSession(
-                context: context,
                 supportsMotion: descriptor.supportsMotion,
+                context: context,
                 onEvents: onEvents
             )
         }
@@ -96,8 +96,8 @@ final class PongGameSession: PartyGameSession {
     var scene: SKScene { pongScene }
 
     init(
+        supportsMotion: Bool,
         context: GameSessionContext,
-        supportsMotion: Bool = true,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) {
         self.context = context
@@ -229,7 +229,7 @@ final class PongGameSession: PartyGameSession {
                 }
                 let solo = context.participants.count == 1
                 let title: String
-                var subtitle: String
+                let subtitle: String
                 if solo {
                     title = "PRACTICE COMPLETE"
                     subtitle = "Rally: \(rally)  •  Select to rotate and play again"
@@ -240,9 +240,6 @@ final class PongGameSession: PartyGameSession {
                 } else {
                     title = "MATCH OVER"
                     subtitle = "Select for the next match"
-                }
-                if context.isCupEvent {
-                    subtitle = "Party Cup event complete"
                 }
                 let outcomes = context.participants.map { participant in
                     let outcome: MatchParticipantOutcome = if solo {

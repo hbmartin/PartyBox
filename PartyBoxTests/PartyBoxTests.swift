@@ -406,6 +406,7 @@ struct PartyBoxTests {
             PlayerInfo(id: $0, displayName: "P\($0.rawValue)", colorHex: PlayerPalette.color(for: $0))
         }
         let session = PongGameSession(
+            supportsMotion: true,
             context: .init(
                 participants: players.map { .init(player: $0, controllerID: ControllerID()) },
                 inputs: InputStore(), seed: 42, modifierID: nil, isCupEvent: true
@@ -425,7 +426,7 @@ struct PartyBoxTests {
 
         #expect(completed?.standings.map(\.playerID) == [bottom, left, top])
         #expect(completed?.standings.map(\.rank) == [1, 2, 3])
-        #expect(completed?.subtitle == "Party Cup event complete")
+        #expect(completed?.subtitle == "Select to play again")
     }
 
     @Test func stoppedCoordinatorCannotBeRevivedBySuspendedMatchCompletion() async throws {
@@ -622,7 +623,7 @@ struct PartyBoxTests {
             modifierID: nil
         )
         var completed: GameOutcome?
-        let session = PongGameSession(context: context) { events in
+        let session = PongGameSession(supportsMotion: true, context: context) { events in
             for case .completed(let outcome) in events { completed = outcome }
         }
         session.pongScene.forfeit(top, onAccepted: {})
@@ -730,6 +731,7 @@ struct PartyBoxTests {
         for mode in [ArcadeChallengeMode.pongQualifiers, .signalSnap] {
             let session = ArcadeChallengeSession(
                 mode: mode,
+                supportsMotion: mode.supportsMotion,
                 context: .init(
                     participants: [participant],
                     inputs: InputStore(),
@@ -752,6 +754,7 @@ struct PartyBoxTests {
         let inputs = InputStore()
         let session = ArcadeChallengeSession(
             mode: .signalSnap,
+            supportsMotion: false,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -801,6 +804,7 @@ struct PartyBoxTests {
         let inputs = InputStore()
         let session = ArcadeChallengeSession(
             mode: .signalSnap,
+            supportsMotion: false,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -848,11 +852,13 @@ struct PartyBoxTests {
         var secondEvents: [GameEvent] = []
         let first = ArcadeChallengeSession(
             mode: .signalSnap,
+            supportsMotion: false,
             context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
             onEvents: { firstEvents.append(contentsOf: $0) }
         )
         let second = ArcadeChallengeSession(
             mode: .signalSnap,
+            supportsMotion: false,
             context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
             onEvents: { secondEvents.append(contentsOf: $0) }
         )
@@ -908,11 +914,13 @@ struct PartyBoxTests {
         var secondEvents: [GameEvent] = []
         let first = ArcadeChallengeSession(
             mode: .gravityGrab,
+            supportsMotion: true,
             context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
             onEvents: { firstEvents.append(contentsOf: $0) }
         )
         let second = ArcadeChallengeSession(
             mode: .gravityGrab,
+            supportsMotion: true,
             context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
             onEvents: { secondEvents.append(contentsOf: $0) }
         )
@@ -951,6 +959,7 @@ struct PartyBoxTests {
         let inputs = InputStore()
         let session = ArcadeChallengeSession(
             mode: .gravityGrab,
+            supportsMotion: true,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -982,6 +991,7 @@ struct PartyBoxTests {
         var events: [GameEvent] = []
         let session = ArcadeChallengeSession(
             mode: .lastLight,
+            supportsMotion: true,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -1001,11 +1011,12 @@ struct PartyBoxTests {
         #expect(events.contains { if case .completed = $0 { true } else { false } })
     }
 
-    @Test func soloArcadeCupEventUsesCupCopyWithoutChangingPracticeOutcome() throws {
+    @Test func soloArcadeCupEventRetainsPracticeOutcomeAndGameSubtitle() throws {
         let playerID = PlayerID(0)
         var events: [GameEvent] = []
         let session = ArcadeChallengeSession(
             mode: .lastLight,
+            supportsMotion: true,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -1026,7 +1037,7 @@ struct PartyBoxTests {
             if case .completed(let outcome) = event { outcome } else { nil }
         }.first)
         #expect(completed.title == "PRACTICE COMPLETE")
-        #expect(completed.subtitle == "Party Cup event complete")
+        #expect(completed.subtitle == "Last Light complete")
         #expect(completed.winner == nil)
         #expect(completed.playerOutcomes == [.init(playerID: playerID, outcome: .practice)])
     }
@@ -1047,6 +1058,7 @@ struct PartyBoxTests {
         var events: [GameEvent] = []
         let session = ArcadeChallengeSession(
             mode: .snakePit,
+            supportsMotion: false,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { events.append(contentsOf: $0) }
         )
@@ -1074,11 +1086,13 @@ struct PartyBoxTests {
         }
         let first = ArcadeChallengeSession(
             mode: .lastLight,
+            supportsMotion: true,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { _ in }
         )
         let second = ArcadeChallengeSession(
             mode: .lastLight,
+            supportsMotion: true,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { _ in }
         )
@@ -1107,6 +1121,7 @@ struct PartyBoxTests {
         var events: [GameEvent] = []
         let session = ArcadeChallengeSession(
             mode: .lastLight,
+            supportsMotion: true,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { events.append(contentsOf: $0) }
         )
@@ -1141,11 +1156,13 @@ struct PartyBoxTests {
         }
         let first = ArcadeChallengeSession(
             mode: .snakePit,
+            supportsMotion: false,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { _ in }
         )
         let second = ArcadeChallengeSession(
             mode: .snakePit,
+            supportsMotion: false,
             context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
             onEvents: { _ in }
         )
@@ -1164,6 +1181,7 @@ struct PartyBoxTests {
         let playerID = PlayerID(0)
         let session = ArcadeChallengeSession(
             mode: .snakePit,
+            supportsMotion: false,
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -1297,6 +1315,7 @@ struct PartyBoxTests {
 
         #expect(coordinator.phase == .gameMenu)
         #expect(coordinator.menuItems[coordinator.menuSelection] == "PARTY CUP")
+        #expect(coordinator.botDifficultyChange == nil)
         await coordinator.stop()
     }
 
@@ -1330,7 +1349,7 @@ struct PartyBoxTests {
             id: top, displayName: "Bot", colorHex: "#FF4FD8", mark: .star, kind: .bot
         )
         func session() -> PongGameSession {
-            PongGameSession(context: .init(
+            PongGameSession(supportsMotion: true, context: .init(
                 participants: [
                     .init(player: human, controllerID: ControllerID()),
                     .init(player: bot, controllerID: ControllerID()),

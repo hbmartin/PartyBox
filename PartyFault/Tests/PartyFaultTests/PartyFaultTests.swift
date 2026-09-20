@@ -14,6 +14,12 @@ struct PartyFaultTests {
         #expect(udp.reorderWindow == 1)
     }
 
+    @Test func duplicateMetricsCountOnlySuccessfulExtraTransmissions() {
+        #expect(GenericFaultProxy.successfulUDPDuplicateCount(forwardedCount: 0) == 0)
+        #expect(GenericFaultProxy.successfulUDPDuplicateCount(forwardedCount: 1) == 0)
+        #expect(GenericFaultProxy.successfulUDPDuplicateCount(forwardedCount: 2) == 1)
+    }
+
     @Test func legacyEndpointMetadataDefaultsTheControlSocketToLoopback() throws {
         let data = Data(#"{"host":"0.0.0.0","tcpPort":9000,"udpPort":9001,"controlPort":9900}"#.utf8)
         let endpoints = try JSONDecoder().decode(ProxyEndpoints.self, from: data)
