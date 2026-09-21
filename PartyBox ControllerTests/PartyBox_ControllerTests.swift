@@ -8,6 +8,10 @@ import Testing
 @Suite("Controller identity")
 @MainActor
 struct PartyBox_ControllerTests {
+    private enum InjectedDiagnosticsError: Error {
+        case failed
+    }
+
     @MainActor
     private final class CleanupGate {
         private(set) var isWaiting = false
@@ -224,7 +228,7 @@ struct PartyBox_ControllerTests {
                 motionSampler: sampler
             )
             await coordinator.start()
-            coordinator.client.setInput(axisX: 0.4, axisY: -0.2)
+            coordinator.client.setInput(axisX: 0.4, axisY: -0.2, buttons: .primary)
 
             coordinator.motionSettingsPresentationChanged(isPresented: true)
             #expect(sampler.isActive)
@@ -243,6 +247,7 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.motionCalibrationStatus == .ready)
             #expect(coordinator.client.inputAxisX == 0.4)
             #expect(coordinator.client.inputAxisY == -0.2)
+            #expect(coordinator.client.inputButtons == .primary)
             #expect(coordinator.client.inputOrientation == .identity)
 
             coordinator.calibrateMotion()
@@ -250,6 +255,7 @@ struct PartyBox_ControllerTests {
             #expect(abs(coordinator.motionNeutralProjectionY - orientation.verticalTiltProjection()) < 0.000_001)
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
+            #expect(coordinator.client.inputButtons == .primary)
 
             coordinator.motionSettingsPresentationChanged(isPresented: false)
             #expect(!sampler.isActive)
@@ -549,6 +555,17 @@ struct PartyBox_ControllerTests {
 
             #expect(coordinator.personalHistory == [record])
             #expect(coordinator.historyPersistenceError?.contains("could not be cleared") == true)
+        }
+    }
+
+    @Test func controllerDiagnosticsExportPropagatesFailure() async throws {
+        let coordinator = ControllerCoordinator(
+            configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--disable-effects"]),
+            diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
+        )
+
+        await #expect(throws: InjectedDiagnosticsError.self) {
+            try await coordinator.makeRedactedDiagnosticsFile()
         }
     }
 
