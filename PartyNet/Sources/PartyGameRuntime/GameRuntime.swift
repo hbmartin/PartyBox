@@ -17,20 +17,17 @@ public struct GameSessionContext: Sendable {
     public let inputs: InputStore
     public let seed: UInt64
     public let modifierID: String?
-    public let isCupEvent: Bool
 
     public init(
         participants: [GameParticipant],
         inputs: InputStore,
         seed: UInt64,
-        modifierID: String?,
-        isCupEvent: Bool = false
+        modifierID: String?
     ) {
         self.participants = participants
         self.inputs = inputs
         self.seed = seed
         self.modifierID = modifierID
-        self.isCupEvent = isCupEvent
     }
 }
 

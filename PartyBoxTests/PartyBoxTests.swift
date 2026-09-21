@@ -409,7 +409,7 @@ struct PartyBoxTests {
             supportsMotion: true,
             context: .init(
                 participants: players.map { .init(player: $0, controllerID: ControllerID()) },
-                inputs: InputStore(), seed: 42, modifierID: nil, isCupEvent: true
+                inputs: InputStore(), seed: 42, modifierID: nil
             ),
             onEvents: { _ in }
         )
@@ -731,7 +731,7 @@ struct PartyBoxTests {
         for mode in [ArcadeChallengeMode.pongQualifiers, .signalSnap] {
             let session = ArcadeChallengeSession(
                 mode: mode,
-                supportsMotion: mode.supportsMotion,
+                supportsMotion: false,
                 context: .init(
                     participants: [participant],
                     inputs: InputStore(),
@@ -1024,8 +1024,7 @@ struct PartyBoxTests {
                 )],
                 inputs: InputStore(),
                 seed: 42,
-                modifierID: nil,
-                isCupEvent: true
+                modifierID: nil
             ),
             onEvents: { events.append(contentsOf: $0) }
         )

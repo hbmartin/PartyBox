@@ -247,6 +247,37 @@ struct CoreModelsTests {
         #expect(remainingNames.contains(prefixedUnrelatedURL.lastPathComponent))
     }
 
+    @Test func diagnosticsRetentionAlwaysPreservesTheNewExport() throws {
+        struct Report: Codable, Equatable { let sequence: Int }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let futureBaseDate = Date(timeIntervalSince1970: 2_000_000_000)
+        var futureURLs: [URL] = []
+        for index in 0..<5 {
+            futureURLs.append(try RedactedDiagnosticsExporter.write(
+                Report(sequence: index),
+                role: .host,
+                directory: directory,
+                now: futureBaseDate.addingTimeInterval(Double(index))
+            ))
+        }
+
+        let newURL = try RedactedDiagnosticsExporter.write(
+            Report(sequence: 99),
+            role: .host,
+            directory: directory,
+            now: futureBaseDate.addingTimeInterval(-60)
+        )
+
+        #expect(FileManager.default.fileExists(atPath: newURL.path))
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: newURL)) == .init(sequence: 99))
+        let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        let expectedNames = Set((futureURLs.suffix(4) + [newURL]).map(\.lastPathComponent))
+        #expect(remainingNames == expectedNames)
+    }
+
     @Test func schemaRejectsDuplicateAndExcessiveComponentIDs() {
         let duplicate = ControllerScreen(
             accessibilityID: "duplicate", accentColorHex: "#FFFFFF",

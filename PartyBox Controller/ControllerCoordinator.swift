@@ -411,8 +411,8 @@ final class ControllerCoordinator {
         updateMotionCalibrationStatus()
     }
 
-    func makeRedactedDiagnosticsFile() -> URL? {
-        struct Report: Codable {
+    func makeRedactedDiagnosticsFile() async -> URL? {
+        nonisolated struct Report: Codable, Sendable {
             let generatedAt: Date
             let role: String
             let protocolVersion: UInt16
@@ -457,7 +457,9 @@ final class ControllerCoordinator {
             historyPersistenceHealthy: historyPersistenceError == nil
         )
         do {
-            return try RedactedDiagnosticsExporter.write(report, role: .controller)
+            return try await Task.detached(priority: .userInitiated) {
+                try RedactedDiagnosticsExporter.write(report, role: .controller)
+            }.value
         } catch {
             return nil
         }
@@ -539,7 +541,6 @@ final class ControllerCoordinator {
     }
 
     private func resetSessionPresentation() {
-        resetMotionSettingsPresentation()
         stopMotionCapture()
         layout = .lobby(.waiting)
         roster = []
@@ -653,8 +654,10 @@ final class ControllerCoordinator {
                 self.motionRetryBackoff.recordSuccessfulSample()
                 if self.isMotionSettingsVisible {
                     self.latestMotionOrientation = orientation
-                    self.canCalibrateMotion = true
-                    self.motionCalibrationStatus = .ready
+                    if !self.canCalibrateMotion {
+                        self.canCalibrateMotion = true
+                        self.motionCalibrationStatus = .ready
+                    }
                 }
                 guard self.requestedInputs.contains(.orientation) else { return }
                 let axes = orientation.tiltAxes(
@@ -672,9 +675,6 @@ final class ControllerCoordinator {
     }
 
     private func stopMotionCapture() {
-        let wasCapturingMotion = motionCaptureGeneration != nil
-            || motionRetryTask != nil
-            || motionSampler.isActive
         motionCaptureGeneration = nil
         motionRetryTask?.cancel()
         motionRetryTask = nil
@@ -683,16 +683,16 @@ final class ControllerCoordinator {
         if motionSampler.isActive { motionSampler.stop() }
         latestMotionOrientation = nil
         canCalibrateMotion = false
-        client.setOrientation(.identity, available: false)
-        if wasCapturingMotion { stopPublishingMotionInput() }
+        stopPublishingMotionInput()
         updateMotionCalibrationStatus()
     }
 
     private func stopPublishingMotionInput() {
-        guard isPublishingMotionInput else { return }
-        client.setInput(axisX: 0, axisY: 0)
+        if isPublishingMotionInput {
+            client.setInput(axisX: 0, axisY: 0)
+            isPublishingMotionInput = false
+        }
         client.setOrientation(.identity, available: false)
-        isPublishingMotionInput = false
     }
 
     private func resetMotionSettingsPresentation() {
@@ -751,7 +751,6 @@ final class ControllerCoordinator {
         if motionSampler.isActive { motionSampler.stop() }
         latestMotionOrientation = nil
         canCalibrateMotion = false
-        client.setOrientation(.identity, available: false)
         stopPublishingMotionInput()
         guard motionRetryTask == nil else { return }
         let delay = motionRetryBackoff.recordFailure()

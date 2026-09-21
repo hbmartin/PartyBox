@@ -503,6 +503,7 @@ final class HostCoordinator {
         case .cupComplete:
             if action == .select || action == .back {
                 resetCup()
+                botDifficultyChange = nil
                 setMenuSelection(partyCupMenuIndex)
                 transition(to: .gameMenu)
             }
@@ -677,13 +678,13 @@ final class HostCoordinator {
     func requestHistoryClear() { confirmsHistoryClear = true }
     func cancelHistoryClear() { confirmsHistoryClear = false }
 
-    func makeRedactedDiagnosticsFile() -> URL? {
-        struct Activity: Codable {
+    func makeRedactedDiagnosticsFile() async -> URL? {
+        nonisolated struct Activity: Codable, Sendable {
             let acceptedFrames: UInt64
             let minimumAxis: Float
             let maximumAxis: Float
         }
-        struct Report: Codable {
+        nonisolated struct Report: Codable, Sendable {
             let generatedAt: Date
             let role: String
             let protocolVersion: UInt16
@@ -721,7 +722,9 @@ final class HostCoordinator {
             historyPersistenceHealthy: historyPersistenceError == nil
         )
         do {
-            return try RedactedDiagnosticsExporter.write(report, role: .host)
+            return try await Task.detached(priority: .userInitiated) {
+                try RedactedDiagnosticsExporter.write(report, role: .host)
+            }.value
         } catch {
             logger.error("Could not export diagnostics: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -937,8 +940,7 @@ final class HostCoordinator {
             participants: participants,
             inputs: host.inputs,
             seed: currentMatchSeed,
-            modifierID: modifier?.id,
-            isCupEvent: isCupEvent
+            modifierID: modifier?.id
         )
         currentSession = game.makeSession(context: context) { [weak self] events in
             self?.handleGame(events, matchID: matchID)
@@ -1789,7 +1791,7 @@ final class HostCoordinator {
                 metrics: []
             ))
         case "cup-complete":
-            menuSelection = max(0, games.count - 1)
+            menuSelection = partyCupMenuIndex
             botDifficultyChange = "BOT DIFFICULTY INCREASED TO HARD"
             let standings = fixtureParticipants.enumerated().map { index, participant in
                 CupStandingRecord(

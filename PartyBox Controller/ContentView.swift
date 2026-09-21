@@ -685,6 +685,7 @@ private struct PersonalHistoryView: View {
     let dismiss: () -> Void
     @State private var confirmingClear = false
     @State private var diagnosticsURL: URL?
+    @State private var isPreparingDiagnostics = false
 
     var body: some View {
         NavigationStack {
@@ -767,10 +768,16 @@ private struct PersonalHistoryView: View {
                         ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
                             .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
                     } else {
-                        Button("PREPARE REDACTED DIAGNOSTICS") {
-                            diagnosticsURL = coordinator.makeRedactedDiagnosticsFile()
+                        Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
+                            guard !isPreparingDiagnostics else { return }
+                            isPreparingDiagnostics = true
+                            Task {
+                                diagnosticsURL = await coordinator.makeRedactedDiagnosticsFile()
+                                isPreparingDiagnostics = false
+                            }
                         }
                         .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                        .disabled(isPreparingDiagnostics)
                     }
                 }
                 .padding(20)

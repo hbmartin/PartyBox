@@ -32,14 +32,11 @@ public enum RedactedDiagnosticsExporter {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.modificationDate: now],
-            ofItemAtPath: url.path
-        )
         pruneOldExports(
             in: directory,
             filenamePrefix: filenamePrefix,
-            retentionLimit: max(1, retentionLimit)
+            retentionLimit: max(1, retentionLimit),
+            preserving: url
         )
         return url
     }
@@ -56,34 +53,30 @@ public enum RedactedDiagnosticsExporter {
     private static func pruneOldExports(
         in directory: URL,
         filenamePrefix: String,
-        retentionLimit: Int
+        retentionLimit: Int,
+        preserving currentExport: URL
     ) {
-        let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: Array(resourceKeys),
+            includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return }
-        let exports = files.filter {
-            isExportFilename($0.lastPathComponent, filenamePrefix: filenamePrefix)
-        }.sorted { lhs, rhs in
-            let leftDate = try? lhs.resourceValues(forKeys: resourceKeys).contentModificationDate
-            let rightDate = try? rhs.resourceValues(forKeys: resourceKeys).contentModificationDate
-            if leftDate != rightDate {
-                return (leftDate ?? .distantPast) > (rightDate ?? .distantPast)
-            }
-            return lhs.lastPathComponent > rhs.lastPathComponent
-        }
-        for expired in exports.dropFirst(retentionLimit) {
-            try? FileManager.default.removeItem(at: expired)
-        }
-    }
-
-    private static func isExportFilename(_ filename: String, filenamePrefix: String) -> Bool {
         let escapedPrefix = NSRegularExpression.escapedPattern(for: filenamePrefix)
         let pattern = "^\(escapedPrefix)\\d{8}T\\d{6}\\.\\d{3}Z-"
             + "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
             + "[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\.json$"
-        return filename.range(of: pattern, options: .regularExpression) != nil
+        guard let filenameExpression = try? NSRegularExpression(pattern: pattern) else { return }
+        let currentExport = currentExport.standardizedFileURL
+        let olderExports = files.filter { file in
+            let filename = file.lastPathComponent
+            let range = NSRange(filename.startIndex..<filename.endIndex, in: filename)
+            return filenameExpression.firstMatch(in: filename, range: range) != nil
+                && file.standardizedFileURL != currentExport
+        }.sorted { lhs, rhs in
+            lhs.lastPathComponent > rhs.lastPathComponent
+        }
+        for expired in olderExports.dropFirst(max(0, retentionLimit - 1)) {
+            try? FileManager.default.removeItem(at: expired)
+        }
     }
 }

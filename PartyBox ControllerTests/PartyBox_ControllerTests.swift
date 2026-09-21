@@ -363,7 +363,7 @@ struct PartyBox_ControllerTests {
         }
     }
 
-    @Test func stopClearsMotionSettingsPresentationBeforeRestart() async throws {
+    @Test func sessionResetKeepsPresentedMotionSettingsOwnedByTheView() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
@@ -383,12 +383,54 @@ struct PartyBox_ControllerTests {
             coordinator.motionSettingsPresentationChanged(isPresented: true)
             #expect(sampler.isActive)
 
-            await coordinator.stop()
-            await coordinator.start()
+            await coordinator.handleForTesting(.sessionReset)
 
             #expect(!sampler.isActive)
             #expect(!coordinator.canCalibrateMotion)
             #expect(coordinator.motionCalibrationStatus == .initializing)
+
+            coordinator.refreshMotionCaptureForTesting()
+            #expect(sampler.isActive)
+
+            coordinator.motionSettingsPresentationChanged(isPresented: false)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func stoppingMotionInputPreservesHeldButtons() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.client.setInput(axisX: 0, axisY: 0, buttons: .primary)
+
+            let halfAngle = Float.pi / 12
+            sampler.emit(.orientation(.init(
+                x: -sin(halfAngle), y: sin(halfAngle), z: 0, w: cos(halfAngle)
+            )))
+            #expect(coordinator.client.inputButtons == .primary)
+            #expect(coordinator.client.inputFlags.contains(.motionAvailable))
+
+            coordinator.motionControlEnabled = false
+
+            #expect(coordinator.client.inputAxisX == 0)
+            #expect(coordinator.client.inputAxisY == 0)
+            #expect(coordinator.client.inputButtons == .primary)
+            #expect(coordinator.client.inputOrientation == .identity)
+            #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
+            #expect(!sampler.isActive)
             await coordinator.stop()
         }
     }

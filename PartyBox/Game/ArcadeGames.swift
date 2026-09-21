@@ -108,13 +108,6 @@ enum ArcadeChallengeMode: String {
         }
     }
 
-    var supportsMotion: Bool {
-        switch self {
-        case .pongQualifiers, .gravityGrab, .lastLight: true
-        case .signalSnap, .snakePit: false
-        }
-    }
-
     var duration: TimeInterval {
         switch self {
         case .pongQualifiers: 36
@@ -656,7 +649,7 @@ private final class ArcadeChallengeScene: SKScene {
         for playerID in collisions.sorted(by: { $0.rawValue < $1.rawValue }) {
             loseLife(playerID, checkForCompletion: false)
         }
-        completeIfEliminationFinished()
+        if !collisions.isEmpty { completeIfEliminationFinished() }
         rebuildSnakeTrails()
     }
 

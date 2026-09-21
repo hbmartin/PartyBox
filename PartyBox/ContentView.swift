@@ -461,6 +461,7 @@ private struct VoteOverlay: View {
 private struct HistoryView: View {
     @Bindable var coordinator: HostCoordinator
     @State private var diagnosticsURL: URL?
+    @State private var isPreparingDiagnostics = false
 
     var body: some View {
         ScrollView {
@@ -561,9 +562,15 @@ private struct HistoryView: View {
                         .foregroundStyle(PartyTheme.cyan)
 #endif
                 } else {
-                    Button("PREPARE REDACTED DIAGNOSTICS") {
-                        diagnosticsURL = coordinator.makeRedactedDiagnosticsFile()
+                    Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
+                        guard !isPreparingDiagnostics else { return }
+                        isPreparingDiagnostics = true
+                        Task {
+                            diagnosticsURL = await coordinator.makeRedactedDiagnosticsFile()
+                            isPreparingDiagnostics = false
+                        }
                     }
+                    .disabled(isPreparingDiagnostics)
                 }
                 Text("MENU/ESC TO RETURN")
                     .font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
