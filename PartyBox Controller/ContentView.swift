@@ -613,7 +613,7 @@ private struct AxisSurface: View {
                             location: value.location.y,
                             extent: height
                         ) : 0
-                    coordinator.client.setInput(axisX: x, axisY: y)
+                    coordinator.client.setAxes(axisX: x, axisY: y)
                 })
                 .accessibilityIdentifier(component.id)
                 .accessibilityValue(String(format: "%.3f, %.3f", coordinator.client.inputAxisX, coordinator.client.inputAxisY))
@@ -685,6 +685,8 @@ private struct PersonalHistoryView: View {
     let dismiss: () -> Void
     @State private var confirmingClear = false
     @State private var diagnosticsURL: URL?
+    @State private var diagnosticsErrorMessage: String?
+    @State private var isPreparingDiagnostics = false
 
     var body: some View {
         NavigationStack {
@@ -763,14 +765,31 @@ private struct PersonalHistoryView: View {
 
                     Button("CLEAR MY HISTORY", role: .destructive) { confirmingClear = true }
                         .buttonStyle(ArcadeButtonStyle(color: .red))
+                    if let diagnosticsErrorMessage {
+                        Label(diagnosticsErrorMessage, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("controller.history.diagnostics.error")
+                    }
                     if let diagnosticsURL {
                         ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
                             .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
                     } else {
-                        Button("PREPARE REDACTED DIAGNOSTICS") {
-                            diagnosticsURL = coordinator.makeRedactedDiagnosticsFile()
+                        Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
+                            guard !isPreparingDiagnostics else { return }
+                            diagnosticsErrorMessage = nil
+                            isPreparingDiagnostics = true
+                            Task {
+                                defer { isPreparingDiagnostics = false }
+                                do {
+                                    diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
+                                } catch {
+                                    diagnosticsErrorMessage = "Diagnostics couldn’t be prepared. Check available storage and try again."
+                                }
+                            }
                         }
                         .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                        .disabled(isPreparingDiagnostics)
                     }
                 }
                 .padding(20)

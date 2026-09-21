@@ -188,6 +188,10 @@ public final class PartyClient {
         enqueueCurrentInput()
     }
 
+    public func setAxes(axisX: Float, axisY: Float = 0) {
+        setInput(axisX: axisX, axisY: axisY, buttons: inputButtons)
+    }
+
     public func setOrientation(
         _ orientation: OrientationQuaternion,
         available: Bool = true

@@ -1,6 +1,7 @@
 import CoreMotion
 import Foundation
 import Observation
+import OSLog
 import PartyBoxCore
 import PartyNet
 import UIKit
@@ -112,6 +113,23 @@ final class ControllerCoordinator {
         let presentsColor: Bool
     }
 
+    nonisolated struct DiagnosticsReport: Codable, Sendable {
+        let generatedAt: Date
+        let role: String
+        let protocolVersion: UInt16
+        let connectionState: String
+        let layout: String
+        let rttMilliseconds: Double?
+        let inputFramesSent: UInt64
+        let motionEnabled: Bool
+        let effectsEnabled: Bool
+        let savedMatches: Int
+        let savedCups: Int
+        let historyPersistenceHealthy: Bool
+    }
+
+    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> URL
+
     private enum MotionCalibrationDefaults {
         static let projectionX = "partybox.motionNeutralProjectionX"
         static let projectionY = "partybox.motionNeutralProjectionY"
@@ -151,7 +169,7 @@ final class ControllerCoordinator {
             defaults.set(motionControlEnabled, forKey: "partybox.motionControlEnabled")
             if !motionControlEnabled {
                 client.setOrientation(.identity, available: false)
-                client.setInput(axisX: 0, axisY: 0)
+                client.setAxes(axisX: 0, axisY: 0)
             }
             updateMotionCapture()
         }
@@ -186,6 +204,8 @@ final class ControllerCoordinator {
     @ObservationIgnored private let historyStore: JSONRecordStore<PersonalMatchRecord>
     @ObservationIgnored private let cupHistoryStore: JSONRecordStore<PersonalCupRecord>
     @ObservationIgnored private let motionSampler: any MotionSampling
+    @ObservationIgnored private let diagnosticsExporter: DiagnosticsExporter
+    @ObservationIgnored private let logger = Logger(subsystem: "PartyBoxController", category: "ControllerCoordinator")
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var eventGeneration: UUID?
     @ObservationIgnored private var discoveryHelpTask: Task<Void, Never>?
@@ -210,7 +230,8 @@ final class ControllerCoordinator {
         defaults: UserDefaults? = nil,
         configuration suppliedConfiguration: ControllerLaunchConfiguration? = nil,
         historyFileURL: URL? = nil,
-        motionSampler: (any MotionSampling)? = nil
+        motionSampler: (any MotionSampling)? = nil,
+        diagnosticsExporter: DiagnosticsExporter? = nil
     ) {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
@@ -219,6 +240,11 @@ final class ControllerCoordinator {
             ?? .standard
         self.defaults = defaults
         self.motionSampler = motionSampler ?? CoreMotionSampler()
+        self.diagnosticsExporter = diagnosticsExporter ?? { report in
+            try await Task.detached(priority: .userInitiated) {
+                try RedactedDiagnosticsExporter.write(report, role: .controller)
+            }.value
+        }
         Self.resetLegacyMotionCalibration(in: defaults)
         Self.migrateMotionCalibrationProjection(in: defaults)
         motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
@@ -400,7 +426,7 @@ final class ControllerCoordinator {
             MotionCalibrationDefaults.currentProjectionVersion,
             forKey: MotionCalibrationDefaults.projectionVersion
         )
-        client.setInput(axisX: 0, axisY: 0)
+        client.setAxes(axisX: 0, axisY: 0)
         play(.success)
     }
 
@@ -411,21 +437,7 @@ final class ControllerCoordinator {
         updateMotionCalibrationStatus()
     }
 
-    func makeRedactedDiagnosticsFile() -> URL? {
-        struct Report: Codable {
-            let generatedAt: Date
-            let role: String
-            let protocolVersion: UInt16
-            let connectionState: String
-            let layout: String
-            let rttMilliseconds: Double?
-            let inputFramesSent: UInt64
-            let motionEnabled: Bool
-            let effectsEnabled: Bool
-            let savedMatches: Int
-            let savedCups: Int
-            let historyPersistenceHealthy: Bool
-        }
+    func makeRedactedDiagnosticsFile() async throws -> URL {
         let stateName: String = switch client.state {
         case .browsing: "browsing"
         case .connecting: "connecting"
@@ -442,7 +454,7 @@ final class ControllerCoordinator {
         case .historyNavigation: "history"
         }
         let generatedAt = Date()
-        let report = Report(
+        let report = DiagnosticsReport(
             generatedAt: generatedAt,
             role: "controller",
             protocolVersion: PartyNetConstants.protocolVersion,
@@ -457,9 +469,10 @@ final class ControllerCoordinator {
             historyPersistenceHealthy: historyPersistenceError == nil
         )
         do {
-            return try RedactedDiagnosticsExporter.write(report, role: .controller)
+            return try await diagnosticsExporter(report)
         } catch {
-            return nil
+            logger.error("Could not export diagnostics: \(error.localizedDescription, privacy: .public)")
+            throw error
         }
     }
 
@@ -539,7 +552,6 @@ final class ControllerCoordinator {
     }
 
     private func resetSessionPresentation() {
-        resetMotionSettingsPresentation()
         stopMotionCapture()
         layout = .lobby(.waiting)
         roster = []
@@ -653,15 +665,17 @@ final class ControllerCoordinator {
                 self.motionRetryBackoff.recordSuccessfulSample()
                 if self.isMotionSettingsVisible {
                     self.latestMotionOrientation = orientation
-                    self.canCalibrateMotion = true
-                    self.motionCalibrationStatus = .ready
+                    if !self.canCalibrateMotion {
+                        self.canCalibrateMotion = true
+                        self.motionCalibrationStatus = .ready
+                    }
                 }
                 guard self.requestedInputs.contains(.orientation) else { return }
                 let axes = orientation.tiltAxes(
                     horizontalNeutral: self.motionNeutralProjectionX,
                     verticalNeutral: self.motionNeutralProjectionY
                 )
-                self.client.setInput(
+                self.client.setAxes(
                     axisX: axes.horizontal,
                     axisY: axes.vertical
                 )
@@ -672,9 +686,6 @@ final class ControllerCoordinator {
     }
 
     private func stopMotionCapture() {
-        let wasCapturingMotion = motionCaptureGeneration != nil
-            || motionRetryTask != nil
-            || motionSampler.isActive
         motionCaptureGeneration = nil
         motionRetryTask?.cancel()
         motionRetryTask = nil
@@ -683,16 +694,16 @@ final class ControllerCoordinator {
         if motionSampler.isActive { motionSampler.stop() }
         latestMotionOrientation = nil
         canCalibrateMotion = false
-        client.setOrientation(.identity, available: false)
-        if wasCapturingMotion { stopPublishingMotionInput() }
+        stopPublishingMotionInput()
         updateMotionCalibrationStatus()
     }
 
     private func stopPublishingMotionInput() {
-        guard isPublishingMotionInput else { return }
-        client.setInput(axisX: 0, axisY: 0)
+        if isPublishingMotionInput {
+            client.setAxes(axisX: 0, axisY: 0)
+            isPublishingMotionInput = false
+        }
         client.setOrientation(.identity, available: false)
-        isPublishingMotionInput = false
     }
 
     private func resetMotionSettingsPresentation() {
@@ -751,7 +762,6 @@ final class ControllerCoordinator {
         if motionSampler.isActive { motionSampler.stop() }
         latestMotionOrientation = nil
         canCalibrateMotion = false
-        client.setOrientation(.identity, available: false)
         stopPublishingMotionInput()
         guard motionRetryTask == nil else { return }
         let delay = motionRetryBackoff.recordFailure()
