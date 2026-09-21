@@ -229,12 +229,17 @@ struct CoreModelsTests {
 
         var hostURLs: [URL] = []
         for index in 0..<7 {
-            hostURLs.append(try RedactedDiagnosticsExporter.write(
+            let url = try RedactedDiagnosticsExporter.write(
                 Report(sequence: index),
                 role: .host,
                 directory: directory,
                 now: baseDate.addingTimeInterval(Double(index))
-            ))
+            )
+            hostURLs.append(url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: baseDate.addingTimeInterval(Double(index))],
+                ofItemAtPath: url.path
+            )
         }
 
         let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
@@ -247,34 +252,52 @@ struct CoreModelsTests {
         #expect(remainingNames.contains(prefixedUnrelatedURL.lastPathComponent))
     }
 
-    @Test func diagnosticsRetentionAlwaysPreservesTheNewExport() throws {
+    @Test func diagnosticsRetentionPreservesAClockSkewedExportAcrossTheNextWrite() throws {
         struct Report: Codable, Equatable { let sequence: Int }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let futureBaseDate = Date(timeIntervalSince1970: 2_000_000_000)
+        let modificationBaseDate = Date(timeIntervalSince1970: 1_700_000_000)
         var futureURLs: [URL] = []
         for index in 0..<5 {
-            futureURLs.append(try RedactedDiagnosticsExporter.write(
+            let url = try RedactedDiagnosticsExporter.write(
                 Report(sequence: index),
                 role: .host,
                 directory: directory,
                 now: futureBaseDate.addingTimeInterval(Double(index))
-            ))
+            )
+            futureURLs.append(url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: modificationBaseDate.addingTimeInterval(Double(index))],
+                ofItemAtPath: url.path
+            )
         }
 
-        let newURL = try RedactedDiagnosticsExporter.write(
+        let skewedURL = try RedactedDiagnosticsExporter.write(
             Report(sequence: 99),
             role: .host,
             directory: directory,
             now: futureBaseDate.addingTimeInterval(-60)
         )
+        try FileManager.default.setAttributes(
+            [.modificationDate: modificationBaseDate.addingTimeInterval(5)],
+            ofItemAtPath: skewedURL.path
+        )
 
-        #expect(FileManager.default.fileExists(atPath: newURL.path))
-        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: newURL)) == .init(sequence: 99))
+        #expect(FileManager.default.fileExists(atPath: skewedURL.path))
+        let followingURL = try RedactedDiagnosticsExporter.write(
+            Report(sequence: 100),
+            role: .host,
+            directory: directory,
+            now: futureBaseDate.addingTimeInterval(120)
+        )
+
+        #expect(FileManager.default.fileExists(atPath: skewedURL.path))
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: skewedURL)) == .init(sequence: 99))
         let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
-        let expectedNames = Set((futureURLs.suffix(4) + [newURL]).map(\.lastPathComponent))
+        let expectedNames = Set((futureURLs.suffix(3) + [skewedURL, followingURL]).map(\.lastPathComponent))
         #expect(remainingNames == expectedNames)
     }
 

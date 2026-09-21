@@ -167,10 +167,6 @@ final class ControllerCoordinator {
     var motionControlEnabled: Bool {
         didSet {
             defaults.set(motionControlEnabled, forKey: "partybox.motionControlEnabled")
-            if !motionControlEnabled {
-                client.setOrientation(.identity, available: false)
-                client.setAxes(axisX: 0, axisY: 0)
-            }
             updateMotionCapture()
         }
     }
@@ -352,6 +348,7 @@ final class ControllerCoordinator {
         eventTask?.cancel()
         eventTask = nil
         discoveryHelpVisible = false
+        resetMotionSettingsPresentation()
         resetSessionPresentation()
         deviceCueTask?.cancel()
         deviceCueTask = nil
@@ -558,6 +555,7 @@ final class ControllerCoordinator {
         currentDeviceCue = nil
         deviceCueTask?.cancel()
         deviceCueTask = nil
+        updateMotionCapture()
     }
 
     private func play(_ pattern: HapticPattern) {

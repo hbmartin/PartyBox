@@ -228,7 +228,7 @@ struct PartyBox_ControllerTests {
                 motionSampler: sampler
             )
             await coordinator.start()
-            coordinator.client.setInput(axisX: 0.4, axisY: -0.2, buttons: .primary)
+            coordinator.client.setAxes(axisX: 0.4, axisY: -0.2)
 
             coordinator.motionSettingsPresentationChanged(isPresented: true)
             #expect(sampler.isActive)
@@ -247,7 +247,6 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.motionCalibrationStatus == .ready)
             #expect(coordinator.client.inputAxisX == 0.4)
             #expect(coordinator.client.inputAxisY == -0.2)
-            #expect(coordinator.client.inputButtons == .primary)
             #expect(coordinator.client.inputOrientation == .identity)
 
             coordinator.calibrateMotion()
@@ -255,7 +254,6 @@ struct PartyBox_ControllerTests {
             #expect(abs(coordinator.motionNeutralProjectionY - orientation.verticalTiltProjection()) < 0.000_001)
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
-            #expect(coordinator.client.inputButtons == .primary)
 
             coordinator.motionSettingsPresentationChanged(isPresented: false)
             #expect(!sampler.isActive)
@@ -391,19 +389,46 @@ struct PartyBox_ControllerTests {
 
             await coordinator.handleForTesting(.sessionReset)
 
-            #expect(!sampler.isActive)
+            #expect(sampler.isActive)
             #expect(!coordinator.canCalibrateMotion)
             #expect(coordinator.motionCalibrationStatus == .initializing)
-
-            coordinator.refreshMotionCaptureForTesting()
-            #expect(sampler.isActive)
 
             coordinator.motionSettingsPresentationChanged(isPresented: false)
             await coordinator.stop()
         }
     }
 
-    @Test func stoppingMotionInputPreservesHeldButtons() async throws {
+    @Test func stopClearsMotionSettingsPresentationBeforeRestart() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            #expect(sampler.isActive)
+
+            await coordinator.stop()
+            await coordinator.start()
+
+            #expect(!sampler.isActive)
+            #expect(!coordinator.canCalibrateMotion)
+            #expect(coordinator.motionCalibrationStatus == .initializing)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func disablingMotionNeutralizesMotionOwnedInputOnce() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
@@ -420,28 +445,35 @@ struct PartyBox_ControllerTests {
                 motionSampler: sampler
             )
             await coordinator.start()
-            coordinator.client.setInput(axisX: 0, axisY: 0, buttons: .primary)
 
             let halfAngle = Float.pi / 12
             sampler.emit(.orientation(.init(
                 x: -sin(halfAngle), y: sin(halfAngle), z: 0, w: cos(halfAngle)
             )))
-            #expect(coordinator.client.inputButtons == .primary)
+            #expect(coordinator.client.inputAxisX != 0 || coordinator.client.inputAxisY != 0)
             #expect(coordinator.client.inputFlags.contains(.motionAvailable))
 
             coordinator.motionControlEnabled = false
 
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
-            #expect(coordinator.client.inputButtons == .primary)
             #expect(coordinator.client.inputOrientation == .identity)
             #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
             #expect(!sampler.isActive)
+            #expect(sampler.stopCount == 1)
+
+            coordinator.motionControlEnabled = false
+
+            #expect(coordinator.client.inputAxisX == 0)
+            #expect(coordinator.client.inputAxisY == 0)
+            #expect(coordinator.client.inputOrientation == .identity)
+            #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
+            #expect(sampler.stopCount == 1)
             await coordinator.stop()
         }
     }
 
-    @Test func closingSettingsDoesNotClearTouchInputAfterMotionOwnershipEnds() async throws {
+    @Test func disablingCalibrationOnlyMotionDoesNotClearTouchInput() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
@@ -481,8 +513,9 @@ struct PartyBox_ControllerTests {
                 try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
             ))
             #expect(sampler.isActive)
-            coordinator.client.setInput(axisX: 0.6, axisY: -0.4)
+            coordinator.client.setAxes(axisX: 0.6, axisY: -0.4)
 
+            coordinator.motionControlEnabled = false
             coordinator.motionSettingsPresentationChanged(isPresented: false)
 
             #expect(!sampler.isActive)
@@ -559,13 +592,22 @@ struct PartyBox_ControllerTests {
     }
 
     @Test func controllerDiagnosticsExportPropagatesFailure() async throws {
-        let coordinator = ControllerCoordinator(
-            configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--disable-effects"]),
-            diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
-        )
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--disable-effects"]),
+                diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
+            )
 
-        await #expect(throws: InjectedDiagnosticsError.self) {
-            try await coordinator.makeRedactedDiagnosticsFile()
+            await #expect(throws: InjectedDiagnosticsError.self) {
+                try await coordinator.makeRedactedDiagnosticsFile()
+            }
+            await coordinator.stop()
         }
     }
 
@@ -656,12 +698,11 @@ struct PartyBox_ControllerTests {
             let rosterPresentation = try PartyBoxWireCodec.encode(HostPresentation.roster([renamed]))
 
             await coordinator.start()
-            coordinator.client.setInput(axisX: 0.8, axisY: -0.4, buttons: .primary)
+            coordinator.client.setAxes(axisX: 0.8, axisY: -0.4)
             await coordinator.handleForTesting(.application(gamePresentation))
 
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
-            #expect(coordinator.client.inputButtons.isEmpty)
             #expect(coordinator.controllerScreen == gameScreen)
 
             await coordinator.handleForTesting(.application(rosterPresentation))
@@ -717,7 +758,7 @@ struct PartyBox_ControllerTests {
                 "--disable-effects",
             ]))
             await coordinator.start()
-            coordinator.client.setInput(axisX: 0.7, axisY: -0.3)
+            coordinator.client.setAxes(axisX: 0.7, axisY: -0.3)
 
             coordinator.refreshMotionCaptureForTesting()
 

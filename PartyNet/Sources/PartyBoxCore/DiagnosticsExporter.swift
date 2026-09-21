@@ -56,9 +56,10 @@ public enum RedactedDiagnosticsExporter {
         retentionLimit: Int,
         preserving currentExport: URL
     ) {
+        let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil,
+            includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
         ) else { return }
         let escapedPrefix = NSRegularExpression.escapedPattern(for: filenamePrefix)
@@ -73,7 +74,12 @@ public enum RedactedDiagnosticsExporter {
             return filenameExpression.firstMatch(in: filename, range: range) != nil
                 && file.standardizedFileURL != currentExport
         }.sorted { lhs, rhs in
-            lhs.lastPathComponent > rhs.lastPathComponent
+            let leftDate = try? lhs.resourceValues(forKeys: resourceKeys).contentModificationDate
+            let rightDate = try? rhs.resourceValues(forKeys: resourceKeys).contentModificationDate
+            if leftDate != rightDate {
+                return (leftDate ?? .distantPast) > (rightDate ?? .distantPast)
+            }
+            return lhs.lastPathComponent > rhs.lastPathComponent
         }
         for expired in olderExports.dropFirst(max(0, retentionLimit - 1)) {
             try? FileManager.default.removeItem(at: expired)

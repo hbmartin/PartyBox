@@ -12,6 +12,10 @@ struct PartyBoxTests {
     private let bottom = PlayerID(0)
     private let top = PlayerID(1)
 
+    private enum InjectedDiagnosticsError: Error {
+        case failed
+    }
+
     private enum EventSignature: Equatable {
         case audio(HapticPattern)
         case haptic(PlayerID, HapticPattern)
@@ -75,6 +79,22 @@ struct PartyBoxTests {
     @Test func hostLaunchArgumentsDoNotForceAProductionSeed() {
         let configuration = HostLaunchConfiguration(arguments: ["PartyBox"])
         #expect(configuration.seed == nil)
+    }
+
+    @Test func hostDiagnosticsExportPropagatesFailure() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = HostCoordinator(
+                configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]),
+                diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
+            )
+
+            await #expect(throws: InjectedDiagnosticsError.self) {
+                try await coordinator.makeRedactedDiagnosticsFile()
+            }
+            await coordinator.stop()
+        }
     }
 
     #if os(macOS)
@@ -1318,6 +1338,24 @@ struct PartyBoxTests {
         await coordinator.stop()
     }
 
+    @Test func leavingGameOverClearsTheBotDifficultyChange() async {
+        let coordinator = HostCoordinator(configuration: .init(arguments: [
+            "PartyBox", "--ui-testing", "--scenario", "game-over", "--disable-effects",
+        ]))
+        await coordinator.start()
+        guard case .gameOver = coordinator.phase else {
+            Issue.record("Expected the game-over fixture")
+            return
+        }
+        #expect(coordinator.botDifficultyChange != nil)
+
+        coordinator.perform(.back)
+
+        #expect(coordinator.phase == .gameMenu)
+        #expect(coordinator.botDifficultyChange == nil)
+        await coordinator.stop()
+    }
+
     @Test func pongModifiersApplyTheSpecifiedRuleChanges() {
         let normal = PongRules()
         #expect(PongGame.rules(for: "fast-ball").startingSpeed == normal.startingSpeed * 1.25)
@@ -1494,7 +1532,7 @@ struct PartyBoxTests {
             }
             try await waitUntil { coordinator.turnOrder.players.count == 3 }
 
-            clients[0].setInput(axisX: 0.75)
+            clients[0].setAxes(axisX: 0.75)
             try await waitUntil { coordinator.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.75 }
             coordinator.perform(.select)
             coordinator.perform(.select)
