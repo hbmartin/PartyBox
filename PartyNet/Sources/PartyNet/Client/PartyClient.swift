@@ -179,7 +179,7 @@ public final class PartyClient {
         }
     }
 
-    public func setInput(axisX: Float, axisY: Float = 0, buttons: Buttons = []) {
+    public func setInput(axisX: Float, axisY: Float = 0, buttons: Buttons) {
         let axisX = axisX.isFinite ? min(max(axisX, -1), 1) : 0
         let axisY = axisY.isFinite ? min(max(axisY, -1), 1) : 0
         inputAxisX = axisX

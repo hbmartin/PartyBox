@@ -338,6 +338,29 @@ package enum PartyFaultNetworkSupport {
     }
 }
 
+struct UDPDeliveryAccounting: Equatable, Sendable {
+    let forwardedCount: Int
+    let duplicatedCount: Int
+    let delayedCount: Int
+    let droppedCount: Int
+    let failureReason: String?
+
+    static func reduce(
+        forwardedCount: Int,
+        delayedCount: Int,
+        failureReason: String?
+    ) -> Self {
+        let forwardedCount = max(0, forwardedCount)
+        return Self(
+            forwardedCount: forwardedCount,
+            duplicatedCount: max(0, forwardedCount - 1),
+            delayedCount: max(0, delayedCount),
+            droppedCount: forwardedCount == 0 ? 1 : 0,
+            failureReason: failureReason
+        )
+    }
+}
+
 public actor GenericFaultProxy {
     private final class PendingUDPDatagrams: @unchecked Sendable {
         private let lock = NSLock()
@@ -376,7 +399,7 @@ public actor GenericFaultProxy {
         case cancelled
     }
 
-    struct UDPPayloadDeliverySummary: Sendable {
+    private struct UDPPayloadDeliverySummary: Sendable {
         var forwardedCount = 0
         var delayedCount = 0
         var failureReason: String?
@@ -878,16 +901,24 @@ public actor GenericFaultProxy {
         }
     }
 
-    func applyUDPDeliverySummary(
+    private func applyUDPDeliverySummary(
         _ summary: UDPPayloadDeliverySummary,
         direction: TrafficDirection
     ) -> String? {
-        for _ in 0..<summary.forwardedCount { noteUDPForwarded(direction: direction) }
-        let duplicatedCount = max(0, summary.forwardedCount - 1)
-        if duplicatedCount > 0 { noteUDPDuplicated(duplicatedCount, direction: direction) }
-        for _ in 0..<summary.delayedCount { noteDelay(direction: direction) }
-        if summary.forwardedCount == 0 { noteUDPDropped(direction: direction) }
-        return summary.failureReason
+        let accounting = UDPDeliveryAccounting.reduce(
+            forwardedCount: summary.forwardedCount,
+            delayedCount: summary.delayedCount,
+            failureReason: summary.failureReason
+        )
+        for _ in 0..<accounting.forwardedCount { noteUDPForwarded(direction: direction) }
+        if accounting.duplicatedCount > 0 {
+            noteUDPDuplicated(accounting.duplicatedCount, direction: direction)
+        }
+        for _ in 0..<accounting.delayedCount { noteDelay(direction: direction) }
+        if accounting.droppedCount > 0 {
+            noteUDPDropped(accounting.droppedCount, direction: direction)
+        }
+        return accounting.failureReason
     }
 
     private func finishTCP(_ id: UUID) {

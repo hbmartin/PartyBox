@@ -6,14 +6,14 @@ import Testing
 @Suite("Input frame binary format")
 struct InputFrameTests {
     @Test @MainActor
-    func clientInputWithoutButtonsRetainsLegacyClearingSemantics() {
+    func explicitEmptyButtonsClearHeldButtons() {
         withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
             let client = PartyClient(displayName: "Input")
 
             client.setInput(axisX: 0.25, axisY: -0.5, buttons: .primary)
-            client.setInput(axisX: 0.75, axisY: 0.5)
+            client.setInput(axisX: 0.75, axisY: 0.5, buttons: [])
 
             #expect(client.inputAxisX == 0.75)
             #expect(client.inputAxisY == 0.5)

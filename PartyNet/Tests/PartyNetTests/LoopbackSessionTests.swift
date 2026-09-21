@@ -150,7 +150,7 @@ extension NetworkIntegrationTests {
       await client.rename(to: "Renamed")
       try await waitUntil { host.players.first?.displayName == "Renamed" }
 
-      client.setInput(axisX: 0.75)
+      client.setAxes(axisX: 0.75)
       try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.75 }
 
       await client.disconnect()
@@ -384,11 +384,11 @@ extension NetworkIntegrationTests {
 
       do {
         await original.connect(host: "127.0.0.1", port: port)
-        original.setInput(axisX: -0.8)
+        original.setAxes(axisX: -0.8)
         try await waitUntil {
           host.inputs.activitySnapshot().first?.minimumAxisX == -0.8
         }
-        original.setInput(axisX: 0.8)
+        original.setAxes(axisX: 0.8)
         try await waitUntil {
           host.inputs.activitySnapshot().first?.maximumAxisX == 0.8
         }
@@ -716,7 +716,7 @@ extension NetworkIntegrationTests {
       let payload = Data("same presentation".utf8)
       await host.send(.application(payload), to: PlayerID(0))
       try await waitUntil { host.players.count == 1 }
-      client.setInput(axisX: 0.75)
+      client.setAxes(axisX: 0.75)
       #expect(client.inputAxisX == 0.75)
 
       let pingCount = client.rttSampleCount
@@ -777,9 +777,9 @@ extension NetworkIntegrationTests {
       await client.connect(host: "127.0.0.1", port: port)
 
       for index in 0..<500 {
-        client.setInput(axisX: Float(index) / 500)
+        client.setAxes(axisX: Float(index) / 500)
       }
-      client.setInput(axisX: -0.875)
+      client.setAxes(axisX: -0.875)
 
       try await waitUntil { host.inputs.snapshot()[PlayerID(0)]?.axisX == -0.875 }
       await client.disconnect()
@@ -820,7 +820,7 @@ extension NetworkIntegrationTests {
       await client.connect(host: "127.0.0.1", port: firstPort)
       await firstHostPeer.connect(host: "127.0.0.1", port: firstPort)
       try await waitUntil { firstHost.players.count == 2 }
-      client.setInput(axisX: 0.625)
+      client.setAxes(axisX: 0.625)
 
       await client.connect(host: "127.0.0.1", port: secondPort)
 
@@ -849,7 +849,7 @@ extension NetworkIntegrationTests {
         return
       }
 
-      client.setInput(axisX: 0.5)
+      client.setAxes(axisX: 0.5)
       await client.disconnect()
       client.reconnectAfterForeground()
       try await Task.sleep(for: .milliseconds(100))

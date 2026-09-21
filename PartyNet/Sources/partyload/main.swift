@@ -174,7 +174,7 @@ private struct PartyLoad {
                 let elapsed = Double(tick) / Double(configuration.frequency)
                 for (index, client) in clients.enumerated() {
                     let phase = (Double(index) / Double(max(1, clients.count))) * 2 * Double.pi
-                    client.setInput(axisX: Float(sin((elapsed * 2.1) + phase)))
+                    client.setAxes(axisX: Float(sin((elapsed * 2.1) + phase)))
                     if client.rttSampleCount != lastRTTSampleCounts[index], let rtt = client.rttMilliseconds {
                         rttSamples.append(rtt)
                         lastRTTSampleCounts[index] = client.rttSampleCount

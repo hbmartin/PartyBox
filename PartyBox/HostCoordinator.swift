@@ -48,6 +48,27 @@ struct VoteTallyPresentation: Identifiable, Equatable {
 @MainActor
 @Observable
 final class HostCoordinator {
+    nonisolated struct DiagnosticsActivity: Codable, Sendable {
+        let acceptedFrames: UInt64
+        let minimumAxis: Float
+        let maximumAxis: Float
+    }
+
+    nonisolated struct DiagnosticsReport: Codable, Sendable {
+        let generatedAt: Date
+        let role: String
+        let protocolVersion: UInt16
+        let phase: String
+        let connectedPlayers: Int
+        let connectedHumans: Int
+        let activeBots: Int
+        let currentGame: String?
+        let inputActivity: [DiagnosticsActivity]
+        let historyPersistenceHealthy: Bool
+    }
+
+    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> URL
+
     let host: PartyHost
     let configuration: HostLaunchConfiguration
     private(set) var phase: HostPhase = .lobby
@@ -81,6 +102,7 @@ final class HostCoordinator {
     @ObservationIgnored private var sounds: ArcadeSoundPlayer?
     @ObservationIgnored private let historyStore: JSONRecordStore<MatchRecord>
     @ObservationIgnored private let cupHistoryStore: JSONRecordStore<CupRecord>
+    @ObservationIgnored private let diagnosticsExporter: DiagnosticsExporter
     @ObservationIgnored private let logger = Logger(subsystem: "PartyBox", category: "HostCoordinator")
     @ObservationIgnored private var currentSession: (any PartyGameSession)?
     @ObservationIgnored private var bots: [ControllerID: PartyClient] = [:]
@@ -188,11 +210,17 @@ final class HostCoordinator {
     init(
         configuration suppliedConfiguration: HostLaunchConfiguration? = nil,
         historyFileURL: URL? = nil,
-        host suppliedHost: PartyHost? = nil
+        host suppliedHost: PartyHost? = nil,
+        diagnosticsExporter: DiagnosticsExporter? = nil
     ) {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
         host = suppliedHost ?? PartyHost()
+        self.diagnosticsExporter = diagnosticsExporter ?? { report in
+            try await Task.detached(priority: .userInitiated) {
+                try RedactedDiagnosticsExporter.write(report, role: .host)
+            }.value
+        }
         games = [PongGame(), SignalSnapGame(), GravityGrabGame(), SnakePitGame(), LastLightGame()]
         sounds = nil
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
@@ -503,7 +531,6 @@ final class HostCoordinator {
         case .cupComplete:
             if action == .select || action == .back {
                 resetCup()
-                botDifficultyChange = nil
                 setMenuSelection(partyCupMenuIndex)
                 transition(to: .gameMenu)
             }
@@ -565,6 +592,7 @@ final class HostCoordinator {
 
     private func transition(to newPhase: HostPhase) {
         guard phase != newPhase else { return }
+        if newPhase == .gameMenu { botDifficultyChange = nil }
         phase = newPhase
         clearReadiness()
         requestLayoutBroadcast()
@@ -678,24 +706,7 @@ final class HostCoordinator {
     func requestHistoryClear() { confirmsHistoryClear = true }
     func cancelHistoryClear() { confirmsHistoryClear = false }
 
-    func makeRedactedDiagnosticsFile() async -> URL? {
-        nonisolated struct Activity: Codable, Sendable {
-            let acceptedFrames: UInt64
-            let minimumAxis: Float
-            let maximumAxis: Float
-        }
-        nonisolated struct Report: Codable, Sendable {
-            let generatedAt: Date
-            let role: String
-            let protocolVersion: UInt16
-            let phase: String
-            let connectedPlayers: Int
-            let connectedHumans: Int
-            let activeBots: Int
-            let currentGame: String?
-            let inputActivity: [Activity]
-            let historyPersistenceHealthy: Bool
-        }
+    func makeRedactedDiagnosticsFile() async throws -> URL {
         let phaseName: String = switch phase {
         case .lobby: "lobby"
         case .gameMenu: "gameMenu"
@@ -707,7 +718,7 @@ final class HostCoordinator {
         case .history: "history"
         }
         let generatedAt = Date()
-        let report = Report(
+        let report = DiagnosticsReport(
             generatedAt: generatedAt,
             role: "host",
             protocolVersion: PartyNetConstants.protocolVersion,
@@ -717,17 +728,19 @@ final class HostCoordinator {
             activeBots: activeBotCount,
             currentGame: phase == .playing ? currentGameTitle : nil,
             inputActivity: host.inputs.activitySnapshot().map {
-                Activity(acceptedFrames: $0.acceptedFrameCount, minimumAxis: $0.minimumAxisX, maximumAxis: $0.maximumAxisX)
+                DiagnosticsActivity(
+                    acceptedFrames: $0.acceptedFrameCount,
+                    minimumAxis: $0.minimumAxisX,
+                    maximumAxis: $0.maximumAxisX
+                )
             },
             historyPersistenceHealthy: historyPersistenceError == nil
         )
         do {
-            return try await Task.detached(priority: .userInitiated) {
-                try RedactedDiagnosticsExporter.write(report, role: .host)
-            }.value
+            return try await diagnosticsExporter(report)
         } catch {
             logger.error("Could not export diagnostics: \(error.localizedDescription, privacy: .public)")
-            return nil
+            throw error
         }
     }
 

@@ -240,7 +240,7 @@ extension NetworkIntegrationTests {
         let client = PartyClient(displayName: "Cadence")
         await client.connect(host: metadata.host, port: metadata.tcpPort)
 
-        client.setInput(axisX: 0.25)
+        client.setAxes(axisX: 0.25)
         await settle()
         await clock.advance(by: .milliseconds(15))
         await settle()
@@ -250,7 +250,7 @@ extension NetworkIntegrationTests {
         try await waitUntil { client.inputFramesSent == 1 }
         try await waitUntil { rig.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.25 }
 
-        client.setInput(axisX: 0.5)
+        client.setAxes(axisX: 0.5)
         await settle()
         await clock.advance(by: .milliseconds(15))
         await settle()
@@ -323,7 +323,7 @@ extension NetworkIntegrationTests {
         let metadata = try await start(rig, advancing: clock)
         let client = PartyClient(displayName: "Fallback Clock")
         await client.connect(host: metadata.host, port: metadata.tcpPort)
-        client.setInput(axisX: 0.75)
+        client.setAxes(axisX: 0.75)
         await settle()
 
         await clock.advance(by: .milliseconds(999))
@@ -352,7 +352,7 @@ extension NetworkIntegrationTests {
         }
 
         await rig.proxy.setProfile(.stable)
-        client.setInput(axisX: -0.5)
+        client.setAxes(axisX: -0.5)
         await settle()
         await clock.advance(by: .milliseconds(199))
         await settle()

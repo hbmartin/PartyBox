@@ -68,7 +68,7 @@ extension NetworkIntegrationTests {
       let client = PartyClient(displayName: "Stable")
       await client.connect(host: metadata.host, port: metadata.tcpPort)
 
-      client.setInput(axisX: 0.375)
+      client.setAxes(axisX: 0.375)
       try await waitUntil { rig.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.375 }
       try await Task.sleep(for: PartyNetConstants.udpReadyTimeout + .milliseconds(250))
 
@@ -85,7 +85,7 @@ extension NetworkIntegrationTests {
       let client = PartyClient(displayName: "Fallback")
       await client.connect(host: metadata.host, port: metadata.tcpPort)
 
-      client.setInput(axisX: 0.625)
+      client.setAxes(axisX: 0.625)
       try await waitUntil(timeout: .seconds(3)) {
         client.usesTCPFallback
           && rig.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0.625
@@ -95,7 +95,7 @@ extension NetworkIntegrationTests {
       #expect(failedMetrics.tcpMessagesClientToHost > 0)
 
       await rig.proxy.setProfile(.stable)
-      client.setInput(axisX: -0.5)
+      client.setAxes(axisX: -0.5)
       try await waitUntil(timeout: .seconds(3)) {
         !client.usesTCPFallback
           && rig.host.inputs.snapshot()[PlayerID(0)]?.axisX == -0.5
@@ -119,7 +119,7 @@ extension NetworkIntegrationTests {
       await client.connect(host: metadata.host, port: metadata.tcpPort)
 
       for index in 0..<40 {
-        client.setInput(axisX: Float(index) / 40)
+        client.setAxes(axisX: Float(index) / 40)
         try await Task.sleep(for: .milliseconds(20))
       }
       try await waitUntil {
@@ -147,7 +147,7 @@ extension NetworkIntegrationTests {
       await client.connect(host: metadata.host, port: metadata.tcpPort)
 
       for index in 0..<60 {
-        client.setInput(axisX: Float(index % 20) / 10 - 1)
+        client.setAxes(axisX: Float(index % 20) / 10 - 1)
         try await Task.sleep(for: .milliseconds(8))
       }
       try await Task.sleep(for: .milliseconds(150))
@@ -167,7 +167,7 @@ extension NetworkIntegrationTests {
       await client.connect(host: metadata.host, port: metadata.tcpPort)
 
       for index in 0..<400 {
-        client.setInput(axisX: index.isMultiple(of: 2) ? -1 : 1)
+        client.setAxes(axisX: index.isMultiple(of: 2) ? -1 : 1)
         try await Task.sleep(for: .milliseconds(1))
       }
       try await waitUntil { await rig.proxy.currentMetrics().udpReceived >= 300 }
@@ -275,7 +275,7 @@ extension NetworkIntegrationTests {
       try await waitUntil { rig.host.players.count == 1 }
       client.reconnectAfterForeground()
       try await waitUntil { client.rttSampleCount > 0 }
-      client.setInput(axisX: 0.5)
+      client.setAxes(axisX: 0.5)
 
       let restarted = try await rig.restartHost()
       #expect(restarted.hostInstanceID != initial.hostInstanceID)

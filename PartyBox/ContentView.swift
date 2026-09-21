@@ -461,6 +461,7 @@ private struct VoteOverlay: View {
 private struct HistoryView: View {
     @Bindable var coordinator: HostCoordinator
     @State private var diagnosticsURL: URL?
+    @State private var diagnosticsErrorMessage: String?
     @State private var isPreparingDiagnostics = false
 
     var body: some View {
@@ -553,6 +554,12 @@ private struct HistoryView: View {
                 } else {
                     Button("CLEAR TV HISTORY") { coordinator.requestHistoryClear() }
                 }
+                if let diagnosticsErrorMessage {
+                    Label(diagnosticsErrorMessage, systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("host.history.diagnostics.error")
+                }
                 if let diagnosticsURL {
 #if os(macOS)
                     ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
@@ -564,10 +571,15 @@ private struct HistoryView: View {
                 } else {
                     Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
                         guard !isPreparingDiagnostics else { return }
+                        diagnosticsErrorMessage = nil
                         isPreparingDiagnostics = true
                         Task {
-                            diagnosticsURL = await coordinator.makeRedactedDiagnosticsFile()
-                            isPreparingDiagnostics = false
+                            defer { isPreparingDiagnostics = false }
+                            do {
+                                diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
+                            } catch {
+                                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared. Check available storage and try again."
+                            }
                         }
                     }
                     .disabled(isPreparingDiagnostics)
