@@ -5,6 +5,10 @@ import Testing
 
 @Suite("PartyBox application protocol")
 struct CoreModelsTests {
+    private enum MetadataReadFailure: Error {
+        case simulated
+    }
+
     private let firstID = ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!)
     private let secondID = ControllerID(rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
 
@@ -250,6 +254,66 @@ struct CoreModelsTests {
         #expect(remainingNames.contains(controllerURL.lastPathComponent))
         #expect(remainingNames.contains(unrelatedURL.lastPathComponent))
         #expect(remainingNames.contains(prefixedUnrelatedURL.lastPathComponent))
+    }
+
+    @Test func diagnosticsRetentionSkipsUnreadableOlderExportMetadata() throws {
+        struct Report: Codable, Equatable { let value: String }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let throwingURL = try RedactedDiagnosticsExporter.write(
+            Report(value: "throwing"), role: .host, directory: directory, now: baseDate
+        )
+        let missingDateURL = try RedactedDiagnosticsExporter.write(
+            Report(value: "missing-date"),
+            role: .host,
+            directory: directory,
+            now: baseDate.addingTimeInterval(1)
+        )
+
+        let currentURL = try RedactedDiagnosticsExporter.write(
+            Report(value: "current"),
+            role: .host,
+            directory: directory,
+            now: baseDate.addingTimeInterval(2),
+            retentionLimit: 1
+        ) { file in
+            switch file.standardizedFileURL {
+            case throwingURL.standardizedFileURL:
+                throw MetadataReadFailure.simulated
+            case missingDateURL.standardizedFileURL:
+                return nil
+            default:
+                return try file.resourceValues(
+                    forKeys: [.contentModificationDateKey]
+                ).contentModificationDate
+            }
+        }
+
+        #expect(FileManager.default.fileExists(atPath: currentURL.path))
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: currentURL)) == .init(value: "current"))
+        #expect(FileManager.default.fileExists(atPath: throwingURL.path))
+        #expect(FileManager.default.fileExists(atPath: missingDateURL.path))
+    }
+
+    @Test func diagnosticsRetentionPropagatesCurrentExportMetadataFailure() throws {
+        struct Report: Codable { let value: String }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        #expect(throws: MetadataReadFailure.self) {
+            _ = try RedactedDiagnosticsExporter.write(
+                Report(value: "current"),
+                role: .host,
+                directory: directory,
+                modificationDateProvider: { _ in throw MetadataReadFailure.simulated }
+            )
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
     @Test func diagnosticsRetentionPreservesAClockSkewedExportAcrossTheNextWrite() throws {
