@@ -67,7 +67,7 @@ final class HostCoordinator {
         let historyPersistenceHealthy: Bool
     }
 
-    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> URL
+    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> DiagnosticsExport
 
     let host: PartyHost
     let configuration: HostLaunchConfiguration
@@ -221,8 +221,8 @@ final class HostCoordinator {
         } else if configuration.failDiagnosticsExport {
             self.diagnosticsExporter = { _ in throw CocoaError(.fileWriteNoPermission) }
         } else {
-            self.diagnosticsExporter = { @concurrent report in
-                try RedactedDiagnosticsExporter.write(report, role: .host)
+            self.diagnosticsExporter = { report in
+                try await RedactedDiagnosticsExporter.write(report, role: .host)
             }
         }
         games = [PongGame(), SignalSnapGame(), GravityGrabGame(), SnakePitGame(), LastLightGame()]
@@ -710,7 +710,7 @@ final class HostCoordinator {
     func requestHistoryClear() { confirmsHistoryClear = true }
     func cancelHistoryClear() { confirmsHistoryClear = false }
 
-    func makeRedactedDiagnosticsFile() async throws -> URL {
+    func makeRedactedDiagnosticsFile() async throws -> DiagnosticsExport {
         let phaseName: String = switch phase {
         case .lobby: "lobby"
         case .gameMenu: "gameMenu"

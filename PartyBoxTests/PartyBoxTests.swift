@@ -103,6 +103,30 @@ struct PartyBoxTests {
         }
     }
 
+    @Test func hostDiagnosticsExportUsesTheDefaultExporter() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = HostCoordinator(
+                configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"])
+            )
+            let export = try await coordinator.makeRedactedDiagnosticsFile()
+            defer { try? FileManager.default.removeItem(at: export.url) }
+
+            #expect(FileManager.default.fileExists(atPath: export.url.path))
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let report = try decoder.decode(
+                HostCoordinator.DiagnosticsReport.self,
+                from: Data(contentsOf: export.url)
+            )
+            #expect(report.role == "host")
+
+            await export.release()
+            await coordinator.stop()
+        }
+    }
+
     #if os(macOS)
     @Test func applicationLifecycleStopsTheHostFromAnUncancelledTask() async throws {
         try await withDependencies {

@@ -460,9 +460,10 @@ private struct VoteOverlay: View {
 
 private struct HistoryView: View {
     @Bindable var coordinator: HostCoordinator
-    @State private var diagnosticsURL: URL?
+    @State private var diagnosticsExport: DiagnosticsExport?
     @State private var diagnosticsErrorMessage: String?
     @State private var isPreparingDiagnostics = false
+    @State private var diagnosticsPreparationTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -560,26 +561,17 @@ private struct HistoryView: View {
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("host.history.diagnostics.error")
                 }
-                if let diagnosticsURL {
+                if let diagnosticsExport {
 #if os(macOS)
-                    ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
+                    ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsExport.url)
 #else
-                    Text("DIAGNOSTICS SAVED: \(diagnosticsURL.lastPathComponent)")
+                    Text("DIAGNOSTICS SAVED: \(diagnosticsExport.url.lastPathComponent)")
                         .font(.caption.monospaced().weight(.black))
                         .foregroundStyle(PartyTheme.cyan)
 #endif
                 } else {
                     Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
-                        diagnosticsErrorMessage = nil
-                        isPreparingDiagnostics = true
-                        Task {
-                            defer { isPreparingDiagnostics = false }
-                            do {
-                                diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
-                            } catch {
-                                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
-                            }
-                        }
+                        prepareDiagnostics()
                     }
                     .accessibilityIdentifier("host.history.diagnostics.prepare")
                     .disabled(isPreparingDiagnostics)
@@ -589,6 +581,43 @@ private struct HistoryView: View {
             }
             .foregroundStyle(.white)
             .padding(48)
+        }
+        .onDisappear { releaseDiagnostics() }
+    }
+
+    private func prepareDiagnostics() {
+        diagnosticsErrorMessage = nil
+        isPreparingDiagnostics = true
+        diagnosticsPreparationTask = Task {
+            defer {
+                isPreparingDiagnostics = false
+                diagnosticsPreparationTask = nil
+            }
+            do {
+                let export = try await coordinator.makeRedactedDiagnosticsFile()
+                guard !Task.isCancelled else {
+                    await export.release()
+                    return
+                }
+                diagnosticsExport = export
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func releaseDiagnostics() {
+        diagnosticsPreparationTask?.cancel()
+        diagnosticsPreparationTask = nil
+        isPreparingDiagnostics = false
+        diagnosticsErrorMessage = nil
+        guard let export = diagnosticsExport else { return }
+        diagnosticsExport = nil
+        Task {
+            await export.release()
         }
     }
 }

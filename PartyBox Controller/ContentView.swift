@@ -684,9 +684,10 @@ private struct PersonalHistoryView: View {
     @Bindable var coordinator: ControllerCoordinator
     let dismiss: () -> Void
     @State private var confirmingClear = false
-    @State private var diagnosticsURL: URL?
+    @State private var diagnosticsExport: DiagnosticsExport?
     @State private var diagnosticsErrorMessage: String?
     @State private var isPreparingDiagnostics = false
+    @State private var diagnosticsPreparationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -771,21 +772,12 @@ private struct PersonalHistoryView: View {
                             .foregroundStyle(.orange)
                             .accessibilityIdentifier("controller.history.diagnostics.error")
                     }
-                    if let diagnosticsURL {
-                        ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsURL)
+                    if let diagnosticsExport {
+                        ShareLink("SHARE REDACTED DIAGNOSTICS", item: diagnosticsExport.url)
                             .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
                     } else {
                         Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
-                            diagnosticsErrorMessage = nil
-                            isPreparingDiagnostics = true
-                            Task {
-                                defer { isPreparingDiagnostics = false }
-                                do {
-                                    diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
-                                } catch {
-                                    diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
-                                }
-                            }
+                            prepareDiagnostics()
                         }
                         .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
                         .accessibilityIdentifier("controller.history.diagnostics.prepare")
@@ -806,6 +798,43 @@ private struct PersonalHistoryView: View {
         }
         .preferredColorScheme(.dark)
         .accessibilityIdentifier("controller.layout.history")
+        .onDisappear { releaseDiagnostics() }
+    }
+
+    private func prepareDiagnostics() {
+        diagnosticsErrorMessage = nil
+        isPreparingDiagnostics = true
+        diagnosticsPreparationTask = Task {
+            defer {
+                isPreparingDiagnostics = false
+                diagnosticsPreparationTask = nil
+            }
+            do {
+                let export = try await coordinator.makeRedactedDiagnosticsFile()
+                guard !Task.isCancelled else {
+                    await export.release()
+                    return
+                }
+                diagnosticsExport = export
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func releaseDiagnostics() {
+        diagnosticsPreparationTask?.cancel()
+        diagnosticsPreparationTask = nil
+        isPreparingDiagnostics = false
+        diagnosticsErrorMessage = nil
+        guard let export = diagnosticsExport else { return }
+        diagnosticsExport = nil
+        Task {
+            await export.release()
+        }
     }
 
     private func statistic(title: String, value: Int) -> some View {
