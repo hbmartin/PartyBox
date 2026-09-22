@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.paddle.bottom",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.direction",
+          "style" : "caption",
+          "text" : "LEFT  ←  PADDLE  →  RIGHT",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "horizontal",
+          "id" : "pong.paddle",
+          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL IN SETTINGS"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

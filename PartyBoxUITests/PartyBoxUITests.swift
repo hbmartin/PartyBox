@@ -92,7 +92,7 @@ final class PartyBoxUITests: XCTestCase {
     private func launch(scenario: String? = nil, additional: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-animations", "--disable-effects", "--seed", "42"]
-        if let scenario { app.launchArguments += ["--scenario", scenario] }
+        if let scenario { app.launchArguments += ["--scenario", scenario, "--freeze-scenario"] }
         app.launchArguments += additional
         app.launch()
         return app

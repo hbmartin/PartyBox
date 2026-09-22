@@ -12,6 +12,7 @@
 		24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0830486B0000592BFF /* PartyBoxCore */; };
 		24B1CA0630486B0000592BFF /* PartyGameRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0930486B0000592BFF /* PartyGameRuntime */; };
 		24B1CA0730486B0000592BFF /* PartyBoxCore in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0A30486B0000592BFF /* PartyBoxCore */; };
+		24B1CA0B30486B0000592BFF /* PartyGames in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0C30486B0000592BFF /* PartyGames */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,6 +96,7 @@
 				24B1CA0030486B0000592BFF /* PartyNet in Frameworks */,
 				24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */,
 				24B1CA0630486B0000592BFF /* PartyGameRuntime in Frameworks */,
+				24B1CA0B30486B0000592BFF /* PartyGames in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -187,6 +189,7 @@
 				24B1CA0330486B0000592BFF /* PartyNet */,
 				24B1CA0830486B0000592BFF /* PartyBoxCore */,
 				24B1CA0930486B0000592BFF /* PartyGameRuntime */,
+				24B1CA0C30486B0000592BFF /* PartyGames */,
 			);
 			productName = PartyBox;
 			productReference = 24B1C9AA30486A7700592BFF /* PartyBox.app */;
@@ -1032,6 +1035,10 @@
 		24B1CA0A30486B0000592BFF /* PartyBoxCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PartyBoxCore;
+		};
+		24B1CA0C30486B0000592BFF /* PartyGames */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PartyGames;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

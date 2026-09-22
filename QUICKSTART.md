@@ -4,6 +4,14 @@ Everything you need to get PartyBox running in your living room, with your frien
 controllers. Two host options are covered end to end: **an Apple TV** (the intended setup) and **a Mac**
 (handy when you don't have an Apple TV, or when you want the host in front of you while you debug).
 
+## Start here
+
+1. Check [requirements](#2-requirements), then [open the project](#3-clone-open-resolve) and [sign both apps](#4-sign-both-app-targets--do-this-once).
+2. Set up the host on [Apple TV](#5-host-path-a--apple-tv) or [Mac](#6-host-path-b--mac).
+3. [Install the iPhone controller](#7-get-the-controller-onto-your-friends-iphones) and [run a first match](#8-run-the-party--step-by-step).
+
+For connection problems, use [network troubleshooting](docs/TROUBLESHOOTING.md). For controls, launch arguments, and protocol constants, use the [reference](docs/REFERENCE.md).
+
 ---
 
 ## 1. What you're setting up
@@ -105,15 +113,16 @@ partybox-fault        ┐
 partyload             ├ PartyNet test tools, not needed for a normal party
 PartyNet              │
 PartyNetTestSupport   ┘
+PartyGames            ← headlessly tested game library used by the host
 ```
 
 Repo layout, briefly:
 
 | Path | What it is |
 |---|---|
-| `PartyBox/` | Host app: `PartyBoxApp.swift`, `ContentView.swift`, `HostCoordinator.swift`, `Game/` |
+| `PartyBox/` | Host app: SwiftUI screens, coordinator, and host collaborators |
 | `PartyBox Controller/` | iPhone app: `ContentView.swift`, `ControllerCoordinator.swift` |
-| `PartyNet/` | Local SPM package — all networking, shared by both apps |
+| `PartyNet/` | Local SPM package — shared transport, protocol, runtime, and `PartyGames` |
 | `PartyFault/` | Standalone generic fault-proxy package; its CLI is named `partyfault` |
 | `Config/` | The two hand-maintained Info.plists (Bonjour + Local Network strings) |
 | `scripts/verify.sh` | The automated verification suite (not needed to play) |
@@ -173,7 +182,7 @@ From `CANDIDATE STACK.md`:
 > reliability win available to you.
 
 Ethernet works fine as long as the wired and wireless sides are the **same subnet** and your router
-forwards mDNS between them. Most home routers do; some mesh systems don't (see §9).
+forwards mDNS between them. Most home routers do; some mesh systems don't (see [network troubleshooting](docs/TROUBLESHOOTING.md)).
 
 ### 5.2 Pair the Apple TV with Xcode (over the network)
 
@@ -238,7 +247,7 @@ The **host name** is generated from the machine's hostname:
 their picker. Rename the Apple TV in **Settings ▸ General ▸ About ▸ Name** if you want something friendlier.
 
 The status line under the dot is your health readout. `Ready for controllers` means the listeners bound
-and Bonjour is advertising. Anything starting `Could not start:` means the host failed — see §9.
+and Bonjour is advertising. Anything starting `Could not start:` means the host failed — see [network troubleshooting](docs/TROUBLESHOOTING.md).
 
 ### 5.6 Siri Remote controls on the host
 
@@ -318,7 +327,7 @@ open "build/Build/Products/Release/PartyBox.app"
 Or simply **Product ▸ Build For ▸ Running**, then **Product ▸ Show Build Folder in Finder** and
 double-click `PartyBox.app`.
 
-> A **Release** build disables every debug launch argument listed in §10 — that's intentional. Use Debug
+> A **Release** build disables every debug launch argument listed in [reference](docs/REFERENCE.md) — that's intentional. Use Debug
 > builds while you're testing, Release for the party.
 
 ---
@@ -387,7 +396,7 @@ Launch `PartyBox` on the Apple TV or Mac. It starts advertising immediately on l
 ✅ **You should see:** the lobby, the host name badge, eight `OPEN` slots, and the status line
 `Ready for controllers`.
 
-❌ If the status reads `Could not start: …`, the listeners failed to bind. Jump to §9.
+❌ If the status reads `Could not start: …`, the listeners failed to bind. Jump to [network troubleshooting](docs/TROUBLESHOOTING.md).
 
 ### Step 2 — First phone opens the controller
 
@@ -423,8 +432,8 @@ button.
 `<name> joined`. The footer changes to **PRESS SELECT TO CHOOSE A GAME**.
 
 ❌ Nothing appears after ~4 seconds? The phone shows a **NO HOSTS FOUND** card with **TRY AGAIN** and
-**OPEN SETTINGS**. Go to §9.
-❌ The row is orange and says **INCOMPATIBLE VERSION**? See §9.5.
+**OPEN SETTINGS**. Go to [network troubleshooting](docs/TROUBLESHOOTING.md).
+❌ The row is orange and says **INCOMPATIBLE VERSION**? See [version troubleshooting](docs/TROUBLESHOOTING.md#96-incompatible-version-in-the-host-list).
 
 ### Step 5 — Add three more phones
 
@@ -482,7 +491,7 @@ While playing, check the top of each phone:
 - The **host name** and `P<n> <name>` on the left.
 - A **latency badge** on the right, e.g. `12 MS`. **Green under 50 ms, orange above.** On a healthy home
   network this should sit in the single digits to low tens. Orange during play means you have a Wi-Fi
-  problem, not a code problem — see §9.7.
+  problem, not a code problem — see [latency troubleshooting](docs/TROUBLESHOOTING.md#97-play-is-laggy-or-the-latency-badge-is-orange).
 
 Haptics confirm the round trip is working end to end:
 
@@ -548,265 +557,14 @@ That's expected behaviour, not a bug.
 
 ---
 
-## 9. Network troubleshooting
-
-Discovery is where this kind of app breaks. Work through these in order.
-
-### 9.1 Prove the host is advertising at all
-
-From any Mac on the same network:
-
-```bash
-dns-sd -B _partybox._tcp local.
-```
-
-You should see a line naming your host, e.g.:
-
-```
-Timestamp     A/R  Flags  if Domain  Service Type     Instance Name
-12:04:31.882  Add      3   6 local.  _partybox._tcp.  Living-Room's PartyBox
-```
-
-- **Host listed** → advertising works; the problem is on the phone or between the phone and the host.
-  Go to 9.3.
-- **Nothing listed** → the host isn't advertising, or mDNS isn't crossing to your Mac. Go to 9.2.
-
-To also see the address and port it resolves to:
-
-```bash
-dns-sd -L "Living-Room's PartyBox" _partybox._tcp local.
-```
-
-The TXT record shown there carries `v=2` (protocol version) and `id=<uuid>` (this host launch's instance).
-
-### 9.2 Read the host's own log
-
-The transport logs under the OSLog subsystem **`PartyNet`** (categories `HostTransport`,
-`ClientTransport`, `PartyHost`).
-
-**Mac host:**
-
-```bash
-log stream --predicate 'subsystem == "PartyNet"' --level debug
-```
-
-**Apple TV host:** open **Console.app** on your Mac, select the Apple TV in the sidebar (it must be
-network-paired, per §5.2), and filter on `PartyNet`.
-
-The line you're looking for, emitted right after the listeners bind:
-
-```
-PartyBox host ready on TCP 52408, UDP 52409
-```
-
-- **You see it** → the host is up and bound. Discovery is the problem, not startup.
-- **You don't** → the host never started. The lobby status line will say
-  `Could not start: <error>`. Usual causes: Local Network permission denied (§9.3), or the macOS
-  firewall blocking incoming connections (§9.4).
-
-Other useful debug-level lines when things go wrong mid-party: `Control connection ended: …`,
-`UDP flow ended: …`, `Input acknowledgment failed: …`, `Client session ended: …`, `Broadcast failed: …`.
-
-### 9.3 Local Network permission on the iPhone
-
-This is the single most common cause of "it just doesn't find anything."
-
-The app tells you when it detects it. Any error containing *denied* or *policy* is rewritten to:
-
-> *"Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."*
-
-And after 4 seconds with no hosts found you get the generic card:
-
-> *"Make sure the host is open on the same Wi‑Fi network. If asked, allow Local Network access. You can
-> change that permission in Settings."*
-
-Fix it:
-
-1. **Settings ▸ PartyBox Controller ▸ Local Network** — toggle **on**.
-   (The **OPEN SETTINGS** button on that card takes you straight there.)
-2. Force-quit and relaunch the app.
-3. If the toggle isn't there at all, iOS never recorded a decision. Reset privacy prompts with
-   **Settings ▸ General ▸ Transfer or Reset iPhone ▸ Reset ▸ Reset Location & Privacy**, then relaunch
-   the app and tap **Allow**.
-
-Do the same check on the **host** side: tvOS **Settings ▸ Apps ▸ PartyBox ▸ Local Network**, macOS
-**System Settings ▸ Privacy & Security ▸ Local Network**.
-
-### 9.4 macOS firewall (Mac host only)
-
-**System Settings ▸ Network ▸ Firewall**:
-
-- If the firewall is on, open **Options…** and confirm `PartyBox` is listed as
-  **Allow incoming connections**.
-- Make sure **Block all incoming connections** is **off** — it silently kills the TCP listener regardless
-  of per-app settings.
-- If PartyBox isn't listed, delete any stale entry, rebuild, and relaunch so the alert fires again.
-
-There are **no fixed ports to open** — the listeners take ephemeral ports every launch, so per-port
-firewall rules are useless here. Allow the application, not a port.
-
-### 9.5 Router and Wi-Fi configuration
-
-If `dns-sd` finds nothing from a Mac that's on the same Wi-Fi as the host:
-
-| Check | Why |
-|---|---|
-| **AP / client isolation off** | Isolation lets devices reach the internet but not each other. Kills PartyBox entirely. |
-| **Not a guest network** | Guest SSIDs almost always enable isolation. Put everyone on the main SSID. |
-| **Same subnet** | Host and phones must share one subnet. A separate IoT VLAN or a second router in NAT mode will break it. |
-| **mDNS forwarded across bands** | Some mesh systems (and some "smart" band-steering) drop mDNS between 2.4 GHz and 5 GHz. Symptom: *"discovery works sometimes."* Force the phones and the host onto the same band to test. |
-| **No VPN on the phone** | A VPN profile can capture the local subnet. Disable it and retry. |
-
-`CANDIDATE STACK.md` puts it this way:
-
-> **Router config:** you control the AP, so just confirm client isolation is off and mDNS isn't being
-> dropped across bands — some consumer mesh gear does this by default and it presents as
-> "discovery works sometimes."
-
-Remember there is **no AWDL/peer-to-peer fallback** — `peerToPeerIncluded(false)` is set on every listener,
-browser and connection. If mDNS over the infrastructure network doesn't work, nothing works.
-
-### 9.6 "INCOMPATIBLE VERSION" in the host list
-
-The host row is orange, disabled, and labelled `INCOMPATIBLE VERSION`. The Bonjour TXT record's `v` field
-doesn't match `PartyNetConstants.protocolVersion` (currently `2`).
-
-Cause: the phone and the host were built from different commits. Rebuild **both** apps from the same
-checkout and reinstall. If you're on TestFlight, ship a new controller build alongside your host update.
-
-### 9.7 Play is laggy or the latency badge is orange
-
-The badge on each phone shows measured round-trip time; it turns orange at **50 ms**.
-
-What's happening under the hood, so you know what to blame:
-
-- Input goes over **UDP at 60 Hz**. If the host stops acknowledging UDP for **1 second**, the phone
-  silently falls back to sending input over **TCP at ~30 Hz** and keeps playing. It feels heavier but it
-  doesn't disconnect.
-- The control channel pings every **2 seconds** and gives up after **6 seconds** without a reply.
-
-Things that actually help, in order of effect:
-
-1. **Put the host on Ethernet.** Biggest single win — it takes the host out of Wi-Fi contention.
-2. Move everyone to **5 GHz** and off any congested 2.4 GHz channel.
-3. Get the phones physically closer to the AP; eight phones all transmitting at 60 Hz is real airtime.
-4. Kick anything doing a big download off the network for the duration.
-
-### 9.8 Last-resort escape hatch: connect by address
-
-If Bonjour is broken on the venue's network and you can't fix it, a **Debug** build of the controller can
-bypass discovery entirely:
-
-1. Get the host's IP and TCP port from the log line in §9.2
-   (`PartyBox host ready on TCP 52408, …`).
-2. Run the controller from Xcode with a launch argument
-   (**Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸ Arguments**):
-
-   ```
-   --host 192.168.1.42:52408
-   ```
-
-   IPv6 works too, bracketed, with an optional scope: `--host [fe80::1%en0]:52408`.
-3. The picker gains an extra row named **UI Test Host**. Tap it to connect directly.
-
-Caveats: this is compiled out of Release builds, the port changes every time the host restarts, and it
-only helps for phones you can run from Xcode. It's a debugging tool, not a party feature.
-
-### 9.9 Security reminder
-
-The control channel is **plain JSON over TCP with no TLS**, and there is **no join code or pairing
-secret**. Any device on the LAN running the controller app can join your party and take a seat. That's
-fine on your home network; don't do it on a shared or public one.
-
----
-
-## 10. Reference
-
-### Protocol and timing constants
-
-From `PartyNet/Sources/PartyNet/Protocol/PartyNetConstants.swift`:
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `serviceType` | `_partybox._tcp` | Bonjour service |
-| `protocolVersion` | `2` | Advertised as `v` in the TXT record |
-| `maximumControllers` | `8` | Hard cap on connected phones |
-| `reconnectGrace` | 15 s | How long the host holds a seat after a drop |
-| `clientReconnectWindow` | 30 s | How long the phone keeps retrying |
-| `helloTimeout` | 5 s | Handshake deadline |
-| `udpReadyTimeout` | 1 s | No UDP ack in this window → TCP fallback |
-| `udpIdleTimeout` | 5 s | UDP flow considered dead |
-| `tcpFallbackInterval` | 33 ms | Input rate once fallen back to TCP (~30 Hz) |
-| `pingInterval` / `pingTimeout` | 2 s / 6 s | Liveness probe on the control channel |
-
-Active paddle seats: **4** (arena edges, in order: bottom, top, left, right).
-Lives per player: **3**. Normal input rate: **~60 Hz** (16 ms).
-
-### Host controls
-
-| Action | Apple TV (Siri Remote) | Mac (keyboard) | Any phone |
-|---|---|---|---|
-| Navigate | Swipe / click a direction | ↑ ↓ ← → | ▲ ▼ buttons |
-| Select | Click touch surface | Return or Space | **SELECT** |
-| Back | Menu button | Esc | **BACK** |
-
-### Debug-only launch arguments
-
-**All of these are compiled out of Release builds.** Set them in
-**Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸ Arguments Passed On Launch**.
-
-Host (`PartyBox`):
-
-| Argument | Effect |
-|---|---|
-| `--host-name <name>` | Override the advertised Bonjour name |
-| `--bot-count <0…8>` | Spawn N loopback bot controllers — lets you drive a full match on one machine with no phones |
-| `--seed <UInt64>` | Deterministic Pong physics |
-| `--disable-animations` | Remove SwiftUI transitions |
-| `--disable-effects` | Mute the arcade sounds |
-| `--scenario <name>` | Static UI fixture, **networking disabled**: `empty-lobby`, `menu`, `four-way-match`, `game-over` (any other value, e.g. `four-player-lobby`, gives a populated lobby) |
-| `--ui-testing` | Marks a UI-test run |
-
-Controller (`PartyBox Controller`):
-
-| Argument | Effect |
-|---|---|
-| `--host <HOST:PORT>` | Add a direct-address row to the picker, bypassing Bonjour (see §9.8) |
-| `--display-name <name>` | Force the player name |
-| `--controller-id <UUID>` | Force the persistent identity |
-| `--defaults-suite <name>` | Isolate `UserDefaults` |
-| `--disable-effects` | Suppress haptics |
-| `--disable-animations`, `--seed`, `--ui-testing` | As above |
-| `--scenario <name>` | Static UI fixture: `empty-picker`, `populated-picker`, `connecting`, `menu`, `paddle-bottom`/`-top`/`-left`/`-right`, `spectator`, `game-over`, `reconnecting`, `full-rejection`, `version-rejection`, `local-network-denial`, `connection-loss` |
-
-> `--bot-count 4 --host-name "Test PartyBox"` on the host is the fastest way to confirm a full four-player
-> match works before anyone shows up.
-
-### Messages you might see, and what they mean
-
-| Message | Where | Meaning |
-|---|---|---|
-| `Ready for controllers` | Host status | Listeners bound, Bonjour advertising |
-| `Could not start: …` | Host status | Listener failed — permissions or firewall |
-| `<name> joined` / `<name> left the party` | Host status | Roster changes |
-| `Waiting 15 seconds for <name>…` | Host status | Reconnect grace running |
-| `This PartyBox already has 8 controllers.` | Phone, **CAN'T JOIN** | Party is full |
-| `Controller version is incompatible with host protocol N.` | Phone, **CAN'T JOIN** | Rebuild both apps |
-| `This controller was replaced by another connection using the same identity.` | Phone, **CAN'T JOIN** | Same controller ID joined elsewhere |
-| `The host could not understand this controller.` | Phone, **CAN'T JOIN** | Malformed handshake |
-| `The host is no longer reachable.` | Phone, **CONNECTION LOST** | Host went away |
-| `Local Network access is off…` | Phone, discovery card | See §9.3 |
-| `The host address is invalid.` | Phone | Bad `--host` argument (§9.8) |
-
----
-
-## 11. See also
+## 9. See also
 
 - [`CANDIDATE STACK.md`](CANDIDATE%20STACK.md) — the chosen architecture and the network-reliability advice
   quoted above.
 - [`CHECKLIST.md`](CHECKLIST.md) — the landscape survey behind the transport choice (Network.framework +
   Bonjour over MultipeerConnectivity).
 - [`REFERENCES.md`](REFERENCES.md) — prior-art survey on pairing, identity, and reconnection.
+- [Network troubleshooting](docs/TROUBLESHOOTING.md) and [reference](docs/REFERENCE.md) are split from this setup guide.
 - `scripts/verify.sh [normal|asan|tsan|soak|all]` — the automated build/test/soak suite. It needs
   `jq`, `plutil`, `swift`, `xcodebuild`, `xcrun` (and optionally `xcbeautify`), creates and tears down
   throwaway simulators, and writes artifacts to `.verification/<timestamp>/`. Not needed to play, but it's

@@ -11,8 +11,8 @@ Touch is the controller default; players can opt into calibrated motion controls
 Phones also provide brief, gentle private color and haptic cues—never torch or distributed audio.
 
 > **▶ New here? Read [QUICKSTART.md](QUICKSTART.md).** It covers setup and signing, both host paths
-> (Apple TV and Mac), getting the controller onto your friends' phones, a step-by-step playtest
-> walkthrough, and network troubleshooting.
+> (Apple TV and Mac), getting the controller onto your friends' phones, and a step-by-step playtest.
+> Use [network troubleshooting](docs/TROUBLESHOOTING.md) when connection problems arise.
 
 ## Targets
 
@@ -21,6 +21,7 @@ Phones also provide brief, gentle private color and haptic cues—never torch or
 | `PartyBox` | The host app | tvOS 26+ **and** macOS 26+ (one target, native on both) |
 | `PartyBox Controller` | The iPhone controller | iOS 26+, iPhone only, portrait |
 | `PartyNet` | Local Swift package | The shared transport, used by both apps |
+| `PartyGames` | Library target in `PartyNet/` | Game implementations and headless macOS tests, used by the host |
 
 Requires **Xcode 26.3+** / Swift 6.2. The transport is built on the Swift-native Network framework API
 (`NetworkListener`, `NetworkBrowser`, `Coder`) from the 26.x SDKs, so there is no back-deployment below
@@ -36,9 +37,9 @@ state. Peer-to-peer/AWDL is deliberately disabled — everyone shares one real W
 ## Layout
 
 ```
-PartyBox/              Host app (tvOS + macOS): Cup flow, SwiftUI screens, SpriteKit games
+PartyBox/              Host app (tvOS + macOS): Cup flow and SwiftUI screens
 PartyBox Controller/   iPhone app: touch/motion controls, private cues, trophies
-PartyNet/              Shared application protocol and resilient local transport
+PartyNet/              Shared protocol, transport, game runtime, and PartyGames package target
 PartyFault/            Apache-2.0 generic Network.framework fault proxy library + CLI
 Config/                Info.plists (Bonjour service + Local Network usage strings)
 TestPlans/             Normal / ASan / TSan / Soak test plans for both apps
@@ -69,7 +70,9 @@ is no scheduled soak job.
 
 ## Docs
 
-- **[QUICKSTART.md](QUICKSTART.md)** — build it, install it, play it, debug the network.
+- **[QUICKSTART.md](QUICKSTART.md)** — build it, install it, and play it.
+- **[Network troubleshooting](docs/TROUBLESHOOTING.md)** — diagnose discovery and connection problems.
+- **[App reference](docs/REFERENCE.md)** — controls, launch arguments, and protocol constants.
 - **[PartyFault/README.md](PartyFault/README.md)** — generic TCP/UDP impairment proxy and JSON control socket.
 - [CANDIDATE STACK.md](CANDIDATE%20STACK.md) — the chosen architecture and reliability advice.
 - [CHECKLIST.md](CHECKLIST.md) — landscape survey behind the transport decision.

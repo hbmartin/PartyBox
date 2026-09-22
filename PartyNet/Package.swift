@@ -21,6 +21,7 @@ let package = Package(
         ),
         .library(name: "PartyBoxCore", targets: ["PartyBoxCore"]),
         .library(name: "PartyGameRuntime", targets: ["PartyGameRuntime"]),
+        .library(name: "PartyGames", targets: ["PartyGames"]),
         .executable(
             name: "partybox-fault",
             targets: ["partyboxFault"]
@@ -52,6 +53,7 @@ let package = Package(
         ),
         .target(name: "PartyBoxCore", dependencies: ["PartyNet"]),
         .target(name: "PartyGameRuntime", dependencies: ["PartyNet", "PartyBoxCore"]),
+        .target(name: "PartyGames", dependencies: ["PartyGameRuntime", "PartyBoxCore", "PartyNet"]),
         .executableTarget(
             name: "partyboxFault",
             dependencies: ["PartyNet", "PartyNetTestSupport"],
@@ -69,6 +71,11 @@ let package = Package(
         .testTarget(
             name: "PartyBoxCoreTests",
             dependencies: ["PartyBoxCore", "PartyNet"]
+        ),
+        .testTarget(
+            name: "PartyGamesTests",
+            dependencies: ["PartyGames", "PartyGameRuntime", "PartyBoxCore", "PartyNet"],
+            resources: [.process("Fixtures")]
         ),
     ]
 )

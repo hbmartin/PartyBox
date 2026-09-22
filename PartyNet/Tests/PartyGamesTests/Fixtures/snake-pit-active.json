@@ -1,0 +1,39 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.snake-pit",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "snake.rule",
+          "style" : "caption",
+          "text" : "TURN • SURVIVE • THREE LIVES",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "directionPad" : {
+        "_0" : {
+          "downLabel" : "DOWN",
+          "id" : "snake.direction",
+          "instruction" : "CHOOSE YOUR NEXT TURN",
+          "leftLabel" : "LEFT",
+          "rightLabel" : "RIGHT",
+          "upLabel" : "UP"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 0
+}

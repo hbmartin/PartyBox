@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#6DFF78",
+  "accessibilityID" : "controller.layout.paddle.right",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.player",
+          "style" : "headline",
+          "text" : "◆  P4 Sam",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.direction",
+          "style" : "caption",
+          "text" : "BOTTOM  ←  PADDLE  →  TOP",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "horizontal",
+          "id" : "pong.paddle",
+          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL IN SETTINGS"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

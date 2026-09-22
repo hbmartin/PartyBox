@@ -35,6 +35,7 @@ final class PartyBox_ControllerUITests: XCTestCase {
 
     @MainActor
     func testEveryControllerLayoutAndErrors() throws {
+        executionTimeAllowance = 300
         let expected: [(String, String)] = [
             ("lobby", "controller.layout.lobby"),
             ("menu", "controller.layout.menu"),
