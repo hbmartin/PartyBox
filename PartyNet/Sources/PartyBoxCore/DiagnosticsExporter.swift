@@ -30,7 +30,12 @@ public enum RedactedDiagnosticsExporter {
         role: DiagnosticsRole,
         directory: URL,
         now: Date = Date(),
-        retentionLimit: Int = 5
+        retentionLimit: Int = 5,
+        modificationDateProvider: (URL) throws -> Date? = { file in
+            try file.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate
+        }
     ) throws -> URL {
         let filenamePrefix = "PartyBox-\(role.rawValue)-diagnostics-"
         let url = directory.appendingPathComponent(
@@ -46,7 +51,8 @@ public enum RedactedDiagnosticsExporter {
                     in: directory,
                     filenamePrefix: filenamePrefix,
                     retentionLimit: max(1, retentionLimit),
-                    preserving: url
+                    preserving: url,
+                    modificationDateProvider: modificationDateProvider
                 )
             }
         } catch {
@@ -69,7 +75,8 @@ public enum RedactedDiagnosticsExporter {
         in directory: URL,
         filenamePrefix: String,
         retentionLimit: Int,
-        preserving currentExport: URL
+        preserving currentExport: URL,
+        modificationDateProvider: (URL) throws -> Date?
     ) throws {
         let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey]
         let files = try FileManager.default.contentsOfDirectory(
@@ -88,13 +95,22 @@ public enum RedactedDiagnosticsExporter {
             let filename = file.lastPathComponent
             let range = NSRange(filename.startIndex..<filename.endIndex, in: filename)
             guard filenameExpression.firstMatch(in: filename, range: range) != nil else { continue }
-            guard let modificationDate = try file.resourceValues(
-                forKeys: resourceKeys
-            ).contentModificationDate else {
-                throw CocoaError(.fileReadUnknown)
+            let standardizedFile = file.standardizedFileURL
+            let modificationDate: Date
+            do {
+                guard let date = try modificationDateProvider(file) else {
+                    if standardizedFile == currentExport {
+                        throw CocoaError(.fileReadUnknown)
+                    }
+                    continue
+                }
+                modificationDate = date
+            } catch {
+                if standardizedFile == currentExport { throw error }
+                continue
             }
             retainedExports.append(RetainedExport(
-                url: file.standardizedFileURL,
+                url: standardizedFile,
                 modificationDate: modificationDate
             ))
         }
