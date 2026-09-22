@@ -221,7 +221,7 @@ final class HostCoordinator {
         } else if configuration.failDiagnosticsExport {
             self.diagnosticsExporter = { _ in throw CocoaError(.fileWriteNoPermission) }
         } else {
-            self.diagnosticsExporter = { report in
+            self.diagnosticsExporter = { @concurrent report in
                 try RedactedDiagnosticsExporter.write(report, role: .host)
             }
         }
