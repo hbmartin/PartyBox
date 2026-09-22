@@ -63,6 +63,31 @@ final class PartyBoxUITests: XCTestCase {
         app.terminate()
     }
 
+#if os(macOS)
+    @MainActor
+    func testDiagnosticsExportFailureShowsLocalizedReason() throws {
+        let app = launch(scenario: "history", additional: ["--fail-diagnostics-export"])
+        defer { app.terminate() }
+        let prepare = element("host.history.diagnostics.prepare", in: app)
+        XCTAssertTrue(prepare.waitForExistence(timeout: 5))
+        for _ in 0..<5 {
+            if prepare.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(prepare.isHittable)
+        prepare.click()
+
+        let failure = element("host.history.diagnostics.error", in: app)
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        let failureText = [failure.label, failure.value as? String ?? ""].joined(separator: " ")
+        XCTAssertTrue(
+            failureText.contains("Diagnostics couldn’t be prepared:")
+                && failureText.localizedCaseInsensitiveContains("permission"),
+            "Unexpected diagnostics error: \(failureText)"
+        )
+    }
+#endif
+
     @MainActor
     private func launch(scenario: String? = nil, additional: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()

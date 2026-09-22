@@ -37,6 +37,22 @@ struct InputFrameTests {
         }
     }
 
+    @Test @MainActor
+    func deprecatedSetInputOverloadRetainsLegacyButtonClearingSemantics() {
+        withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let client = PartyClient(displayName: "Input")
+
+            client.setInput(axisX: 0.25, axisY: -0.5, buttons: .primary)
+            client.setInput(axisX: 0.75, axisY: 0.5)
+
+            #expect(client.inputAxisX == 0.75)
+            #expect(client.inputAxisY == 0.5)
+            #expect(client.inputButtons.isEmpty)
+        }
+    }
+
     @Test func roundTripAndLittleEndianLayout() throws {
         let frame = InputFrame(
             token: 0x0102030405060708,

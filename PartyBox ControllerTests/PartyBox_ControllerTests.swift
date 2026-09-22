@@ -58,7 +58,7 @@ struct PartyBox_ControllerTests {
             "--disable-animations", "--disable-effects", "--seed", "42",
             "--controller-id", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
             "--display-name", "Ada", "--host", "127.0.0.1:49999",
-            "--defaults-suite", "PartyBoxControllerTests.Launch",
+            "--defaults-suite", "PartyBoxControllerTests.Launch", "--fail-diagnostics-export",
         ])
 
         #expect(configuration.isUITesting)
@@ -72,6 +72,7 @@ struct PartyBox_ControllerTests {
         #expect(configuration.hostAddress?.port == 49_999)
         #expect(configuration.hostAddressError == nil)
         #expect(configuration.defaultsSuite == "PartyBoxControllerTests.Launch")
+        #expect(configuration.failDiagnosticsExport)
     }
 
     @Test func controllerLaunchArgumentsRequireBracketsForIPv6Hosts() {
@@ -92,6 +93,11 @@ struct PartyBox_ControllerTests {
         ])
         #expect(malformed.hostAddress == nil)
         #expect(malformed.hostAddressError?.localizedDescription == PartyClientError.invalidAddress.localizedDescription)
+
+        let production = ControllerLaunchConfiguration(arguments: [
+            "PartyBox Controller", "--fail-diagnostics-export",
+        ])
+        #expect(!production.failDiagnosticsExport)
     }
 
     @Test func identityAndSanitizedNamePersistAcrossLaunches() async throws {
@@ -386,14 +392,55 @@ struct PartyBox_ControllerTests {
             await coordinator.start()
             coordinator.motionSettingsPresentationChanged(isPresented: true)
             #expect(sampler.isActive)
+            sampler.emit(.orientation(.identity))
+            #expect(coordinator.canCalibrateMotion)
 
             await coordinator.handleForTesting(.sessionReset)
 
             #expect(sampler.isActive)
+            #expect(sampler.startCount == 1)
+            #expect(sampler.stopCount == 0)
             #expect(!coordinator.canCalibrateMotion)
             #expect(coordinator.motionCalibrationStatus == .initializing)
 
             coordinator.motionSettingsPresentationChanged(isPresented: false)
+            await coordinator.stop()
+        }
+    }
+
+    @Test func sessionResetPreservesMotionRetryBackoff() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(true, forKey: "partybox.motionControlEnabled")
+            let sampler = TestMotionSampler()
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--scenario", "menu", "--disable-effects",
+                ]),
+                motionSampler: sampler
+            )
+            await coordinator.start()
+            coordinator.motionSettingsPresentationChanged(isPresented: true)
+            #expect(sampler.startCount == 1)
+
+            sampler.emit(.failure)
+
+            #expect(!sampler.isActive)
+            #expect(sampler.stopCount == 1)
+            #expect(coordinator.motionCalibrationStatus == .retrying)
+
+            await coordinator.handleForTesting(.sessionReset)
+
+            #expect(!sampler.isActive)
+            #expect(sampler.startCount == 1)
+            #expect(sampler.stopCount == 1)
+            #expect(coordinator.motionCalibrationStatus == .retrying)
+            #expect(!coordinator.canCalibrateMotion)
             await coordinator.stop()
         }
     }
@@ -445,6 +492,7 @@ struct PartyBox_ControllerTests {
                 motionSampler: sampler
             )
             await coordinator.start()
+            coordinator.client.setInput(axisX: 0, axisY: 0, buttons: .primary)
 
             let halfAngle = Float.pi / 12
             sampler.emit(.orientation(.init(
@@ -459,6 +507,7 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.client.inputAxisY == 0)
             #expect(coordinator.client.inputOrientation == .identity)
             #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
+            #expect(coordinator.client.inputButtons == .primary)
             #expect(!sampler.isActive)
             #expect(sampler.stopCount == 1)
 
@@ -468,6 +517,7 @@ struct PartyBox_ControllerTests {
             #expect(coordinator.client.inputAxisY == 0)
             #expect(coordinator.client.inputOrientation == .identity)
             #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
+            #expect(coordinator.client.inputButtons == .primary)
             #expect(sampler.stopCount == 1)
             await coordinator.stop()
         }
@@ -513,7 +563,7 @@ struct PartyBox_ControllerTests {
                 try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
             ))
             #expect(sampler.isActive)
-            coordinator.client.setAxes(axisX: 0.6, axisY: -0.4)
+            coordinator.client.setInput(axisX: 0.6, axisY: -0.4, buttons: .primary)
 
             coordinator.motionControlEnabled = false
             coordinator.motionSettingsPresentationChanged(isPresented: false)
@@ -521,6 +571,7 @@ struct PartyBox_ControllerTests {
             #expect(!sampler.isActive)
             #expect(coordinator.client.inputAxisX == 0.6)
             #expect(coordinator.client.inputAxisY == -0.4)
+            #expect(coordinator.client.inputButtons == .primary)
             await coordinator.stop()
         }
     }
@@ -600,7 +651,9 @@ struct PartyBox_ControllerTests {
             defer { defaults.removePersistentDomain(forName: suiteName) }
             let coordinator = ControllerCoordinator(
                 defaults: defaults,
-                configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--disable-effects"]),
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--disable-effects", "--fail-diagnostics-export",
+                ]),
                 diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
             )
 
@@ -698,11 +751,12 @@ struct PartyBox_ControllerTests {
             let rosterPresentation = try PartyBoxWireCodec.encode(HostPresentation.roster([renamed]))
 
             await coordinator.start()
-            coordinator.client.setAxes(axisX: 0.8, axisY: -0.4)
+            coordinator.client.setInput(axisX: 0.8, axisY: -0.4, buttons: .primary)
             await coordinator.handleForTesting(.application(gamePresentation))
 
             #expect(coordinator.client.inputAxisX == 0)
             #expect(coordinator.client.inputAxisY == 0)
+            #expect(coordinator.client.inputButtons.isEmpty)
             #expect(coordinator.controllerScreen == gameScreen)
 
             await coordinator.handleForTesting(.application(rosterPresentation))

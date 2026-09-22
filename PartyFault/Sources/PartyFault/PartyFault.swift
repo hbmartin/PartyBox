@@ -338,29 +338,6 @@ package enum PartyFaultNetworkSupport {
     }
 }
 
-struct UDPDeliveryAccounting: Equatable, Sendable {
-    let forwardedCount: Int
-    let duplicatedCount: Int
-    let delayedCount: Int
-    let droppedCount: Int
-    let failureReason: String?
-
-    static func reduce(
-        forwardedCount: Int,
-        delayedCount: Int,
-        failureReason: String?
-    ) -> Self {
-        let forwardedCount = max(0, forwardedCount)
-        return Self(
-            forwardedCount: forwardedCount,
-            duplicatedCount: max(0, forwardedCount - 1),
-            delayedCount: max(0, delayedCount),
-            droppedCount: forwardedCount == 0 ? 1 : 0,
-            failureReason: failureReason
-        )
-    }
-}
-
 public actor GenericFaultProxy {
     private final class PendingUDPDatagrams: @unchecked Sendable {
         private let lock = NSLock()
@@ -399,7 +376,7 @@ public actor GenericFaultProxy {
         case cancelled
     }
 
-    private struct UDPPayloadDeliverySummary: Sendable {
+    struct UDPPayloadDeliverySummary: Sendable {
         var forwardedCount = 0
         var delayedCount = 0
         var failureReason: String?
@@ -901,24 +878,21 @@ public actor GenericFaultProxy {
         }
     }
 
-    private func applyUDPDeliverySummary(
+    func applyUDPDeliverySummary(
         _ summary: UDPPayloadDeliverySummary,
         direction: TrafficDirection
     ) -> String? {
-        let accounting = UDPDeliveryAccounting.reduce(
-            forwardedCount: summary.forwardedCount,
-            delayedCount: summary.delayedCount,
-            failureReason: summary.failureReason
-        )
-        for _ in 0..<accounting.forwardedCount { noteUDPForwarded(direction: direction) }
-        if accounting.duplicatedCount > 0 {
-            noteUDPDuplicated(accounting.duplicatedCount, direction: direction)
+        let forwardedCount = max(0, summary.forwardedCount)
+        noteUDPForwarded(forwardedCount, direction: direction)
+        let duplicatedCount = max(0, forwardedCount - 1)
+        if duplicatedCount > 0 {
+            noteUDPDuplicated(duplicatedCount, direction: direction)
         }
-        for _ in 0..<accounting.delayedCount { noteDelay(direction: direction) }
-        if accounting.droppedCount > 0 {
-            noteUDPDropped(accounting.droppedCount, direction: direction)
+        noteDelay(summary.delayedCount, direction: direction)
+        if forwardedCount == 0 {
+            noteUDPDropped(direction: direction)
         }
-        return accounting.failureReason
+        return summary.failureReason
     }
 
     private func finishTCP(_ id: UUID) {
@@ -950,12 +924,18 @@ public actor GenericFaultProxy {
     private func noteTCPForwarded(_ bytes: Int, direction: TrafficDirection) { updateDirection(direction) { $0.tcpBytesForwarded += UInt64(bytes) } }
     private func noteTCPBlackhole(direction: TrafficDirection) { updateDirection(direction) { $0.tcpChunksBlackholed += 1 } }
     private func noteUDPReceived(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsReceived += 1 } }
-    private func noteUDPForwarded(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsForwarded += 1 } }
+    private func noteUDPForwarded(_ count: Int = 1, direction: TrafficDirection) {
+        guard count > 0 else { return }
+        updateDirection(direction) { $0.udpDatagramsForwarded += UInt64(count) }
+    }
     private func noteUDPDropped(direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsDropped += 1 } }
     private func noteUDPDropped(_ count: Int, direction: TrafficDirection) {
         updateDirection(direction) { $0.udpDatagramsDropped += UInt64(count) }
     }
     private func noteUDPDuplicated(_ count: Int, direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsDuplicated += UInt64(count) } }
     private func noteUDPReordered(_ count: Int, direction: TrafficDirection) { updateDirection(direction) { $0.udpDatagramsReordered += UInt64(count) } }
-    private func noteDelay(direction: TrafficDirection) { updateDirection(direction) { $0.delayedUnits += 1 } }
+    private func noteDelay(_ count: Int = 1, direction: TrafficDirection) {
+        guard count > 0 else { return }
+        updateDirection(direction) { $0.delayedUnits += UInt64(count) }
+    }
 }

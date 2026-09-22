@@ -64,7 +64,7 @@ struct PartyBoxTests {
         let configuration = HostLaunchConfiguration(arguments: [
             "PartyBox", "--ui-testing", "--scenario", "four-way-match",
             "--disable-animations", "--disable-effects", "--seed", "42",
-            "--host-name", "Automation Host", "--bot-count", "99",
+            "--host-name", "Automation Host", "--bot-count", "99", "--fail-diagnostics-export",
         ])
 
         #expect(configuration.isUITesting)
@@ -74,11 +74,15 @@ struct PartyBoxTests {
         #expect(configuration.seed == 42)
         #expect(configuration.hostName == "Automation Host")
         #expect(configuration.botCount == PartyNetConstants.maximumControllers)
+        #expect(configuration.failDiagnosticsExport)
     }
 
     @Test func hostLaunchArgumentsDoNotForceAProductionSeed() {
-        let configuration = HostLaunchConfiguration(arguments: ["PartyBox"])
+        let configuration = HostLaunchConfiguration(arguments: [
+            "PartyBox", "--fail-diagnostics-export",
+        ])
         #expect(configuration.seed == nil)
+        #expect(!configuration.failDiagnosticsExport)
     }
 
     @Test func hostDiagnosticsExportPropagatesFailure() async throws {
@@ -86,7 +90,9 @@ struct PartyBoxTests {
             $0.continuousClock = ContinuousClock()
         } operation: {
             let coordinator = HostCoordinator(
-                configuration: .init(arguments: ["PartyBox", "--ui-testing", "--disable-effects"]),
+                configuration: .init(arguments: [
+                    "PartyBox", "--ui-testing", "--disable-effects", "--fail-diagnostics-export",
+                ]),
                 diagnosticsExporter: { _ in throw InjectedDiagnosticsError.failed }
             )
 

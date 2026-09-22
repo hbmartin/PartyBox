@@ -216,10 +216,14 @@ final class HostCoordinator {
         let configuration = suppliedConfiguration ?? .current
         self.configuration = configuration
         host = suppliedHost ?? PartyHost()
-        self.diagnosticsExporter = diagnosticsExporter ?? { report in
-            try await Task.detached(priority: .userInitiated) {
+        if let diagnosticsExporter {
+            self.diagnosticsExporter = diagnosticsExporter
+        } else if configuration.failDiagnosticsExport {
+            self.diagnosticsExporter = { _ in throw CocoaError(.fileWriteNoPermission) }
+        } else {
+            self.diagnosticsExporter = { report in
                 try RedactedDiagnosticsExporter.write(report, role: .host)
-            }.value
+            }
         }
         games = [PongGame(), SignalSnapGame(), GravityGrabGame(), SnakePitGame(), LastLightGame()]
         sounds = nil

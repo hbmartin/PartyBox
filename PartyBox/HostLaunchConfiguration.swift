@@ -9,6 +9,7 @@ struct HostLaunchConfiguration {
     let seed: UInt64?
     let hostName: String?
     let botCount: Int
+    let failDiagnosticsExport: Bool
 
     static var current: Self { Self(arguments: ProcessInfo.processInfo.arguments) }
 
@@ -24,6 +25,7 @@ struct HostLaunchConfiguration {
             max(Int(Self.option("--bot-count", in: arguments) ?? "0") ?? 0, 0),
             PartyNetConstants.maximumControllers
         )
+        failDiagnosticsExport = isUITesting && arguments.contains("--fail-diagnostics-export")
 #else
         isUITesting = false
         scenario = nil
@@ -32,6 +34,7 @@ struct HostLaunchConfiguration {
         seed = nil
         hostName = nil
         botCount = 0
+        failDiagnosticsExport = false
 #endif
     }
 

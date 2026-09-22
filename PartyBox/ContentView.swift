@@ -570,7 +570,6 @@ private struct HistoryView: View {
 #endif
                 } else {
                     Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
-                        guard !isPreparingDiagnostics else { return }
                         diagnosticsErrorMessage = nil
                         isPreparingDiagnostics = true
                         Task {
@@ -578,10 +577,11 @@ private struct HistoryView: View {
                             do {
                                 diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
                             } catch {
-                                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared. Check available storage and try again."
+                                diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
                             }
                         }
                     }
+                    .accessibilityIdentifier("host.history.diagnostics.prepare")
                     .disabled(isPreparingDiagnostics)
                 }
                 Text("MENU/ESC TO RETURN")
