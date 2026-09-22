@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import PartyNet
 import Testing
@@ -5,8 +6,27 @@ import Testing
 
 @Suite("PartyBox application protocol")
 struct CoreModelsTests {
-    private enum MetadataReadFailure: Error {
-        case simulated
+    private enum DiagnosticsTestError: Error {
+        case encodingTimedOut
+        case removalFailed
+    }
+
+    private final class EncodingGate: @unchecked Sendable {
+        let started = DispatchSemaphore(value: 0)
+        let finish = DispatchSemaphore(value: 0)
+    }
+
+    private struct BlockingReport: Encodable, Sendable {
+        let gate: EncodingGate
+
+        func encode(to encoder: Encoder) throws {
+            gate.started.signal()
+            guard gate.finish.wait(timeout: .now() + 2) == .success else {
+                throw DiagnosticsTestError.encodingTimedOut
+            }
+            var container = encoder.singleValueContainer()
+            try container.encode("complete")
+        }
     }
 
     private let firstID = ControllerID(rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!)
@@ -186,7 +206,7 @@ struct CoreModelsTests {
         #expect(HistoryAggregation.cups([malformed]) == .init(played: 1, won: 0, podiums: 0))
     }
 
-    @Test func diagnosticsExportsAreImmutableSnapshots() throws {
+    @Test func diagnosticsExportsAreImmutableSnapshots() async throws {
         struct Report: Codable, Equatable {
             let value: String
         }
@@ -196,25 +216,25 @@ struct CoreModelsTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let now = Date(timeIntervalSince1970: 1_700_000_000.123)
 
-        let firstURL = try RedactedDiagnosticsExporter.write(
+        let firstExport = try await RedactedDiagnosticsExporter.write(
             Report(value: "first"), role: .host, directory: directory, now: now
         )
-        let secondURL = try RedactedDiagnosticsExporter.write(
+        let secondExport = try await RedactedDiagnosticsExporter.write(
             Report(value: "second"), role: .host, directory: directory, now: now
         )
 
-        #expect(firstURL != secondURL)
+        #expect(firstExport.url != secondExport.url)
         let filenames = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
         #expect(filenames.count == 2)
-        #expect(filenames.allSatisfy {
-            $0.hasPrefix("PartyBox-host-diagnostics-20231114T221320.123Z-")
-                && $0.hasSuffix(".json")
-        })
-        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: firstURL)) == .init(value: "first"))
-        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: secondURL)) == .init(value: "second"))
+        #expect(firstExport.url.lastPathComponent.hasPrefix("PartyBox-host-diagnostics-20231114T221320.123Z-"))
+        #expect(secondExport.url.lastPathComponent.hasPrefix("PartyBox-host-diagnostics-20231114T221320.124Z-"))
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: firstExport.url)) == .init(value: "first"))
+        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: secondExport.url)) == .init(value: "second"))
+        await firstExport.release()
+        await secondExport.release()
     }
 
-    @Test func diagnosticsRetentionIsBoundedAndRoleScoped() throws {
+    @Test func diagnosticsRetentionIsBoundedAndRoleScoped() async throws {
         struct Report: Codable { let sequence: Int }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -227,23 +247,22 @@ struct CoreModelsTests {
         )
         try Data("unrelated".utf8).write(to: prefixedUnrelatedURL)
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
-        let controllerURL = try RedactedDiagnosticsExporter.write(
+        let controllerExport = try await RedactedDiagnosticsExporter.write(
             Report(sequence: 0), role: .controller, directory: directory, now: baseDate
         )
+        let controllerURL = controllerExport.url
+        await controllerExport.release()
 
         var hostURLs: [URL] = []
         for index in 0..<7 {
-            let url = try RedactedDiagnosticsExporter.write(
+            let export = try await RedactedDiagnosticsExporter.write(
                 Report(sequence: index),
                 role: .host,
                 directory: directory,
                 now: baseDate.addingTimeInterval(Double(index))
             )
-            hostURLs.append(url)
-            try FileManager.default.setAttributes(
-                [.modificationDate: baseDate.addingTimeInterval(Double(index))],
-                ofItemAtPath: url.path
-            )
+            hostURLs.append(export.url)
+            await export.release()
         }
 
         let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
@@ -256,121 +275,199 @@ struct CoreModelsTests {
         #expect(remainingNames.contains(prefixedUnrelatedURL.lastPathComponent))
     }
 
-    @Test func diagnosticsRetentionSkipsUnreadableOlderExportMetadata() throws {
-        struct Report: Codable, Equatable { let value: String }
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
-        let throwingURL = try RedactedDiagnosticsExporter.write(
-            Report(value: "throwing"), role: .host, directory: directory, now: baseDate
-        )
-        let missingDateURL = try RedactedDiagnosticsExporter.write(
-            Report(value: "missing-date"),
-            role: .host,
-            directory: directory,
-            now: baseDate.addingTimeInterval(1)
-        )
-
-        let currentURL = try RedactedDiagnosticsExporter.write(
-            Report(value: "current"),
-            role: .host,
-            directory: directory,
-            now: baseDate.addingTimeInterval(2),
-            retentionLimit: 1
-        ) { file in
-            switch file.standardizedFileURL {
-            case throwingURL.standardizedFileURL:
-                throw MetadataReadFailure.simulated
-            case missingDateURL.standardizedFileURL:
-                return nil
-            default:
-                return try file.resourceValues(
-                    forKeys: [.contentModificationDateKey]
-                ).contentModificationDate
-            }
-        }
-
-        #expect(FileManager.default.fileExists(atPath: currentURL.path))
-        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: currentURL)) == .init(value: "current"))
-        #expect(FileManager.default.fileExists(atPath: throwingURL.path))
-        #expect(FileManager.default.fileExists(atPath: missingDateURL.path))
-    }
-
-    @Test func diagnosticsRetentionPropagatesCurrentExportMetadataFailure() throws {
+    @Test func diagnosticsRetentionCountsUnparseableMatchingTimestampsAsOldest() async throws {
         struct Report: Codable { let value: String }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let unknownAgeURL = directory.appendingPathComponent(
+            "PartyBox-host-diagnostics-20261340T999999.999Z-AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE.json"
+        )
+        try Data("legacy".utf8).write(to: unknownAgeURL)
 
-        #expect(throws: MetadataReadFailure.self) {
-            _ = try RedactedDiagnosticsExporter.write(
-                Report(value: "current"),
-                role: .host,
-                directory: directory,
-                modificationDateProvider: { _ in throw MetadataReadFailure.simulated }
-            )
-        }
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        let currentExport = try await RedactedDiagnosticsExporter.write(
+            Report(value: "current"),
+            role: .host,
+            directory: directory,
+            now: baseDate.addingTimeInterval(2),
+            retentionLimit: 1
+        )
+
+        #expect(FileManager.default.fileExists(atPath: currentExport.url.path))
+        #expect(!FileManager.default.fileExists(atPath: unknownAgeURL.path))
+        await currentExport.release()
     }
 
-    @Test func diagnosticsRetentionPreservesAClockSkewedExportAcrossTheNextWrite() throws {
+    @Test func diagnosticsRetentionBootstrapsLegacyFilenamesAndSurvivesClockRollback() async throws {
         struct Report: Codable, Equatable { let sequence: Int }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let futureBaseDate = Date(timeIntervalSince1970: 2_000_000_000)
-        var futureURLs: [URL] = []
-        for index in 0..<5 {
-            let url = try RedactedDiagnosticsExporter.write(
-                Report(sequence: index),
-                role: .host,
-                directory: directory,
-                now: futureBaseDate.addingTimeInterval(Double(index))
-            )
-            futureURLs.append(url)
-        }
+        let olderURL = directory.appendingPathComponent(
+            "PartyBox-host-diagnostics-20330518T033320.000Z-AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE.json"
+        )
+        let newestLegacyURL = directory.appendingPathComponent(
+            "PartyBox-host-diagnostics-20330518T033321.000Z-11111111-2222-3333-4444-555555555555.json"
+        )
+        try Data("older".utf8).write(to: olderURL)
+        try Data("newest".utf8).write(to: newestLegacyURL)
 
-        let futureModificationBaseDate = Date().addingTimeInterval(86_400)
-        for (index, url) in futureURLs.enumerated() {
-            try FileManager.default.setAttributes(
-                [.modificationDate: futureModificationBaseDate.addingTimeInterval(Double(index))],
-                ofItemAtPath: url.path
-            )
-        }
-        let newestPriorModificationDate = futureModificationBaseDate.addingTimeInterval(4)
-
-        let skewedURL = try RedactedDiagnosticsExporter.write(
-            Report(sequence: 99),
+        let currentExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 1),
             role: .host,
             directory: directory,
-            now: futureBaseDate.addingTimeInterval(-60)
-        )
-        let skewedModificationDate = try #require(
-            skewedURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            now: Date(timeIntervalSince1970: 1_700_000_000),
+            retentionLimit: 3
         )
 
-        #expect(FileManager.default.fileExists(atPath: skewedURL.path))
-        #expect(skewedModificationDate > newestPriorModificationDate)
-        let followingURL = try RedactedDiagnosticsExporter.write(
-            Report(sequence: 100),
+        #expect(currentExport.url.lastPathComponent.hasPrefix("PartyBox-host-diagnostics-20330518T033321.001Z-"))
+        #expect(FileManager.default.fileExists(atPath: olderURL.path))
+        #expect(FileManager.default.fileExists(atPath: newestLegacyURL.path))
+        await currentExport.release()
+    }
+
+    @Test func diagnosticsActiveHandlesSurviveLimitPressureUntilRelease() async throws {
+        struct Report: Codable { let sequence: Int }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let firstExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 1), role: .host, directory: directory, now: baseDate, retentionLimit: 1
+        )
+        let secondExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 2),
             role: .host,
             directory: directory,
-            now: futureBaseDate.addingTimeInterval(120)
-        )
-        let followingModificationDate = try #require(
-            followingURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            now: baseDate.addingTimeInterval(1),
+            retentionLimit: 1
         )
 
-        #expect(FileManager.default.fileExists(atPath: skewedURL.path))
-        #expect(followingModificationDate > skewedModificationDate)
-        #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: skewedURL)) == .init(sequence: 99))
-        let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
-        let expectedNames = Set((futureURLs.suffix(3) + [skewedURL, followingURL]).map(\.lastPathComponent))
-        #expect(remainingNames == expectedNames)
+        #expect(FileManager.default.fileExists(atPath: firstExport.url.path))
+        #expect(FileManager.default.fileExists(atPath: secondExport.url.path))
+
+        await firstExport.release()
+        await firstExport.release()
+        #expect(!FileManager.default.fileExists(atPath: firstExport.url.path))
+        #expect(FileManager.default.fileExists(atPath: secondExport.url.path))
+
+        await secondExport.release()
+        #expect(FileManager.default.fileExists(atPath: secondExport.url.path))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func diagnosticsConcurrentExportsRemainShareableUntilReleased() async throws {
+        struct Report: Codable { let sequence: Int }
+        for iteration in 0..<10 {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let exports = try await withThrowingTaskGroup(of: DiagnosticsExport.self) { group in
+                for sequence in 0..<8 {
+                    group.addTask {
+                        try await RedactedDiagnosticsExporter.write(
+                            Report(sequence: sequence),
+                            role: .host,
+                            directory: directory,
+                            now: Date(timeIntervalSince1970: 1_700_000_000 + Double(iteration)),
+                            retentionLimit: 1
+                        )
+                    }
+                }
+                var exports: [DiagnosticsExport] = []
+                for try await export in group {
+                    exports.append(export)
+                }
+                return exports
+            }
+
+            #expect(exports.count == 8)
+            #expect(exports.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+            #expect(Set(exports.map(\.url)).count == 8)
+            for export in exports {
+                await export.release()
+            }
+            let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            #expect(remaining.count == 1)
+        }
+    }
+
+    @Test func diagnosticsDeletionFailuresSucceedAndRetryLater() async throws {
+        struct Report: Codable { let sequence: Int }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let oldExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 1), role: .host, directory: directory, now: baseDate, retentionLimit: 1
+        )
+        let oldURL = oldExport.url
+        await oldExport.release()
+
+        let newExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 2),
+            role: .host,
+            directory: directory,
+            now: baseDate.addingTimeInterval(1),
+            retentionLimit: 1,
+            removeItem: { url in
+                if url == oldURL { throw DiagnosticsTestError.removalFailed }
+                try FileManager.default.removeItem(at: url)
+            }
+        )
+        #expect(FileManager.default.fileExists(atPath: oldURL.path))
+        #expect(FileManager.default.fileExists(atPath: newExport.url.path))
+
+        let retryExport = try await RedactedDiagnosticsExporter.write(
+            Report(sequence: 3),
+            role: .host,
+            directory: directory,
+            now: baseDate.addingTimeInterval(2),
+            retentionLimit: 1
+        )
+        #expect(!FileManager.default.fileExists(atPath: oldURL.path))
+        #expect(FileManager.default.fileExists(atPath: newExport.url.path))
+        #expect(FileManager.default.fileExists(atPath: retryExport.url.path))
+
+        await newExport.release()
+        #expect(!FileManager.default.fileExists(atPath: newExport.url.path))
+        await retryExport.release()
+    }
+
+    @Test @MainActor
+    func diagnosticsEncodingRunsAwayFromTheMainActor() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let gate = EncodingGate()
+        let exportTask = Task {
+            try await RedactedDiagnosticsExporter.write(
+                BlockingReport(gate: gate), role: .host, directory: directory
+            )
+        }
+
+        let encodingStarted = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: gate.started.wait(timeout: .now() + 1) == .success)
+            }
+        }
+        #expect(encodingStarted)
+        var mainActorProgressed = false
+        await Task { @MainActor in
+            mainActorProgressed = true
+        }.value
+        #expect(mainActorProgressed)
+        gate.finish.signal()
+
+        let export = try await exportTask.value
+        await export.release()
     }
 
     @Test func schemaRejectsDuplicateAndExcessiveComponentIDs() {

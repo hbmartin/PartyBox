@@ -664,6 +664,36 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    @Test func controllerDiagnosticsExportUsesTheDefaultExporter() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let coordinator = ControllerCoordinator(
+                defaults: defaults,
+                configuration: .init(arguments: [
+                    "PartyBox Controller", "--ui-testing", "--disable-effects",
+                ])
+            )
+            let export = try await coordinator.makeRedactedDiagnosticsFile()
+            defer { try? FileManager.default.removeItem(at: export.url) }
+
+            #expect(FileManager.default.fileExists(atPath: export.url.path))
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let report = try decoder.decode(
+                ControllerCoordinator.DiagnosticsReport.self,
+                from: Data(contentsOf: export.url)
+            )
+            #expect(report.role == "controller")
+
+            await export.release()
+            await coordinator.stop()
+        }
+    }
+
     @Test func successfulMatchPersistenceDoesNotHideACupPersistenceFailure() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()

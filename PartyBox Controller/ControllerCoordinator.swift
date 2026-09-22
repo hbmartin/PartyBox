@@ -133,7 +133,7 @@ final class ControllerCoordinator {
         let historyPersistenceHealthy: Bool
     }
 
-    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> URL
+    typealias DiagnosticsExporter = @Sendable (DiagnosticsReport) async throws -> DiagnosticsExport
 
     private enum MotionCalibrationDefaults {
         static let projectionX = "partybox.motionNeutralProjectionX"
@@ -246,8 +246,8 @@ final class ControllerCoordinator {
         } else if configuration.failDiagnosticsExport {
             self.diagnosticsExporter = { _ in throw CocoaError(.fileWriteNoPermission) }
         } else {
-            self.diagnosticsExporter = { @concurrent report in
-                try RedactedDiagnosticsExporter.write(report, role: .controller)
+            self.diagnosticsExporter = { report in
+                try await RedactedDiagnosticsExporter.write(report, role: .controller)
             }
         }
         Self.resetLegacyMotionCalibration(in: defaults)
@@ -443,7 +443,7 @@ final class ControllerCoordinator {
         updateMotionCalibrationStatus()
     }
 
-    func makeRedactedDiagnosticsFile() async throws -> URL {
+    func makeRedactedDiagnosticsFile() async throws -> DiagnosticsExport {
         let stateName: String = switch client.state {
         case .browsing: "browsing"
         case .connecting: "connecting"
