@@ -14,51 +14,46 @@ struct PartyFaultTests {
         #expect(udp.reorderWindow == 1)
     }
 
-    @Test func UDPDeliveryAccountingReducesEveryOutcome() {
-        #expect(UDPDeliveryAccounting.reduce(
+    @Test func UDPDeliverySummaryUpdatesProxyMetricsAndReturnsFailure() async {
+        let proxy = GenericFaultProxy()
+
+        let failure = await proxy.applyUDPDeliverySummary(.init(
             forwardedCount: 1,
             delayedCount: 1,
             failureReason: "duplicate failed"
-        ) == .init(
-            forwardedCount: 1,
-            duplicatedCount: 0,
-            delayedCount: 1,
-            droppedCount: 0,
-            failureReason: "duplicate failed"
-        ))
-        #expect(UDPDeliveryAccounting.reduce(
-            forwardedCount: 0,
-            delayedCount: 0,
-            failureReason: nil
-        ) == .init(
-            forwardedCount: 0,
-            duplicatedCount: 0,
-            delayedCount: 0,
-            droppedCount: 1,
-            failureReason: nil
-        ))
-        #expect(UDPDeliveryAccounting.reduce(
-            forwardedCount: 1,
-            delayedCount: 0,
-            failureReason: nil
-        ) == .init(
-            forwardedCount: 1,
-            duplicatedCount: 0,
-            delayedCount: 0,
-            droppedCount: 0,
-            failureReason: nil
-        ))
-        #expect(UDPDeliveryAccounting.reduce(
+        ), direction: .clientToServer)
+        #expect(failure == "duplicate failed")
+        var metrics = await proxy.currentMetrics().clientToServer
+        #expect(metrics.udpDatagramsForwarded == 1)
+        #expect(metrics.udpDatagramsDuplicated == 0)
+        #expect(metrics.delayedUnits == 1)
+        #expect(metrics.udpDatagramsDropped == 0)
+
+        let success = await proxy.applyUDPDeliverySummary(.init(
             forwardedCount: 2,
             delayedCount: 2,
             failureReason: nil
-        ) == .init(
-            forwardedCount: 2,
-            duplicatedCount: 1,
-            delayedCount: 2,
-            droppedCount: 0,
+        ), direction: .clientToServer)
+        #expect(success == nil)
+        metrics = await proxy.currentMetrics().clientToServer
+        #expect(metrics.udpDatagramsForwarded == 3)
+        #expect(metrics.udpDatagramsDuplicated == 1)
+        #expect(metrics.delayedUnits == 3)
+        #expect(metrics.udpDatagramsDropped == 0)
+
+        _ = await proxy.applyUDPDeliverySummary(.init(), direction: .clientToServer)
+        metrics = await proxy.currentMetrics().clientToServer
+        #expect(metrics.udpDatagramsDropped == 1)
+
+        _ = await proxy.applyUDPDeliverySummary(.init(
+            forwardedCount: -3,
+            delayedCount: -4,
             failureReason: nil
-        ))
+        ), direction: .clientToServer)
+        metrics = await proxy.currentMetrics().clientToServer
+        #expect(metrics.udpDatagramsForwarded == 3)
+        #expect(metrics.delayedUnits == 3)
+        #expect(metrics.udpDatagramsDropped == 2)
     }
 
     @Test func legacyEndpointMetadataDefaultsTheControlSocketToLoopback() throws {

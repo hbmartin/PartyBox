@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum DiagnosticsRole: String, Sendable {
     case host
@@ -6,6 +7,13 @@ public enum DiagnosticsRole: String, Sendable {
 }
 
 public enum RedactedDiagnosticsExporter {
+    private struct RetainedExport {
+        let url: URL
+        var modificationDate: Date
+    }
+
+    private static let retentionLock = Mutex(())
+
     public static func write<Report: Encodable>(
         _ report: Report,
         role: DiagnosticsRole
@@ -32,12 +40,19 @@ public enum RedactedDiagnosticsExporter {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: url, options: .atomic)
-        pruneOldExports(
-            in: directory,
-            filenamePrefix: filenamePrefix,
-            retentionLimit: max(1, retentionLimit),
-            preserving: url
-        )
+        do {
+            try retentionLock.withLock { _ in
+                try pruneOldExports(
+                    in: directory,
+                    filenamePrefix: filenamePrefix,
+                    retentionLimit: max(1, retentionLimit),
+                    preserving: url
+                )
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
         return url
     }
 
@@ -55,34 +70,61 @@ public enum RedactedDiagnosticsExporter {
         filenamePrefix: String,
         retentionLimit: Int,
         preserving currentExport: URL
-    ) {
+    ) throws {
         let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey]
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        let files = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
-        ) else { return }
+        )
         let escapedPrefix = NSRegularExpression.escapedPattern(for: filenamePrefix)
         let pattern = "^\(escapedPrefix)\\d{8}T\\d{6}\\.\\d{3}Z-"
             + "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
             + "[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\.json$"
-        guard let filenameExpression = try? NSRegularExpression(pattern: pattern) else { return }
+        let filenameExpression = try NSRegularExpression(pattern: pattern)
         let currentExport = currentExport.standardizedFileURL
-        let olderExports = files.filter { file in
+        var retainedExports: [RetainedExport] = []
+        for file in files {
             let filename = file.lastPathComponent
             let range = NSRange(filename.startIndex..<filename.endIndex, in: filename)
-            return filenameExpression.firstMatch(in: filename, range: range) != nil
-                && file.standardizedFileURL != currentExport
-        }.sorted { lhs, rhs in
-            let leftDate = try? lhs.resourceValues(forKeys: resourceKeys).contentModificationDate
-            let rightDate = try? rhs.resourceValues(forKeys: resourceKeys).contentModificationDate
-            if leftDate != rightDate {
-                return (leftDate ?? .distantPast) > (rightDate ?? .distantPast)
+            guard filenameExpression.firstMatch(in: filename, range: range) != nil else { continue }
+            guard let modificationDate = try file.resourceValues(
+                forKeys: resourceKeys
+            ).contentModificationDate else {
+                throw CocoaError(.fileReadUnknown)
             }
-            return lhs.lastPathComponent > rhs.lastPathComponent
+            retainedExports.append(RetainedExport(
+                url: file.standardizedFileURL,
+                modificationDate: modificationDate
+            ))
+        }
+
+        guard let currentIndex = retainedExports.firstIndex(where: { $0.url == currentExport }) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let currentModificationDate = retainedExports[currentIndex].modificationDate
+        if let newestPriorDate = retainedExports.indices
+            .filter({ $0 != currentIndex })
+            .map({ retainedExports[$0].modificationDate })
+            .max(), currentModificationDate <= newestPriorDate {
+            let logicalModificationDate = newestPriorDate.addingTimeInterval(1)
+            try FileManager.default.setAttributes(
+                [.modificationDate: logicalModificationDate],
+                ofItemAtPath: currentExport.path
+            )
+            retainedExports[currentIndex].modificationDate = logicalModificationDate
+        }
+
+        let olderExports = retainedExports.filter {
+            $0.url != currentExport
+        }.sorted { lhs, rhs in
+            if lhs.modificationDate != rhs.modificationDate {
+                return lhs.modificationDate > rhs.modificationDate
+            }
+            return lhs.url.lastPathComponent > rhs.url.lastPathComponent
         }
         for expired in olderExports.dropFirst(max(0, retentionLimit - 1)) {
-            try? FileManager.default.removeItem(at: expired)
+            try? FileManager.default.removeItem(at: expired.url)
         }
     }
 }

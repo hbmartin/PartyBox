@@ -188,6 +188,11 @@ public final class PartyClient {
         enqueueCurrentInput()
     }
 
+    @available(*, deprecated, message: "Use setAxes(axisX:axisY:) to preserve buttons, or pass buttons explicitly.")
+    public func setInput(axisX: Float, axisY: Float = 0) {
+        setInput(axisX: axisX, axisY: axisY, buttons: [])
+    }
+
     public func setAxes(axisX: Float, axisY: Float = 0) {
         setInput(axisX: axisX, axisY: axisY, buttons: inputButtons)
     }

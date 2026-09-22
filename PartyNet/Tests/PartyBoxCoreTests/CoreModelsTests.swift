@@ -259,7 +259,6 @@ struct CoreModelsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let futureBaseDate = Date(timeIntervalSince1970: 2_000_000_000)
-        let modificationBaseDate = Date(timeIntervalSince1970: 1_700_000_000)
         var futureURLs: [URL] = []
         for index in 0..<5 {
             let url = try RedactedDiagnosticsExporter.write(
@@ -269,11 +268,16 @@ struct CoreModelsTests {
                 now: futureBaseDate.addingTimeInterval(Double(index))
             )
             futureURLs.append(url)
+        }
+
+        let futureModificationBaseDate = Date().addingTimeInterval(86_400)
+        for (index, url) in futureURLs.enumerated() {
             try FileManager.default.setAttributes(
-                [.modificationDate: modificationBaseDate.addingTimeInterval(Double(index))],
+                [.modificationDate: futureModificationBaseDate.addingTimeInterval(Double(index))],
                 ofItemAtPath: url.path
             )
         }
+        let newestPriorModificationDate = futureModificationBaseDate.addingTimeInterval(4)
 
         let skewedURL = try RedactedDiagnosticsExporter.write(
             Report(sequence: 99),
@@ -281,20 +285,24 @@ struct CoreModelsTests {
             directory: directory,
             now: futureBaseDate.addingTimeInterval(-60)
         )
-        try FileManager.default.setAttributes(
-            [.modificationDate: modificationBaseDate.addingTimeInterval(5)],
-            ofItemAtPath: skewedURL.path
+        let skewedModificationDate = try #require(
+            skewedURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         )
 
         #expect(FileManager.default.fileExists(atPath: skewedURL.path))
+        #expect(skewedModificationDate > newestPriorModificationDate)
         let followingURL = try RedactedDiagnosticsExporter.write(
             Report(sequence: 100),
             role: .host,
             directory: directory,
             now: futureBaseDate.addingTimeInterval(120)
         )
+        let followingModificationDate = try #require(
+            followingURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        )
 
         #expect(FileManager.default.fileExists(atPath: skewedURL.path))
+        #expect(followingModificationDate > skewedModificationDate)
         #expect(try JSONDecoder().decode(Report.self, from: Data(contentsOf: skewedURL)) == .init(sequence: 99))
         let remainingNames = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
         let expectedNames = Set((futureURLs.suffix(3) + [skewedURL, followingURL]).map(\.lastPathComponent))

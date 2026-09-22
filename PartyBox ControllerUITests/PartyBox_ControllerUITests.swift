@@ -153,6 +153,29 @@ final class PartyBox_ControllerUITests: XCTestCase {
     }
 
     @MainActor
+    func testDiagnosticsExportFailureShowsLocalizedReason() throws {
+        let app = launch(scenario: "history", additional: ["--fail-diagnostics-export"])
+        defer { app.terminate() }
+        let prepare = element("controller.history.diagnostics.prepare", in: app)
+        XCTAssertTrue(prepare.waitForExistence(timeout: 5))
+        for _ in 0..<5 {
+            if prepare.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(prepare.isHittable)
+        prepare.tap()
+
+        let failure = element("controller.history.diagnostics.error", in: app)
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        let failureText = [failure.label, failure.value as? String ?? ""].joined(separator: " ")
+        XCTAssertTrue(
+            failureText.contains("Diagnostics couldn’t be prepared:")
+                && failureText.localizedCaseInsensitiveContains("permission"),
+            "Unexpected diagnostics error: \(failureText)"
+        )
+    }
+
+    @MainActor
     func testLiveConnectionThroughPartyFault() throws {
         guard let address = ProcessInfo.processInfo.environment["PARTYFAULT_HOST"],
               !address.isEmpty,

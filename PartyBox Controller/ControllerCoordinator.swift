@@ -113,6 +113,11 @@ final class ControllerCoordinator {
         let presentsColor: Bool
     }
 
+    private enum SessionMotionResetPolicy: Equatable {
+        case stop
+        case preserveSettingsCapture
+    }
+
     nonisolated struct DiagnosticsReport: Codable, Sendable {
         let generatedAt: Date
         let role: String
@@ -236,10 +241,14 @@ final class ControllerCoordinator {
             ?? .standard
         self.defaults = defaults
         self.motionSampler = motionSampler ?? CoreMotionSampler()
-        self.diagnosticsExporter = diagnosticsExporter ?? { report in
-            try await Task.detached(priority: .userInitiated) {
+        if let diagnosticsExporter {
+            self.diagnosticsExporter = diagnosticsExporter
+        } else if configuration.failDiagnosticsExport {
+            self.diagnosticsExporter = { _ in throw CocoaError(.fileWriteNoPermission) }
+        } else {
+            self.diagnosticsExporter = { report in
                 try RedactedDiagnosticsExporter.write(report, role: .controller)
-            }.value
+            }
         }
         Self.resetLegacyMotionCalibration(in: defaults)
         Self.migrateMotionCalibrationProjection(in: defaults)
@@ -349,7 +358,7 @@ final class ControllerCoordinator {
         eventTask = nil
         discoveryHelpVisible = false
         resetMotionSettingsPresentation()
-        resetSessionPresentation()
+        resetSessionPresentation(motionPolicy: .stop)
         deviceCueTask?.cancel()
         deviceCueTask = nil
         setIdleTimer(connected: false)
@@ -365,7 +374,7 @@ final class ControllerCoordinator {
         discoveryHelpTask = nil
         discoveryHelpGeneration = nil
         discoveryHelpVisible = false
-        resetSessionPresentation()
+        resetSessionPresentation(motionPolicy: .stop)
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
         updateMotionCapture()
@@ -379,7 +388,7 @@ final class ControllerCoordinator {
     }
 
     func returnToPicker() async {
-        resetSessionPresentation()
+        resetSessionPresentation(motionPolicy: .stop)
         await client.disconnect()
         guard isStarted else { return }
         await client.startBrowsing()
@@ -544,17 +553,23 @@ final class ControllerCoordinator {
                 discoveryHelpVisible = false
             }
         case .sessionReset:
-            resetSessionPresentation()
+            resetSessionPresentation(motionPolicy: .preserveSettingsCapture)
         }
     }
 
-    private func resetSessionPresentation() {
-        stopMotionCapture()
+    private func resetSessionPresentation(motionPolicy: SessionMotionResetPolicy) {
+        if motionPolicy == .stop { stopMotionCapture() }
         layout = .lobby(.waiting)
         roster = []
         currentDeviceCue = nil
         deviceCueTask?.cancel()
         deviceCueTask = nil
+        guard motionPolicy == .preserveSettingsCapture else { return }
+        motionSampleTolerance.reset()
+        latestMotionOrientation = nil
+        canCalibrateMotion = false
+        stopPublishingMotionInput()
+        updateMotionCalibrationStatus()
         updateMotionCapture()
     }
 

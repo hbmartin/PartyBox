@@ -776,7 +776,6 @@ private struct PersonalHistoryView: View {
                             .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
                     } else {
                         Button(isPreparingDiagnostics ? "PREPARING DIAGNOSTICS…" : "PREPARE REDACTED DIAGNOSTICS") {
-                            guard !isPreparingDiagnostics else { return }
                             diagnosticsErrorMessage = nil
                             isPreparingDiagnostics = true
                             Task {
@@ -784,11 +783,12 @@ private struct PersonalHistoryView: View {
                                 do {
                                     diagnosticsURL = try await coordinator.makeRedactedDiagnosticsFile()
                                 } catch {
-                                    diagnosticsErrorMessage = "Diagnostics couldn’t be prepared. Check available storage and try again."
+                                    diagnosticsErrorMessage = "Diagnostics couldn’t be prepared: \(error.localizedDescription)"
                                 }
                             }
                         }
                         .buttonStyle(ArcadeButtonStyle(color: ControllerTheme.cyan))
+                        .accessibilityIdentifier("controller.history.diagnostics.prepare")
                         .disabled(isPreparingDiagnostics)
                     }
                 }
