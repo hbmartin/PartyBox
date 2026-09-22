@@ -403,7 +403,8 @@ Recovery/workaround:
 
 ## Related documentation
 
-- [`../QUICKSTART.md`](../QUICKSTART.md) — installation, signing, distribution, and network troubleshooting.
+- [`../QUICKSTART.md`](../QUICKSTART.md) — installation, signing, distribution, and play setup.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — network troubleshooting.
 - [`../README.md`](../README.md) — architecture and project layout.
 - [`../PartyFault/README.md`](../PartyFault/README.md) — controlled network impairment tooling.
 - `scripts/verify.sh [normal|asan|tsan|soak|all]` — automated verification profiles.

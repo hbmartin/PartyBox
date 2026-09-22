@@ -1,0 +1,27 @@
+{
+  "accentColorHex" : "#FF9F0A",
+  "accessibilityID" : "controller.layout.unavailable",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "unavailable",
+          "style" : "title",
+          "text" : "CONTROLLER UNAVAILABLE",
+          "tint" : "plain"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "detail",
+          "style" : "body",
+          "text" : "This game sent a controller screen that was too large.",
+          "tint" : "plain"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 0
+}

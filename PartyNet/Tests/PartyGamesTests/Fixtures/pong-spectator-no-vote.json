@@ -1,0 +1,43 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.spectator",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "spectator.title",
+          "style" : "title",
+          "text" : "SPECTATING",
+          "tint" : "plain"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "controller.spectator.position",
+          "style" : "headline",
+          "text" : "#3 IN QUEUE",
+          "tint" : "success"
+        }
+      }
+    },
+    {
+      "emojiPalette" : {
+        "_0" : {
+          "cooldownMilliseconds" : 1000,
+          "emojis" : [
+            "🔥",
+            "👏",
+            "😤",
+            "😱",
+            "💀",
+            "🧂"
+          ],
+          "id" : "spectator.reactions"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 0
+}

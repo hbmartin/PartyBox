@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#FF4FD8",
+  "accessibilityID" : "controller.layout.paddle.top",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.player",
+          "style" : "headline",
+          "text" : "■  P2 Grace",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.direction",
+          "style" : "caption",
+          "text" : "LEFT  ←  PADDLE  →  RIGHT",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "horizontal",
+          "id" : "pong.paddle",
+          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL IN SETTINGS"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

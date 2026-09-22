@@ -1,0 +1,39 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.signal-snap",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "signal.rule",
+          "style" : "caption",
+          "text" : "MATCH THE SYMBOL ON THE TV",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "directionPad" : {
+        "_0" : {
+          "downLabel" : "DOWN",
+          "id" : "signal.direction",
+          "instruction" : "TAP THE MATCHING ARROW",
+          "leftLabel" : "LEFT",
+          "rightLabel" : "RIGHT",
+          "upLabel" : "UP"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 0
+}

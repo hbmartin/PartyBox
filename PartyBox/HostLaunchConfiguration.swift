@@ -4,6 +4,7 @@ import PartyNet
 struct HostLaunchConfiguration {
     let isUITesting: Bool
     let scenario: String?
+    let freezeScenario: Bool
     let disableAnimations: Bool
     let disableEffects: Bool
     let seed: UInt64?
@@ -17,6 +18,7 @@ struct HostLaunchConfiguration {
 #if DEBUG
         isUITesting = arguments.contains("--ui-testing")
         scenario = Self.option("--scenario", in: arguments)
+        freezeScenario = isUITesting && scenario != nil && arguments.contains("--freeze-scenario")
         disableAnimations = arguments.contains("--disable-animations")
         disableEffects = arguments.contains("--disable-effects")
         seed = Self.option("--seed", in: arguments).flatMap(UInt64.init)
@@ -29,6 +31,7 @@ struct HostLaunchConfiguration {
 #else
         isUITesting = false
         scenario = nil
+        freezeScenario = false
         disableAnimations = false
         disableEffects = false
         seed = nil

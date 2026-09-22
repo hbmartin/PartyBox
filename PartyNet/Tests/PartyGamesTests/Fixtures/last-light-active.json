@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.last-light",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "light.rule",
+          "style" : "caption",
+          "text" : "STAY IN THE LIGHT • DODGE THE RED",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "twoDimensional",
+          "id" : "light.steer",
+          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

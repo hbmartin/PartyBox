@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.pong",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.qualifier.rule",
+          "style" : "caption",
+          "text" : "FOLLOW THE TV GATE • TOP SCORE ADVANCES",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "horizontal",
+          "id" : "pong.qualifier",
+          "instruction" : "DRAG LEFT OR RIGHT  •  MOTION OPTIONAL"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

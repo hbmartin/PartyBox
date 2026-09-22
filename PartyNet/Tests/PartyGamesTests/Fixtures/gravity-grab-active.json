@@ -1,0 +1,36 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.gravity-grab",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "gravity.rule",
+          "style" : "caption",
+          "text" : "STEER AROUND THE RING • REACH OUT TO GRAB",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "twoDimensional",
+          "id" : "gravity.steer",
+          "instruction" : "DRAG TO AIM  •  MOTION OPTIONAL"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}
