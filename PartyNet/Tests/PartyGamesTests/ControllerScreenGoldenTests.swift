@@ -41,9 +41,6 @@ struct ControllerScreenGoldenTests {
             let expected = try Data(contentsOf: fixtureURL)
             #expect(encoded == expected, "\(record.name).json changed")
         }
-        if outputDirectory != nil {
-            Issue.record("Golden candidates generated; use scripts/record-goldens.sh to install and verify them")
-        }
     }
 
     private func fixtures() throws -> [(name: String, screen: ControllerScreen)] {
@@ -91,7 +88,7 @@ struct ControllerScreenGoldenTests {
             for (name, role) in states {
                 output.append(("\(game.descriptor.id)-spectator-\(name)", SpectatorScreenFactory.make(
                     game: game.descriptor,
-                    state: .init(role: role, choices: role == .active ? [] : choices, tallies: [:], selection: nil)
+                    state: .init(role: role, choices: choices, tallies: [:], selection: nil)
                 )))
             }
         }

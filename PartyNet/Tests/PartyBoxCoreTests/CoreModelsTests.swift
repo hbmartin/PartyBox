@@ -516,6 +516,15 @@ struct CoreModelsTests {
             guard case .choiceGroup(let group) = component else { return false }
             return group.selection == "fast" && group.choices.first?.tally == 3
         })
+
+        let active = SpectatorScreenFactory.make(
+            game: game,
+            state: .init(role: .active, choices: [modifier], tallies: ["fast": 3], selection: "fast")
+        )
+        #expect(!active.components.contains { component in
+            if case .choiceGroup = component { return true }
+            return false
+        })
     }
 
     @Test func historyPersistsDatesDeduplicatesAndClears() async throws {

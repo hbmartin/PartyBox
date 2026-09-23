@@ -44,22 +44,21 @@ final class HostBotDirector {
         canChangeRoster: @MainActor () -> Bool,
         isMatchParticipant: @MainActor (ControllerID) -> Bool
     ) async -> ReconciliationResult {
-        while bots.count > desired, isCurrentLifecycle(), canChangeRoster(),
-              let entry = bots.sorted(by: {
-                  $0.value.displayName.localizedStandardCompare($1.value.displayName) == .orderedDescending
-              }).first {
-            bots.removeValue(forKey: entry.key)
-            await entry.value.stop()
-            host.unregisterLocalBot(controllerID: entry.key)
+        while isCurrentLifecycle(), canChangeRoster(),
+              let entry = bots.first(where: { Self.isTerminalUnready($0.value) }) {
+            if let retirement = retire(entry.key, host: host) { await retirement.value }
+            guard isCurrentLifecycle() else { return .cancelled }
         }
 
-        // A client that failed after host admission can remain protected by the
-        // current match. Replace it once the match has ended.
-        while isCurrentLifecycle(), canChangeRoster(),
-              let entry = bots.first(where: { $0.value.player == nil && !isMatchParticipant($0.key) }) {
-            bots.removeValue(forKey: entry.key)
-            await entry.value.stop()
-            host.unregisterLocalBot(controllerID: entry.key)
+        while bots.count > desired, isCurrentLifecycle(), canChangeRoster(),
+              let entry = bots.sorted(by: { lhs, rhs in
+                  let leftUnavailable = lhs.value.player == nil
+                  let rightUnavailable = rhs.value.player == nil
+                  if leftUnavailable != rightUnavailable { return leftUnavailable }
+                  return lhs.value.displayName.localizedStandardCompare(rhs.value.displayName) == .orderedDescending
+              }).first {
+            if let retirement = retire(entry.key, host: host) { await retirement.value }
+            guard isCurrentLifecycle() else { return .cancelled }
         }
 
         while bots.count < desired, isCurrentLifecycle(), canChangeRoster() {
@@ -80,16 +79,16 @@ final class HostBotDirector {
             if let afterConnectForTesting { await afterConnectForTesting() }
 #endif
             guard isCurrentLifecycle() else {
-                bots.removeValue(forKey: controllerID)
-                await bot.stop()
-                host.unregisterLocalBot(controllerID: controllerID)
+                if let retirement = retire(controllerID, host: host) { await retirement.value }
                 return .cancelled
             }
             guard bot.player != nil else {
                 if isMatchParticipant(controllerID) { return .completed }
-                bots.removeValue(forKey: controllerID)
-                await bot.stop()
-                host.unregisterLocalBot(controllerID: controllerID)
+                if let retirement = retire(controllerID, host: host) { await retirement.value }
+#if DEBUG
+                if let afterFailedJoinStopForTesting { await afterFailedJoinStopForTesting() }
+#endif
+                guard isCurrentLifecycle() else { return .cancelled }
                 return .joinFailed
             }
         }
@@ -98,7 +97,25 @@ final class HostBotDirector {
 
 #if DEBUG
     @ObservationIgnored var afterConnectForTesting: (@MainActor () async -> Void)?
+    @ObservationIgnored var afterFailedJoinStopForTesting: (@MainActor () async -> Void)?
 #endif
+
+    private static func isTerminalUnready(_ bot: PartyClient) -> Bool {
+        guard bot.player == nil else { return false }
+        switch bot.state {
+        case .browsing, .disconnected, .rejected: return true
+        case .connecting, .connected, .reconnecting: return false
+        }
+    }
+
+    @discardableResult
+    func retire(_ controllerID: ControllerID, host: PartyHost) -> Task<Void, Never>? {
+        guard let bot = bots.removeValue(forKey: controllerID) else { return nil }
+        host.unregisterLocalBot(controllerID: controllerID)
+        return Task { @MainActor in
+            await bot.stop()
+        }
+    }
 
     func drive(
         session: any PartyGameSession,
