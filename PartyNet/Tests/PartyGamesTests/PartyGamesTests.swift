@@ -249,7 +249,7 @@ struct PartyGamesTests {
     }
 
     @Test func gameLibraryProvidesFiveCupEligibleGamesAndEightPlayerNewGames() {
-        let games: [any PartyGame] = [PongGame(), SignalSnapGame(), GravityGrabGame(), SnakePitGame(), LastLightGame()]
+        let games = PartyGames.all()
         #expect(games.map(\.descriptor.id) == ["pong", "signal-snap", "gravity-grab", "snake-pit", "last-light"])
         #expect(games.allSatisfy { $0.descriptor.isCupEligible })
         #expect(games.allSatisfy { $0.descriptor.maximumPlayers == 8 })
@@ -771,7 +771,7 @@ struct PartyGamesTests {
             seed: 42,
             modifierID: nil
         )
-        let games: [any PartyGame] = [PongGame(), SignalSnapGame(), GravityGrabGame(), SnakePitGame(), LastLightGame()]
+        let games = PartyGames.all()
 
         for game in games {
             let session = game.makeSession(context: context, onEvents: { _ in })

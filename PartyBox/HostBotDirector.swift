@@ -15,7 +15,7 @@ final class HostBotDirector {
 
     var botFillTarget = 0
     var botDifficultyChange: String?
-    var needsReconciliation = false
+    @ObservationIgnored var needsReconciliation = false
     @ObservationIgnored var bots: [ControllerID: PartyClient] = [:]
     @ObservationIgnored private var nextBotNumber = 1
     @ObservationIgnored private var difficultyByGameID: [String: GameBotDifficulty] = [:]
@@ -40,9 +40,11 @@ final class HostBotDirector {
         host: PartyHost,
         port: UInt16,
         desired: Int,
-        isCurrent: @MainActor () -> Bool
+        isCurrentLifecycle: @MainActor () -> Bool,
+        canChangeRoster: @MainActor () -> Bool,
+        isMatchParticipant: @MainActor (ControllerID) -> Bool
     ) async -> ReconciliationResult {
-        while bots.count > desired, isCurrent(),
+        while bots.count > desired, isCurrentLifecycle(), canChangeRoster(),
               let entry = bots.sorted(by: {
                   $0.value.displayName.localizedStandardCompare($1.value.displayName) == .orderedDescending
               }).first {
@@ -51,7 +53,16 @@ final class HostBotDirector {
             host.unregisterLocalBot(controllerID: entry.key)
         }
 
-        while bots.count < desired, isCurrent() {
+        // A client that failed after host admission can remain protected by the
+        // current match. Replace it once the match has ended.
+        while isCurrentLifecycle(), canChangeRoster(),
+              let entry = bots.first(where: { $0.value.player == nil && !isMatchParticipant($0.key) }) {
+            bots.removeValue(forKey: entry.key)
+            await entry.value.stop()
+            host.unregisterLocalBot(controllerID: entry.key)
+        }
+
+        while bots.count < desired, isCurrentLifecycle(), canChangeRoster() {
             let controllerID = ControllerID()
             let number = nextBotNumber
             nextBotNumber += 1
@@ -65,21 +76,29 @@ final class HostBotDirector {
             host.registerLocalBot(controllerID: controllerID)
             bots[controllerID] = bot
             await bot.connect(host: "127.0.0.1", port: port)
-            guard isCurrent() else {
+#if DEBUG
+            if let afterConnectForTesting { await afterConnectForTesting() }
+#endif
+            guard isCurrentLifecycle() else {
                 bots.removeValue(forKey: controllerID)
                 await bot.stop()
                 host.unregisterLocalBot(controllerID: controllerID)
                 return .cancelled
             }
             guard bot.player != nil else {
+                if isMatchParticipant(controllerID) { return .completed }
                 bots.removeValue(forKey: controllerID)
                 await bot.stop()
                 host.unregisterLocalBot(controllerID: controllerID)
                 return .joinFailed
             }
         }
-        return isCurrent() ? .completed : .cancelled
+        return isCurrentLifecycle() ? .completed : .cancelled
     }
+
+#if DEBUG
+    @ObservationIgnored var afterConnectForTesting: (@MainActor () async -> Void)?
+#endif
 
     func drive(
         session: any PartyGameSession,

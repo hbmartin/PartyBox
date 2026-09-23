@@ -45,7 +45,7 @@ Host (`PartyBox`):
 | `--disable-animations` | Remove SwiftUI transitions |
 | `--disable-effects` | Mute the arcade sounds |
 | `--scenario <name>` | Static UI fixture, **networking disabled**: `empty-lobby`, `menu`, `four-way-match`, `game-over` (any other value, e.g. `four-player-lobby`, gives a populated lobby) |
-| `--freeze-scenario` | Keep a host `--scenario` screen fixed during screenshot UI tests; ordinary scenario fixtures remain navigable |
+| `--freeze-scenario` | Keep a host `--scenario` screen fixed during screenshot UI tests; requires a Debug build, `--ui-testing`, and `--scenario <name>` |
 | `--ui-testing` | Marks a UI-test run |
 
 Controller (`PartyBox Controller` target):

@@ -163,6 +163,15 @@ normal() {
     run_xcode tvos-normal -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-Normal \
         -destination "$TVOS_DESTINATION" \
         -resultBundlePath "$ARTIFACT_DIR/tvos-normal.xcresult" test
+    # Xcode's project test-plan picker does not expose test targets from the
+    # local Swift package. Run its generated package scheme on tvOS explicitly.
+    (
+        cd "$ROOT_DIR/PartyNet"
+        run_xcode tvos-partygames -scheme PartyNet-Package \
+            -destination "$TVOS_DESTINATION" \
+            -only-testing:PartyGamesTests \
+            -resultBundlePath "$ARTIFACT_DIR/tvos-partygames.xcresult" test
+    )
     run_xcode ios-normal -project "$PROJECT" \
         -scheme "PartyBox Controller" -testPlan PartyBoxController-Normal \
         -destination "$IOS_DESTINATION" \

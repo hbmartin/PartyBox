@@ -34,54 +34,54 @@ final class PartyBox_ControllerUITests: XCTestCase {
     }
 
     @MainActor
-    func testEveryControllerLayoutAndErrors() throws {
-        executionTimeAllowance = 300
-        let expected: [(String, String)] = [
-            ("lobby", "controller.layout.lobby"),
-            ("menu", "controller.layout.menu"),
-            ("paddle-bottom", "controller.layout.paddle.bottom"),
-            ("paddle-top", "controller.layout.paddle.top"),
-            ("paddle-left", "controller.layout.paddle.left"),
-            ("paddle-right", "controller.layout.paddle.right"),
-            ("signal-snap", "controller.layout.signal-snap"),
-            ("gravity-grab", "controller.layout.gravity-grab"),
-            ("snake-pit", "controller.layout.snake-pit"),
-            ("last-light", "controller.layout.last-light"),
-            ("spectator", "controller.layout.spectator"),
-            ("game-over", "controller.layout.gameOver"),
-            ("history", "controller.layout.history"),
-            ("connecting", "controller.state.connecting"),
-            ("reconnecting", "controller.state.reconnecting"),
-            ("full-rejection", "controller.state.rejected"),
-            ("version-rejection", "controller.state.rejected"),
-            ("connection-loss", "controller.state.disconnected"),
-            ("local-network-denial", "controller.discovery.help"),
-        ]
-        for (scenario, identifier) in expected {
-            let app = launch(scenario: scenario)
-            XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
-            if scenario == "spectator" {
-                XCTAssertEqual(element("controller.spectator.position", in: app).label, "#2 IN QUEUE")
-            } else if scenario == "signal-snap" {
-                for direction in ["up", "down", "left", "right"] {
-                    XCTAssertTrue(element("signal.direction.\(direction)", in: app).exists)
-                }
-            } else if scenario == "snake-pit" {
-                XCTAssertTrue(element("snake.direction", in: app).exists)
-            } else if scenario == "gravity-grab" {
-                XCTAssertTrue(element("gravity.steer", in: app).exists)
-            } else if scenario == "last-light" {
-                XCTAssertTrue(element("light.steer", in: app).exists)
-            } else if scenario == "game-over" {
-                XCTAssertTrue(element("controller.gameOver.next", in: app).exists)
-                XCTAssertTrue(element("controller.gameOver.menu", in: app).exists)
+    func testLobbyLayout() { assertLayout("lobby", identifier: "controller.layout.lobby") }
+    @MainActor func testMenuLayout() { assertLayout("menu", identifier: "controller.layout.menu") }
+    @MainActor func testPaddleBottomLayout() { assertLayout("paddle-bottom", identifier: "controller.layout.paddle.bottom") }
+    @MainActor func testPaddleTopLayout() { assertLayout("paddle-top", identifier: "controller.layout.paddle.top") }
+    @MainActor func testPaddleLeftLayout() { assertLayout("paddle-left", identifier: "controller.layout.paddle.left") }
+    @MainActor func testPaddleRightLayout() { assertLayout("paddle-right", identifier: "controller.layout.paddle.right") }
+    @MainActor func testSignalSnapLayout() { assertLayout("signal-snap", identifier: "controller.layout.signal-snap") }
+    @MainActor func testGravityGrabLayout() { assertLayout("gravity-grab", identifier: "controller.layout.gravity-grab") }
+    @MainActor func testSnakePitLayout() { assertLayout("snake-pit", identifier: "controller.layout.snake-pit") }
+    @MainActor func testLastLightLayout() { assertLayout("last-light", identifier: "controller.layout.last-light") }
+    @MainActor func testSpectatorLayout() { assertLayout("spectator", identifier: "controller.layout.spectator") }
+    @MainActor func testGameOverLayout() { assertLayout("game-over", identifier: "controller.layout.gameOver") }
+    @MainActor func testHistoryLayout() { assertLayout("history", identifier: "controller.layout.history") }
+    @MainActor func testConnectingLayout() { assertLayout("connecting", identifier: "controller.state.connecting") }
+    @MainActor func testReconnectingLayout() { assertLayout("reconnecting", identifier: "controller.state.reconnecting") }
+    @MainActor func testFullRejectionLayout() { assertLayout("full-rejection", identifier: "controller.state.rejected") }
+    @MainActor func testVersionRejectionLayout() { assertLayout("version-rejection", identifier: "controller.state.rejected") }
+    @MainActor func testConnectionLossLayout() { assertLayout("connection-loss", identifier: "controller.state.disconnected") }
+    @MainActor func testLocalNetworkDenialLayout() { assertLayout("local-network-denial", identifier: "controller.discovery.help") }
+
+    @MainActor
+    private func assertLayout(_ scenario: String, identifier: String) {
+        let app = launch(scenario: scenario)
+        defer { app.terminate() }
+        XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
+        switch scenario {
+        case "spectator":
+            XCTAssertEqual(element("controller.spectator.position", in: app).label, "#2 IN QUEUE")
+        case "signal-snap":
+            for direction in ["up", "down", "left", "right"] {
+                XCTAssertTrue(element("signal.direction.\(direction)", in: app).exists)
             }
-            let attachment = XCTAttachment(screenshot: app.screenshot())
-            attachment.name = "Controller-\(scenario)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            app.terminate()
+        case "snake-pit":
+            XCTAssertTrue(element("snake.direction", in: app).exists)
+        case "gravity-grab":
+            XCTAssertTrue(element("gravity.steer", in: app).exists)
+        case "last-light":
+            XCTAssertTrue(element("light.steer", in: app).exists)
+        case "game-over":
+            XCTAssertTrue(element("controller.gameOver.next", in: app).exists)
+            XCTAssertTrue(element("controller.gameOver.menu", in: app).exists)
+        default:
+            break
         }
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Controller-\(scenario)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor

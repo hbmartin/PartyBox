@@ -12,11 +12,13 @@ struct ControllerScreenGoldenTests {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let decoder = JSONDecoder()
-        let records = fixtures()
+        let records = try fixtures()
         #expect(Set(records.map(\.name)).count == records.count)
-        let recording = ProcessInfo.processInfo.environment["PARTYGAMES_RECORD_GOLDENS"] == "1"
-        let sourceDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("Fixtures", isDirectory: true)
+        let outputDirectory = ProcessInfo.processInfo.environment["PARTYBOX_GOLDEN_OUTPUT_DIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let outputDirectory {
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        }
 
         for record in records {
             #expect(record.screen.isValid, "\(record.name) must be valid")
@@ -25,17 +27,26 @@ struct ControllerScreenGoldenTests {
             #expect(roundTrip == record.screen, "\(record.name) must round-trip")
             let wire = try PartyBoxWireCodec.encode(record.screen)
             #expect(try PartyBoxWireCodec.decode(ControllerScreen.self, from: wire) == record.screen)
-            if recording {
-                try encoded.write(to: sourceDirectory.appendingPathComponent("\(record.name).json"))
+            if record.name.hasSuffix("spectator-defensive-active") {
+                #expect(!record.screen.components.contains {
+                    if case .choiceGroup = $0 { return true }
+                    return false
+                })
+            }
+            if let outputDirectory {
+                try encoded.write(to: outputDirectory.appendingPathComponent("\(record.name).json"))
                 continue
             }
             let fixtureURL = try #require(Bundle.module.url(forResource: record.name, withExtension: "json"))
             let expected = try Data(contentsOf: fixtureURL)
             #expect(encoded == expected, "\(record.name).json changed")
         }
+        if outputDirectory != nil {
+            Issue.record("Golden candidates generated; use scripts/record-goldens.sh to install and verify them")
+        }
     }
 
-    private func fixtures() -> [(name: String, screen: ControllerScreen)] {
+    private func fixtures() throws -> [(name: String, screen: ControllerScreen)] {
         let participants: [GameParticipant] = (0..<8).map { index in
             let id = PlayerID(UInt8(index))
             let uuid = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index + 1))!
@@ -80,12 +91,12 @@ struct ControllerScreenGoldenTests {
             for (name, role) in states {
                 output.append(("\(game.descriptor.id)-spectator-\(name)", SpectatorScreenFactory.make(
                     game: game.descriptor,
-                    state: .init(role: role, choices: choices, tallies: [:], selection: nil)
+                    state: .init(role: role, choices: role == .active ? [] : choices, tallies: [:], selection: nil)
                 )))
             }
         }
 
-        let pong = games[0]
+        let pong = try #require(games.first { $0.descriptor.id == "pong" })
         let choices = pong.availableModifiers(participantCount: 4)
         output.append(("pong-spectator-vote-selected", SpectatorScreenFactory.make(
             game: pong.descriptor,

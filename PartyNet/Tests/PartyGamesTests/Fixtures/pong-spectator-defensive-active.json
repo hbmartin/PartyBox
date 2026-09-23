@@ -37,39 +37,6 @@
           "id" : "spectator.reactions"
         }
       }
-    },
-    {
-      "choiceGroup" : {
-        "_0" : {
-          "choices" : [
-            {
-              "detail" : "Starts 25% faster",
-              "id" : "fast-ball",
-              "tally" : 0,
-              "title" : "FAST BALL"
-            },
-            {
-              "detail" : "35% longer paddles",
-              "id" : "big-paddles",
-              "tally" : 0,
-              "title" : "BIG PADDLES"
-            },
-            {
-              "detail" : "Start with four lives",
-              "id" : "extra-life",
-              "tally" : 0,
-              "title" : "EXTRA LIFE"
-            }
-          ],
-          "id" : "spectator.vote",
-          "route" : {
-            "spectatorVote" : {
-
-            }
-          },
-          "title" : "NEXT ROUND"
-        }
-      }
     }
   ],
   "requestedInputs" : 0
