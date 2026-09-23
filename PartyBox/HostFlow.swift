@@ -20,6 +20,16 @@ enum HostInputSource: Equatable {
     case controller(PlayerID)
 }
 
+struct HostMenuLayout {
+    let gameCount: Int
+    let cupEligibleCount: Int
+
+    var cupMenuIndex: Int { gameCount }
+    var historyMenuIndex: Int { gameCount + 1 }
+    var menuItemCount: Int { gameCount + 2 }
+    var cupSetupItemCount: Int { cupEligibleCount + 1 }
+}
+
 @MainActor
 @Observable
 final class HostFlow {
@@ -41,10 +51,8 @@ final class HostFlow {
 
     struct Context {
         let players: [PlayerInfo]
-        let gameCount: Int
-        let menuItemCount: Int
-        let cupEligibleCount: Int
-        let cupSetupItemCount: Int
+        let menuLayout: HostMenuLayout
+        let connectedHumanCount: Int
         let cupSetupSelection: Int
         let selectedCupGameCount: Int
         let canStart: Bool
@@ -67,12 +75,12 @@ final class HostFlow {
         return captainVote + readyPlayerIDs.intersection(connected).count
     }
 
-    func requiredReadyCount(players: [PlayerInfo]) -> Int {
-        let connectedHumans = players.count { $0.isConnected && $0.kind == .human }
-        return connectedHumans == 0 ? 0 : (connectedHumans / 2) + 1
+    func requiredReadyCount(connectedHumanCount: Int) -> Int {
+        connectedHumanCount == 0 ? 0 : (connectedHumanCount / 2) + 1
     }
 
     func clearReadiness() {
+        guard !readyPlayerIDs.isEmpty else { return }
         readyPlayerIDs.removeAll()
     }
 
@@ -81,8 +89,9 @@ final class HostFlow {
         lastDecisionAt.removeValue(forKey: playerID)
     }
 
-    func authorizesLobbyCommand(from playerID: PlayerID, players: [PlayerInfo]) -> Bool {
-        phase == .lobby && players.contains {
+    func authorizedLobbyPlayer(for playerID: PlayerID, players: [PlayerInfo]) -> PlayerInfo? {
+        guard phase == .lobby else { return nil }
+        return players.first {
             $0.id == playerID && $0.isConnected && $0.kind == .human
         }
     }
@@ -160,14 +169,14 @@ final class HostFlow {
             case .up, .left:
                 return setMenuSelection(max(0, menuSelection - 1))
             case .down, .right:
-                return setMenuSelection(min(context.menuItemCount - 1, menuSelection + 1))
+                return setMenuSelection(min(context.menuLayout.menuItemCount - 1, menuSelection + 1))
             case .select:
-                if menuSelection < context.gameCount {
+                if menuSelection < context.menuLayout.gameCount {
                     if isCaptainControl(source) { return [.startSelectedGame] }
                     if case let .controller(playerID) = source { return toggleReadiness(for: playerID, context: context) }
-                } else if menuSelection == context.gameCount, isCaptainControl(source) {
+                } else if menuSelection == context.menuLayout.cupMenuIndex, isCaptainControl(source) {
                     return [.clearCupSelection] + transition(to: .cupSetup)
-                } else if menuSelection == context.gameCount + 1 {
+                } else if menuSelection == context.menuLayout.historyMenuIndex {
                     return transition(to: .history)
                 }
             case .back:
@@ -178,12 +187,12 @@ final class HostFlow {
             case .up, .left:
                 return [.setCupSelection(max(0, context.cupSetupSelection - 1)), .requestLayout]
             case .down, .right:
-                return [.setCupSelection(min(context.cupSetupItemCount - 1, context.cupSetupSelection + 1)), .requestLayout]
+                return [.setCupSelection(min(context.menuLayout.cupSetupItemCount - 1, context.cupSetupSelection + 1)), .requestLayout]
             case .select:
                 if isCaptainControl(source) {
-                    if context.cupSetupSelection == context.cupEligibleCount {
+                    if context.cupSetupSelection == context.menuLayout.cupEligibleCount {
                         if context.canStart,
-                           readyCount(players: context.players) >= requiredReadyCount(players: context.players) {
+                           readyCount(players: context.players) >= requiredReadyCount(connectedHumanCount: context.connectedHumanCount) {
                             return [.startCup]
                         }
                     } else {
@@ -216,7 +225,7 @@ final class HostFlow {
         case .cupStandings:
             if action == .select {
                 if isCaptainControl(source) {
-                    if readyCount(players: context.players) >= requiredReadyCount(players: context.players) {
+                    if readyCount(players: context.players) >= requiredReadyCount(connectedHumanCount: context.connectedHumanCount) {
                         return [.startNextCupEvent]
                     }
                 } else if case let .controller(playerID) = source {
@@ -225,7 +234,7 @@ final class HostFlow {
             }
         case .cupComplete:
             if action == .select || action == .back {
-                return [.resetCup] + setMenuSelection(context.gameCount) + transition(to: .gameMenu)
+                return [.resetCup] + setMenuSelection(context.menuLayout.cupMenuIndex) + transition(to: .gameMenu)
             }
         }
         return []
@@ -237,7 +246,7 @@ final class HostFlow {
         else { return [] }
         if readyPlayerIDs.remove(playerID) == nil { readyPlayerIDs.insert(playerID) }
         var intents: [Intent] = [.requestLayout]
-        if readyCount(players: context.players) >= requiredReadyCount(players: context.players) {
+        if readyCount(players: context.players) >= requiredReadyCount(connectedHumanCount: context.connectedHumanCount) {
             switch phase {
             case .gameMenu, .gameOver: intents.append(.startSelectedGame)
             case .cupSetup where context.selectedCupGameCount == 3: intents.append(.startCup)
@@ -263,7 +272,7 @@ final class HostFlow {
         if action == .select {
             switch phase {
             case .gameMenu:
-                isAuthorized = menuSelection < context.gameCount || player.id == captainID
+                isAuthorized = menuSelection < context.menuLayout.gameCount || player.id == captainID
             case .cupSetup, .cupStandings, .gameOver:
                 isAuthorized = true
             case .lobby, .history, .cupComplete:

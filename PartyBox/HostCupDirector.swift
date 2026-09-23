@@ -12,13 +12,17 @@ final class HostCupDirector {
     var cupEventIndex = 0
     var cupPoints: [ControllerID: Int] = [:]
     var cupEventWins: [ControllerID: Int] = [:]
-    var cupParticipants: [GameParticipant] = []
-    var cupMatchRecordIDs: [UUID] = []
-    var currentMatchIsCup = false
+    @ObservationIgnored var cupParticipants: [GameParticipant] = []
+    @ObservationIgnored var cupMatchRecordIDs: [UUID] = []
+    @ObservationIgnored var currentMatchIsCup = false
 
     func clearSelection() {
         selectedCupGameIDs = []
         cupSetupSelection = 0
+    }
+
+    func recordMatch(_ id: UUID) {
+        cupMatchRecordIDs.append(id)
     }
 
     @discardableResult

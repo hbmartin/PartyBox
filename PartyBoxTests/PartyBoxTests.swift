@@ -418,15 +418,16 @@ struct PartyBoxTests {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let encoded = try encoder.encode(screen)
-        if ProcessInfo.processInfo.environment["PARTYBOX_RECORD_GOLDENS"] == "1" {
-            let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                .appendingPathComponent("Fixtures/unavailable-screen.json")
-            try encoded.write(to: url)
-        } else {
-            let url = try #require(Bundle(for: FixtureBundleMarker.self)
-                .url(forResource: "unavailable-screen", withExtension: "json"))
-            #expect(encoded == (try Data(contentsOf: url)))
+        if let output = ProcessInfo.processInfo.environment["PARTYBOX_GOLDEN_OUTPUT_DIR"] {
+            let directory = URL(fileURLWithPath: output, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try encoded.write(to: directory.appendingPathComponent("unavailable-screen.json"))
+            Issue.record("Golden candidate generated; use scripts/record-goldens.sh to install and verify it")
+            return
         }
+        let url = try #require(Bundle(for: FixtureBundleMarker.self)
+            .url(forResource: "unavailable-screen", withExtension: "json"))
+        #expect(encoded == (try Data(contentsOf: url)))
     }
 
     @Test func stoppedCoordinatorCannotBeRevivedBySuspendedMatchCompletion() async throws {
@@ -594,6 +595,49 @@ struct PartyBoxTests {
         }
     }
 
+    @Test func rejectedFourthCupEventClearsReadyVotes() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let clients = (1...4).map { PartyClient(displayName: "Human \($0)") }
+            for client in clients { await client.connect(host: "127.0.0.1", port: port) }
+            try await waitUntil { coordinator.connectedHumanCount == 4 }
+            let ids = try clients.map { try #require($0.player?.id) }
+
+            coordinator.perform(.select)
+            for _ in 0..<PartyGames.all().count { coordinator.perform(.down) }
+            coordinator.perform(.select)
+            for index in 0..<3 {
+                coordinator.perform(.select)
+                if index < 2 { coordinator.perform(.down) }
+            }
+            let selected = coordinator.selectedCupGameIDs
+            #expect(selected.count == 3)
+            #expect(coordinator.requiredReadyCount == 3)
+
+            coordinator.perform(.select, source: .controller(ids[1]))
+            #expect(coordinator.readyPlayerIDs == [ids[1]])
+            coordinator.perform(.down)
+            try await waitUntil { !coordinator.layoutBroadcastInProgressForTesting }
+            let broadcastsBeforeRejection = coordinator.layoutBroadcastCountForTesting
+            coordinator.perform(.select)
+            #expect(coordinator.selectedCupGameIDs == selected)
+            #expect(coordinator.readyPlayerIDs.isEmpty)
+            try await waitUntil {
+                coordinator.layoutBroadcastCountForTesting > broadcastsBeforeRejection
+            }
+
+            coordinator.perform(.select, source: .controller(ids[2]))
+            #expect(coordinator.readyPlayerIDs == [ids[2]])
+            #expect(coordinator.phase == .cupSetup)
+            for client in clients { await client.stop() }
+            await coordinator.stop()
+        }
+    }
+
     @Test func leavingACompletedCupRestoresThePartyCupMenuSelection() async {
         let coordinator = HostCoordinator(configuration: .init(arguments: [
             "PartyBox", "--ui-testing", "--scenario", "cup-complete", "--disable-effects",
@@ -683,6 +727,7 @@ struct PartyBoxTests {
             coordinator.perform(.select)
             coordinator.perform(.select)
 
+            #expect(coordinator.currentScene != nil)
             #expect(coordinator.host.inputs.snapshot()[PlayerID(0)]?.axisX == 0)
             try await waitUntil {
                 self.paddleLayoutID(of: PlayerID(1), coordinator: coordinator) == "controller.layout.paddle.top"
@@ -846,6 +891,83 @@ struct PartyBoxTests {
 
             await newcomer.stop()
             await captain.stop()
+            await coordinator.stop()
+        }
+    }
+
+    @Test func botFinishingConnectionDuringMatchRemainsAnActiveParticipant() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            await coordinator.start()
+            let port = try #require(coordinator.host.port)
+            let captain = PartyClient(displayName: "Captain")
+            await captain.connect(host: "127.0.0.1", port: port)
+            try await waitUntil { coordinator.connectedHumanCount == 1 }
+            let historyCount = coordinator.historyRecords.count
+            let initialDifficulty = coordinator.currentBotDifficulty
+            let gate = CleanupGate()
+            coordinator.setBotConnectCheckpointForTesting { await gate.wait() }
+            defer { gate.release() }
+
+            let command = try PartyBoxWireCodec.encode(ControllerCommand.lobby(.setBotFillTarget(1)))
+            #expect(await captain.sendApplication(command))
+            try await waitUntil { gate.isWaiting && coordinator.activeBotCount == 1 }
+            coordinator.perform(.select)
+            coordinator.perform(.select)
+            #expect(coordinator.phase == .playing)
+            #expect(coordinator.botParticipantCountForTesting == 1)
+            #expect(coordinator.currentScene != nil)
+
+            gate.release()
+            try await waitUntil(timeout: .seconds(5)) {
+                coordinator.botReconciliationIDForTesting == nil
+                    && coordinator.botInputFramesAppliedForTesting > 0
+            }
+            #expect(coordinator.activeBotCount == 1)
+            #expect(coordinator.readyBotClientCountForTesting == 1)
+            #expect(coordinator.phase == .playing)
+            #expect(coordinator.historyRecords.count == historyCount)
+            #expect(coordinator.currentBotDifficulty == initialDifficulty)
+            #expect(coordinator.statusMessage != "A bot could not join")
+            await coordinator.stop()
+            await captain.stop()
+        }
+    }
+
+    @Test func staleBotDrainCannotClearANewerReconciliation() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = HostCoordinator(configuration: .init(arguments: [
+                "PartyBox", "--ui-testing", "--disable-effects", "--bot-count", "1",
+            ]))
+            let oldGate = CleanupGate()
+            coordinator.setBotConnectCheckpointForTesting { await oldGate.wait() }
+            defer { oldGate.release() }
+            await coordinator.start()
+            try await waitUntil { oldGate.isWaiting }
+            let oldID = try #require(coordinator.botReconciliationIDForTesting)
+
+            await coordinator.stop()
+            let newGate = CleanupGate()
+            coordinator.setBotConnectCheckpointForTesting { await newGate.wait() }
+            defer { newGate.release() }
+            var oldDrainFinished = false
+            coordinator.setBotDrainFinishedForTesting { oldDrainFinished = $0 == oldID || oldDrainFinished }
+            await coordinator.start()
+            try await waitUntil { newGate.isWaiting }
+            let newID = try #require(coordinator.botReconciliationIDForTesting)
+            #expect(newID != oldID)
+
+            oldGate.release()
+            try await waitUntil { oldDrainFinished }
+            #expect(coordinator.botReconciliationIDForTesting == newID)
+            newGate.release()
+            try await waitUntil(timeout: .seconds(5)) {
+                coordinator.botReconciliationIDForTesting == nil && coordinator.activeBotCount == 1
+            }
             await coordinator.stop()
         }
     }

@@ -67,6 +67,15 @@ The soak, ASan, and TSan profiles remain manual. Run `scripts/verify.sh soak` wh
 fault-injection soak, or `scripts/verify.sh all` for the complete local acceptance suite. Load runs
 require both client transmission metrics and host-observed changing input for every controller; there
 is no scheduled soak job.
+The normal gate also runs the local package's `PartyGamesTests` on tvOS through Xcode's
+`PartyNet-Package` scheme because the app test-plan picker does not expose that package test target.
+
+To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
+It generates candidates in a temporary directory, installs the complete fixture set, and reruns
+ordinary comparisons. The recording command temporarily disables the macOS host app sandbox for
+its Xcode test invocation; normal builds and tests retain their configured sandbox. Review the
+fixture diff before committing. The old `PARTYBOX_RECORD_GOLDENS` and `PARTYGAMES_RECORD_GOLDENS`
+environment flags are no longer used.
 
 ## Docs
 
