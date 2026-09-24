@@ -152,6 +152,7 @@ fault_control() {
 }
 
 normal() {
+    run_logged golden-recording-safety /bin/bash "$ROOT_DIR/scripts/tests/record-goldens-test.sh"
     run_logged partynet-tests swift test --package-path "$ROOT_DIR/PartyNet"
     run_logged partyfault-tests swift test --package-path "$ROOT_DIR/PartyFault"
     ensure_ios_destination

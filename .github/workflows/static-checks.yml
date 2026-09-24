@@ -27,7 +27,10 @@ jobs:
           done < <(find scripts -type f -name '*.sh' -print0)
 
       - name: Run ShellCheck
-        run: shellcheck scripts/*.sh
+        run: find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+
+      - name: Test golden fixture recording safety
+        run: bash scripts/tests/record-goldens-test.sh
 
       - name: Validate JSON configuration and test plans
         run: |
