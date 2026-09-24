@@ -29,7 +29,7 @@ else
         kill -TERM "$PPID"
         exit 0
     fi
-    [[ "$STUB_SCENARIO" != verify_fail ]]
+    [[ "$STUB_SCENARIO" != verify_fail && "$STUB_SCENARIO" != restore_copy_fail && "$STUB_SCENARIO" != restore_remove_fail ]]
 fi
 SH
     cat >"$root/bin/xcodebuild" <<'SH'
@@ -41,13 +41,27 @@ else
     [[ "$STUB_SCENARIO" != host_verify_fail ]]
 fi
 SH
-    chmod +x "$root/bin/swift" "$root/bin/xcodebuild"
+    cat >"$root/bin/cp" <<'SH'
+#!/bin/bash
+if [[ "$STUB_SCENARIO" == restore_copy_fail && "$1" == */backup-games/*.json ]]; then
+    exit 23
+fi
+exec /bin/cp "$@"
+SH
+    cat >"$root/bin/rm" <<'SH'
+#!/bin/bash
+if [[ "$STUB_SCENARIO" == restore_remove_fail && "$1" == -f && "$2" == */Fixtures/game.json ]]; then
+    exit 23
+fi
+exec /bin/rm "$@"
+SH
+    chmod +x "$root/bin/swift" "$root/bin/xcodebuild" "$root/bin/cp" "$root/bin/rm"
 }
 
 run_script() {
     local root=$1 scenario=$2
     shift 2
-    env PATH="$root/bin:$PATH" STUB_SCENARIO="$scenario" \
+    env PATH="$root/bin:$PATH" TMPDIR="$root" STUB_SCENARIO="$scenario" \
         bash "$root/scripts/record-goldens.sh" "$@" >"$root/run.log" 2>&1
 }
 
@@ -56,6 +70,15 @@ assert_original() {
     [[ "$(cat "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json")" == '{"original":"games"}' ]]
     [[ "$(cat "$root/PartyBoxTests/Fixtures/unavailable-screen.json")" == '{"original":"host"}' ]]
     [[ ! -e "$root/PartyNet/Tests/PartyGamesTests/Fixtures/new-game.json" ]]
+}
+
+assert_retained_backup() {
+    local root=$1 record_root
+    record_root="$(find "$root" -maxdepth 1 -type d -name 'partybox-goldens.*' -print -quit)"
+    [[ -n "$record_root" ]]
+    [[ "$(cat "$record_root/backup-games/game.json")" == '{"original":"games"}' ]]
+    [[ "$(cat "$record_root/backup-host/unavailable-screen.json")" == '{"original":"host"}' ]]
+    grep -Fq "Fixture restoration failed; backups retained at $record_root." "$root/run.log"
 }
 
 make_case recording_fail
@@ -89,6 +112,15 @@ for scenario in verify_fail host_verify_fail interrupted; do
         exit 1
     fi
     assert_original "$test_root/$scenario"
+done
+
+for scenario in restore_copy_fail restore_remove_fail; do
+    make_case "$scenario"
+    if run_script "$test_root/$scenario" "$scenario"; then
+        echo "$scenario unexpectedly succeeded." >&2
+        exit 1
+    fi
+    assert_retained_backup "$test_root/$scenario"
 done
 
 make_case normal
