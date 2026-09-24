@@ -27,17 +27,17 @@ rollback_pending=false
 copy_json() {
     local source=$1 destination=$2 fixture
     for fixture in "$source"/*.json; do
-        cp "$fixture" "$destination/"
+        cp "$fixture" "$destination/" || return 1
     done
 }
 
 restore_fixtures() {
     local fixture
     for fixture in "$games_fixtures"/*.json "$host_fixtures"/*.json; do
-        rm -f "$fixture"
+        rm -f "$fixture" || return 1
     done
-    copy_json "$games_backup" "$games_fixtures"
-    copy_json "$host_backup" "$host_fixtures"
+    copy_json "$games_backup" "$games_fixtures" || return 1
+    copy_json "$host_backup" "$host_fixtures" || return 1
 }
 
 cleanup() {
@@ -45,9 +45,12 @@ cleanup() {
     trap - EXIT INT TERM
     if [[ "$rollback_pending" == true ]]; then
         echo "Restoring golden fixtures after unsuccessful verification." >&2
-        restore_fixtures || status=1
+        if ! restore_fixtures; then
+            echo "Fixture restoration failed; backups retained at $record_root." >&2
+            exit 1
+        fi
     fi
-    rm -rf "$record_root"
+    rm -rf "$record_root" || status=1
     exit "$status"
 }
 trap cleanup EXIT
