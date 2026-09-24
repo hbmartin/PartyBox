@@ -6,7 +6,10 @@ readonly ROOT_DIR
 readonly PROFILE="${1:-normal}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 readonly TIMESTAMP
-readonly ARTIFACT_DIR="${PARTYBOX_ARTIFACT_DIR:-$ROOT_DIR/.verification/$TIMESTAMP}"
+ARTIFACT_DIR="${PARTYBOX_ARTIFACT_DIR:-$ROOT_DIR/.verification/$TIMESTAMP}"
+mkdir -p "$ARTIFACT_DIR"
+ARTIFACT_DIR="$(cd "$ARTIFACT_DIR" && pwd)"
+readonly ARTIFACT_DIR
 readonly PROJECT="$ROOT_DIR/PartyBox.xcodeproj"
 
 IOS_UDID=""
@@ -17,8 +20,6 @@ FAULT_PID=""
 FAULT_READY=""
 FAULT_ADDRESS=""
 CONTROL_ADDRESS=""
-
-mkdir -p "$ARTIFACT_DIR"
 
 for tool in jq plutil swift xcodebuild xcrun; do
     command -v "$tool" >/dev/null 2>&1 || {

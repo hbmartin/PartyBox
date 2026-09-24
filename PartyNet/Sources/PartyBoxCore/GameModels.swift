@@ -119,7 +119,7 @@ public enum SpectatorScreenFactory {
             .text(.init(id: "controller.spectator.position", text: status, style: .headline, tint: .success)),
             .emojiPalette(.init(id: "spectator.reactions", emojis: reactions)),
         ]
-        if !state.choices.isEmpty {
+        if state.role != .active, !state.choices.isEmpty {
             components.append(.choiceGroup(.init(
                 id: "spectator.vote",
                 title: "NEXT ROUND",

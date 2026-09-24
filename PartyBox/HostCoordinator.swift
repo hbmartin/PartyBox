@@ -105,10 +105,6 @@ final class HostCoordinator {
         get { cup.cupParticipants }
         set { cup.cupParticipants = newValue }
     }
-    private(set) var cupMatchRecordIDs: [UUID] {
-        get { cup.cupMatchRecordIDs }
-        set { cup.cupMatchRecordIDs = newValue }
-    }
     private(set) var currentMatchIsCup: Bool {
         get { cup.currentMatchIsCup }
         set { cup.currentMatchIsCup = newValue }
@@ -161,16 +157,15 @@ final class HostCoordinator {
     @ObservationIgnored private var botDrainFinishedForTesting: (@MainActor (UUID) -> Void)?
 #endif
 
-    var menuItems: [String] { games.map { $0.descriptor.title } + ["PARTY CUP", "HISTORY & LEADERBOARD"] }
-    var menuDetails: [String] { games.map { $0.descriptor.summary } + ["Captain picks three events  •  One champion", "All-time results and match details"] }
-    var cupEligibleGames: [GameDescriptor] { games.map(\.descriptor).filter(\.isCupEligible) }
+    var menuItems: [String] { menuLayout.mainEntries.map(\.title) }
+    var menuDetails: [String] { menuLayout.mainEntries.map(\.detail) }
+    var cupEligibleGames: [GameDescriptor] { menuLayout.cupEligibleGames }
     var cupSetupItems: [String] {
-        cupEligibleGames.map { descriptor in
-            selectedCupGameIDs.contains(descriptor.id) ? "✓  \(descriptor.title)" : "○  \(descriptor.title)"
-        } + ["START PARTY CUP"]
+        let selectedIDs = Set(selectedCupGameIDs)
+        return menuLayout.cupEntries.map { $0.title(selectedIDs: selectedIDs) }
     }
     var cupSetupDetails: [String] {
-        cupEligibleGames.map(\.summary) + ["\(selectedCupGameIDs.count)/3 events selected"]
+        menuLayout.cupEntries.map { $0.detail(selectedCount: selectedCupGameIDs.count) }
     }
     var cupLeaderboard: [CupStandingRecord] { makeCupStandings() }
     var currentGameTitle: String {
@@ -213,7 +208,7 @@ final class HostCoordinator {
     var canStart: Bool {
         switch phase {
         case .lobby: return connectedCount > 0
-        case .cupSetup: return selectedCupGameIDs.count == 3 && connectedCount > 0
+        case .cupSetup: return selectedCupGameIDs.count == 3 && !matchReadyPlayers.isEmpty
         case .cupStandings: return cupEventIndex + 1 < selectedCupGameIDs.count
         case .gameMenu, .gameOver:
             guard games.indices.contains(menuSelection) else { return menuSelection == menuLayout.cupMenuIndex && !matchReadyPlayers.isEmpty }
@@ -238,10 +233,7 @@ final class HostCoordinator {
         )
         let loadedGames = PartyGames.all()
         games = loadedGames
-        menuLayout = HostMenuLayout(
-            gameCount: loadedGames.count,
-            cupEligibleCount: loadedGames.count { $0.descriptor.isCupEligible }
-        )
+        menuLayout = HostMenuLayout(games: loadedGames.map { $0.descriptor })
         sounds = nil
         botFillTarget = min(configuration.botCount, PartyNetConstants.maximumControllers)
     }
@@ -378,6 +370,8 @@ final class HostCoordinator {
                     return self.currentParticipants.contains { $0.controllerID == controllerID }
                 }
             )
+            guard !Task.isCancelled, isStarted, lifecycleGeneration == generation,
+                  botReconciliationOperation?.id == operationID else { return }
             switch result {
             case .completed: break
             case .joinFailed: statusMessage = "A bot could not join"
@@ -460,9 +454,7 @@ final class HostCoordinator {
     }
 
     private func toggleCupGame(at index: Int) {
-        let eligibleGames = cupEligibleGames
-        guard eligibleGames.indices.contains(index) else { return }
-        _ = cup.toggleGame(at: index, eligibleGames: eligibleGames)
+        guard cup.toggleGame(at: index, eligibleGames: cupEligibleGames) else { return }
         clearReadiness()
         requestLayoutBroadcast()
     }
@@ -491,7 +483,10 @@ final class HostCoordinator {
         reconcileCupParticipants()
         guard selectedCupGameIDs.indices.contains(eventIndex),
               let gameIndex = games.firstIndex(where: { $0.descriptor.id == selectedCupGameIDs[eventIndex] }) else { return false }
-        let live = cupParticipants.filter { livePlayer(for: $0)?.isConnected == true }
+        let readyIDs = Set(matchReadyPlayers.map(\.id))
+        let live = cupParticipants.filter {
+            readyIDs.contains($0.player.id) && livePlayer(for: $0)?.isConnected == true
+        }
         return startGame(at: gameIndex, participants: live, isCupEvent: true)
     }
 
@@ -609,10 +604,7 @@ final class HostCoordinator {
             lastVoteAt.removeValue(forKey: player.id)
             flow.forgetInput(from: player.id)
             flow.humanConnectionOrder.removeAll { $0 == controllerID }
-            if player.kind == .bot, let bot = botDirector.bots.removeValue(forKey: controllerID) {
-                host.unregisterLocalBot(controllerID: controllerID)
-                Task { await bot.stop() }
-            }
+            if player.kind == .bot { _ = botDirector.retire(controllerID, host: host) }
             if captainID == player.id { promoteCaptain() }
             if phase == .playing,
                currentParticipants.contains(where: {
@@ -1341,6 +1333,9 @@ final class HostCoordinator {
         startCheckpointForTesting = nil
         finishMatchCheckpointForTesting = nil
         finishCupCheckpointForTesting = nil
+        botDirector.afterConnectForTesting = nil
+        botDirector.afterFailedJoinStopForTesting = nil
+        botDrainFinishedForTesting = nil
 #endif
     }
 
@@ -1410,6 +1405,10 @@ final class HostCoordinator {
         botDirector.afterConnectForTesting = checkpoint
     }
 
+    func setBotFailedJoinStopCheckpointForTesting(_ checkpoint: (@MainActor () async -> Void)?) {
+        botDirector.afterFailedJoinStopForTesting = checkpoint
+    }
+
     func setBotDrainFinishedForTesting(_ callback: (@MainActor (UUID) -> Void)?) {
         botDrainFinishedForTesting = callback
     }
@@ -1445,6 +1444,10 @@ final class HostCoordinator {
 
     var readyBotClientCountForTesting: Int {
         bots.values.count { $0.player?.kind == .bot }
+    }
+
+    var botClientsForTesting: [PartyClient] {
+        Array(bots.values)
     }
 
     var botInputFramesAppliedForTesting: UInt64 {

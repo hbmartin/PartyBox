@@ -21,13 +21,66 @@ enum HostInputSource: Equatable {
 }
 
 struct HostMenuLayout {
-    let gameCount: Int
-    let cupEligibleCount: Int
+    enum MainEntry {
+        case game(GameDescriptor)
+        case cup
+        case history
 
-    var cupMenuIndex: Int { gameCount }
-    var historyMenuIndex: Int { gameCount + 1 }
-    var menuItemCount: Int { gameCount + 2 }
-    var cupSetupItemCount: Int { cupEligibleCount + 1 }
+        var title: String {
+            switch self {
+            case .game(let game): game.title
+            case .cup: "PARTY CUP"
+            case .history: "HISTORY & LEADERBOARD"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .game(let game): game.summary
+            case .cup: "Captain picks three events  •  One champion"
+            case .history: "All-time results and match details"
+            }
+        }
+    }
+
+    enum CupEntry {
+        case game(GameDescriptor)
+        case start
+
+        func title(selectedIDs: Set<String>) -> String {
+            switch self {
+            case .game(let game):
+                return selectedIDs.contains(game.id) ? "✓  \(game.title)" : "○  \(game.title)"
+            case .start: return "START PARTY CUP"
+            }
+        }
+
+        func detail(selectedCount: Int) -> String {
+            switch self {
+            case .game(let game): return game.summary
+            case .start: return "\(selectedCount)/3 events selected"
+            }
+        }
+    }
+
+    let mainEntries: [MainEntry]
+    let cupEntries: [CupEntry]
+    let gameCount: Int
+
+    init(games: [GameDescriptor]) {
+        mainEntries = games.map(MainEntry.game) + [.cup, .history]
+        cupEntries = games.filter(\.isCupEligible).map(CupEntry.game) + [.start]
+        gameCount = games.count
+    }
+
+    var cupMenuIndex: Int { mainEntries.firstIndex { if case .cup = $0 { true } else { false } }! }
+    var historyMenuIndex: Int { mainEntries.firstIndex { if case .history = $0 { true } else { false } }! }
+    var menuItemCount: Int { mainEntries.count }
+    var cupSetupItemCount: Int { cupEntries.count }
+    var cupStartIndex: Int { cupEntries.firstIndex { if case .start = $0 { true } else { false } }! }
+    var cupEligibleGames: [GameDescriptor] {
+        cupEntries.compactMap { if case .game(let game) = $0 { game } else { nil } }
+    }
 }
 
 @MainActor
@@ -190,7 +243,7 @@ final class HostFlow {
                 return [.setCupSelection(min(context.menuLayout.cupSetupItemCount - 1, context.cupSetupSelection + 1)), .requestLayout]
             case .select:
                 if isCaptainControl(source) {
-                    if context.cupSetupSelection == context.menuLayout.cupEligibleCount {
+                    if context.cupSetupSelection == context.menuLayout.cupStartIndex {
                         if context.canStart,
                            readyCount(players: context.players) >= requiredReadyCount(connectedHumanCount: context.connectedHumanCount) {
                             return [.startCup]

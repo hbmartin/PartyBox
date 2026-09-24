@@ -71,11 +71,13 @@ The normal gate also runs the local package's `PartyGamesTests` on tvOS through 
 `PartyNet-Package` scheme because the app test-plan picker does not expose that package test target.
 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
-It generates candidates in a temporary directory, installs the complete fixture set, and reruns
-ordinary comparisons. The recording command temporarily disables the macOS host app sandbox for
-its Xcode test invocation; normal builds and tests retain their configured sandbox. Review the
-fixture diff before committing. The old `PARTYBOX_RECORD_GOLDENS` and `PARTYGAMES_RECORD_GOLDENS`
-environment flags are no longer used.
+It generates candidates in a temporary directory, installs them only after both recording tests
+pass, and reruns ordinary comparisons. If verification fails, the script restores the previous
+fixtures. Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
+fixture files; without that flag, only existing fixture values can change. The recording command
+temporarily disables the macOS host app sandbox for its Xcode test invocation; normal builds and
+tests retain their configured sandbox. Review the fixture diff before committing. The old
+`PARTYBOX_RECORD_GOLDENS` and `PARTYGAMES_RECORD_GOLDENS` environment flags are no longer used.
 
 ## Docs
 
