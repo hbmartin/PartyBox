@@ -72,19 +72,22 @@ The normal gate also runs the local package's `PartyGamesTests` on tvOS through 
 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
 It generates candidates in a temporary directory, installs them only after both recording tests
-pass, and reruns ordinary comparisons. If verification fails, the script attempts to restore the
-previous fixtures. If restoration fails or is interrupted, it keeps the originals under the
-printed `.verification/golden-backups/partybox-goldens.*` path, in `backup-games/` and
-`backup-host/`. After resolving the copy error, run the exact `rsync` commands printed by the
-script, inspect the fixture diff, and remove that backup only after confirming recovery. For
-example, from the repository root with `BACKUP` set to the printed path:
+pass, and reruns ordinary comparisons. If verification fails, the script validates both backups
+before restoring the previous fixtures. A missing or incomplete backup stops automatic restoration
+without deleting fixtures. If restoration fails or is interrupted and the backup is intact, it keeps
+the originals under the printed `.verification/golden-backups/partybox-goldens.*` path, in
+`backup-games/` and `backup-host/`, with instructions in `recovery.log`. After resolving the file
+error, run the exact `rsync` and staging cleanup commands printed by the script, inspect the fixture
+diff, and remove that backup only after confirming recovery. For example, from the repository root
+with `BACKUP` set to the printed path:
 
 ```bash
 rsync -a --delete --include='*.json' --exclude='*' "$BACKUP/backup-games/" PartyNet/Tests/PartyGamesTests/Fixtures/
 rsync -a --delete --include='*.json' --exclude='*' "$BACKUP/backup-host/" PartyBoxTests/Fixtures/
 ```
 
-The filters limit copying and deletion to JSON fixtures. `.verification/` is ignored
+The filters limit copying and deletion to JSON fixtures. The separately printed cleanup command
+removes temporary `.partybox-fixture.*` files left by that recording run. `.verification/` is ignored
 by Git but can be removed by `git clean -fdx`, so move a retained backup elsewhere before cleaning
 the checkout. Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
 fixture files; without that flag, only existing fixture values can change. The recording command
