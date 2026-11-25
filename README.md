@@ -19,7 +19,7 @@ Phones also provide brief, gentle private color and haptic cues—never torch or
 | Target | Product | Platforms |
 |---|---|---|
 | `PartyBox` | The host app | tvOS 26+ **and** macOS 26+ (one target, native on both) |
-| `PartyBox Controller` | The iPhone controller | iOS 26+, iPhone only, portrait |
+| `PartyBox Controller` | PartyPad, the iPhone controller | iOS 26+, iPhone only, portrait |
 | `PartyNet` | Local Swift package | The shared transport, used by both apps |
 | `PartyGames` | Library target in `PartyNet/` | Game implementations and headless macOS tests, used by the host |
 
@@ -38,7 +38,7 @@ state. Peer-to-peer/AWDL is deliberately disabled — everyone shares one real W
 
 ```
 PartyBox/              Host app (tvOS + macOS): Cup flow and SwiftUI screens
-PartyBox Controller/   iPhone app: touch/motion controls, private cues, trophies
+PartyBox Controller/   PartyPad iPhone app: touch/motion controls, private cues, trophies
 PartyNet/              Shared protocol, transport, game runtime, and PartyGames package target
 PartyFault/            Apache-2.0 generic Network.framework fault proxy library + CLI
 Config/                Info.plists (Bonjour service + Local Network usage strings)

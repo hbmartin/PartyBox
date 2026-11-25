@@ -59,7 +59,7 @@ struct ContentView: View {
 private func localNetworkPermissionHelp(for message: String) -> String? {
     let lower = message.lowercased()
     guard lower.contains("denied") || lower.contains("policy") else { return nil }
-    return "Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."
+    return "Local Network access is off. Enable it for PartyPad in Settings, then try again."
 }
 
 private struct HostPickerView: View {
@@ -70,7 +70,7 @@ private struct HostPickerView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                ControllerWordmark(kicker: "IPHONE CONTROLLER", title: "PARTYBOX")
+                ControllerWordmark(kicker: "PARTYPAD", title: "PARTYBOX")
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("YOUR NAME").font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))

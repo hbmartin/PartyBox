@@ -137,7 +137,7 @@ private struct LobbyView: View {
     var body: some View {
         VStack(spacing: 26) {
             PartyWordmark(kicker: "LOCAL ARCADE", title: "PARTYBOX")
-            Text("Open PartyBox Controller on iPhone and choose this host")
+            Text("Open PartyPad on iPhone and choose this host")
                 .font(.title3.weight(.medium))
                 .foregroundStyle(.white.opacity(0.72))
             Text(coordinator.host.hostName)

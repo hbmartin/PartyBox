@@ -65,7 +65,7 @@ This is the single most common cause of "it just doesn't find anything."
 
 The app tells you when it detects it. Any error containing *denied* or *policy* is rewritten to:
 
-> *"Local Network access is off. Enable it for PartyBox Controller in Settings, then try again."*
+> *"Local Network access is off. Enable it for PartyPad in Settings, then try again."*
 
 And after 4 seconds with no hosts found you get the generic card:
 
@@ -74,7 +74,7 @@ And after 4 seconds with no hosts found you get the generic card:
 
 Fix it:
 
-1. **Settings ▸ PartyBox Controller ▸ Local Network** — toggle **on**.
+1. **Settings ▸ PartyPad ▸ Local Network** — toggle **on**.
    (The **OPEN SETTINGS** button on that card takes you straight there.)
 2. Force-quit and relaunch the app.
 3. If the toggle isn't there at all, iOS never recorded a decision. Reset privacy prompts with
