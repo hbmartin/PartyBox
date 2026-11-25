@@ -4,10 +4,11 @@ A local-network party game for the living room. One **host** — an Apple TV or 
 big screen; up to **eight iPhones** join over Wi-Fi and act as the controllers. No accounts, no servers,
 no internet: just Bonjour on your LAN.
 
-The library includes **Four-Way Pong**, **Signal Snap**, **Gravity Grab**, **Snake Pit**, and
-**Last Light**. Every game supports up to eight players (Pong switches to a short qualifier format
-above four), bots can fill the room, and a three-event **Party Cup** awards persistent trophies.
-Touch is the controller default; players can opt into calibrated motion controls in phone settings.
+The library has eight fast arcade games: **Four-Way Pong**, **Snake Pit**, **Last Light**,
+**Bumper Brawl**, **Paint Rush**, **Sky Hop**, **Hot Fuse**, and the **Turbo Loop** racer. Every game
+supports one to eight players (Pong seats four and rotates the rest in from a winner-stays bench), bots can
+fill the room, and a three-event **Party Cup** awards persistent trophies. Touch is the controller default,
+with an optional swipe (trackpad) touch style; players can also opt into calibrated motion controls.
 Phones also provide brief, gentle private color and haptic cues—never torch or distributed audio.
 
 > **▶ New here? Read [QUICKSTART.md](QUICKSTART.md).** It covers setup and signing, both host paths

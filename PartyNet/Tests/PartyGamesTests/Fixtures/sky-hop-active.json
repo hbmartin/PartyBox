@@ -1,0 +1,40 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.sky-hop",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "sky.rule",
+          "style" : "caption",
+          "text" : "TAP TO FLAP • LAST ONE FLYING WINS",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "actionButton" : {
+        "_0" : {
+          "id" : "sky.flap",
+          "label" : "FLAP",
+          "route" : {
+            "game" : {
+              "_0" : "sky.flap"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 0
+}

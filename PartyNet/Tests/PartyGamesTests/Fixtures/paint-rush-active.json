@@ -1,6 +1,6 @@
 {
   "accentColorHex" : "#32E6FF",
-  "accessibilityID" : "controller.layout.signal-snap",
+  "accessibilityID" : "controller.layout.paint-rush",
   "components" : [
     {
       "text" : {
@@ -15,25 +15,23 @@
     {
       "text" : {
         "_0" : {
-          "id" : "signal.rule",
+          "id" : "paint.rule",
           "style" : "caption",
-          "text" : "MATCH THE SYMBOL ON THE TV",
+          "text" : "PAINT THE FLOOR • STEAL THEIR COLOR",
           "tint" : "secondary"
         }
       }
     },
     {
-      "directionPad" : {
+      "axisSurface" : {
         "_0" : {
-          "downLabel" : "DOWN",
-          "id" : "signal.direction",
-          "instruction" : "TAP THE MATCHING ARROW",
-          "leftLabel" : "LEFT",
-          "rightLabel" : "RIGHT",
-          "upLabel" : "UP"
+          "binding" : "twoDimensional",
+          "id" : "paint.steer",
+          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL",
+          "swipe" : "heading"
         }
       }
     }
   ],
-  "requestedInputs" : 0
+  "requestedInputs" : 1
 }

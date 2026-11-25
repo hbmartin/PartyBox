@@ -27,7 +27,8 @@
         "_0" : {
           "binding" : "twoDimensional",
           "id" : "light.steer",
-          "instruction" : "DRAG TO MOVE  •  MOTION OPTIONAL"
+          "instruction" : "DRAG WHERE TO GO  •  MOTION OPTIONAL",
+          "swipe" : "relative"
         }
       }
     }

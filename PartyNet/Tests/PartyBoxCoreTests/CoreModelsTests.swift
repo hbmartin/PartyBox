@@ -62,7 +62,7 @@ struct CoreModelsTests {
         let nextEvent = HostPresentation.layout(.gameOver(.init(
             title: "EVENT COMPLETE",
             subtitle: "Party Cup continues",
-            nextUp: "GRAVITY GRAB"
+            nextUp: "SKY HOP"
         )))
         #expect(try PartyBoxWireCodec.decode(
             HostPresentation.self,
@@ -122,7 +122,7 @@ struct CoreModelsTests {
         #expect(menu.control == .uncontrolled)
 
         let legacyCupMenu = Data(
-            #"{"items":["SIGNAL SNAP","START PARTY CUP"],"details":["Ready","3/3 events selected"],"selected":1}"#.utf8
+            #"{"items":["SKY HOP","START PARTY CUP"],"details":["Ready","3/3 events selected"],"selected":1}"#.utf8
         )
         #expect(try PartyBoxWireCodec.decode(MenuLayout.self, from: legacyCupMenu).kind == .cupSetup)
 
@@ -160,7 +160,7 @@ struct CoreModelsTests {
     @Test func partyCupRecordsProducePrivatePersistentTrophiesWithoutDiscardingEvents() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),
-            gameIDs: ["pong", "signal-snap", "snake-pit", "ignored"],
+            gameIDs: ["pong", "sky-hop", "snake-pit", "ignored"],
             matchRecordIDs: [UUID()],
             standings: [
                 .init(controllerID: secondID, displayName: "Grace", colorHex: "#FF3EC8", kind: .human, rank: 2, points: 14, eventWins: 1),
@@ -168,7 +168,7 @@ struct CoreModelsTests {
             ]
         )
         let personal = try #require(PersonalCupRecord(record: cup, controllerID: firstID))
-        #expect(cup.gameIDs == ["pong", "signal-snap", "snake-pit", "ignored"])
+        #expect(cup.gameIDs == ["pong", "sky-hop", "snake-pit", "ignored"])
         #expect(cup.standings.first?.displayName == "Ada")
         #expect(personal.isChampion)
         #expect(HistoryAggregation.cups([personal]) == .init(played: 1, won: 1, podiums: 1))
@@ -178,7 +178,7 @@ struct CoreModelsTests {
     @Test func malformedCupRanksDoNotCountAsPodiums() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),
-            gameIDs: ["pong", "signal-snap", "snake-pit"],
+            gameIDs: ["pong", "sky-hop", "snake-pit"],
             matchRecordIDs: [],
             standings: [
                 .init(

@@ -175,6 +175,13 @@ final class ControllerCoordinator {
             updateMotionCapture()
         }
     }
+    /// Swipe (trackpad) touch style: arrow pads become swipe pads and drag
+    /// surfaces move relatively instead of jumping to the finger.
+    var swipeControlsEnabled: Bool {
+        didSet {
+            defaults.set(swipeControlsEnabled, forKey: "partybox.swipeControlsEnabled")
+        }
+    }
     var deviceEffectsEnabled: Bool {
         didSet {
             defaults.set(deviceEffectsEnabled, forKey: "partybox.deviceEffectsEnabled")
@@ -253,6 +260,7 @@ final class ControllerCoordinator {
         Self.resetLegacyMotionCalibration(in: defaults)
         Self.migrateMotionCalibrationProjection(in: defaults)
         motionControlEnabled = defaults.bool(forKey: "partybox.motionControlEnabled")
+        swipeControlsEnabled = defaults.bool(forKey: "partybox.swipeControlsEnabled")
         deviceEffectsEnabled = defaults.object(forKey: "partybox.deviceEffectsEnabled") as? Bool ?? true
         hapticsEnabled = defaults.object(forKey: "partybox.hapticsEnabled") as? Bool ?? true
         motionNeutralProjectionX = Float(defaults.double(forKey: MotionCalibrationDefaults.projectionX))
@@ -909,6 +917,8 @@ final class ControllerCoordinator {
         let host = try? DiscoveredHost(host: "127.0.0.1", port: 49_999, name: "Living Room PartyBox", protocolVersion: PartyNetConstants.protocolVersion, instanceID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
         let incompatible = try? DiscoveredHost(host: "127.0.0.1", port: 49_998, name: "Old PartyBox", protocolVersion: 999, instanceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         roster = players
+        // Fixtures fully determine the touch style so scenarios never leak into each other.
+        swipeControlsEnabled = scenario.hasSuffix("-swipe")
         switch scenario {
         case "empty-picker": client.configureFixture(state: .browsing)
         case "populated-picker": client.configureFixture(state: .browsing, hosts: [host, incompatible].compactMap { $0 })
@@ -922,16 +932,16 @@ final class ControllerCoordinator {
         case "menu":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .menu(.init(
-                items: ["FOUR-WAY PONG", "SIGNAL SNAP", "GRAVITY GRAB", "SNAKE PIT", "LAST LIGHT", "PARTY CUP", "HISTORY & LEADERBOARD"],
-                details: ["Pong, expanded", "Match the TV", "Swing around the ring", "Three quick lives", "Dodge the red", "Three-event championship", "Your night"],
+                items: ["FOUR-WAY PONG", "SNAKE PIT", "LAST LIGHT", "BUMPER BRAWL", "PAINT RUSH", "SKY HOP", "HOT FUSE", "TURBO LOOP", "PARTY CUP", "HISTORY & LEADERBOARD"],
+                details: ["Pong, expanded", "Light cycles", "Dodge the red", "Shrinking ice", "Turf war", "Tap to flap", "Pass the bomb", "Five laps", "Three-event championship", "Your night"],
                 selected: 0,
                 control: captainControl
             ))
         case "menu-member":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: member)
             layout = .menu(.init(
-                items: ["FOUR-WAY PONG", "SIGNAL SNAP", "GRAVITY GRAB", "SNAKE PIT", "LAST LIGHT", "PARTY CUP", "HISTORY & LEADERBOARD"],
-                details: ["Pong, expanded", "Match the TV", "Swing around the ring", "Three quick lives", "Dodge the red", "Three-event championship", "Your night"],
+                items: ["FOUR-WAY PONG", "SNAKE PIT", "LAST LIGHT", "BUMPER BRAWL", "PAINT RUSH", "SKY HOP", "HOT FUSE", "TURBO LOOP", "PARTY CUP", "HISTORY & LEADERBOARD"],
+                details: ["Pong, expanded", "Light cycles", "Dodge the red", "Shrinking ice", "Turf war", "Tap to flap", "Pass the bomb", "Five laps", "Three-event championship", "Your night"],
                 selected: 0,
                 control: memberControl
             ))
@@ -943,52 +953,101 @@ final class ControllerCoordinator {
                 .axisSurface(.init(id: "controller.paddle.track", binding: .horizontal, instruction: "DRAG TO MOVE")),
             ])
             layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
-        case "signal-snap":
+        case "pong-bench":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let screen = ControllerScreen(
-                accessibilityID: "controller.layout.signal-snap",
-                accentColorHex: currentPlayer.colorHex,
-                components: [
-                    .text(.init(id: "signal.rule", text: "MATCH THE SYMBOL ON THE TV", style: .caption)),
-                    .directionPad(.init(id: "signal.direction", instruction: "TAP THE MATCHING ARROW")),
-                ]
-            )
-            layout = .game(.init(gameID: "signal-snap", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
-        case "gravity-grab":
-            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
-            let screen = ControllerScreen(
-                accessibilityID: "controller.layout.gravity-grab",
+                accessibilityID: "controller.layout.pong.bench",
                 accentColorHex: currentPlayer.colorHex,
                 requestedInputs: .orientation,
                 components: [
-                    .text(.init(id: "gravity.rule", text: "STEER AROUND THE RING", style: .caption)),
-                    .axisSurface(.init(id: "gravity.steer", binding: .twoDimensional, instruction: "DRAG TO AIM")),
+                    .text(.init(id: "pong.bench.position", text: "ON DECK  #1", style: .title, tint: .success)),
+                    .text(.init(id: "pong.bench.rule", text: "YOU'RE IN WHEN A PADDLE FALLS", style: .caption)),
                 ]
             )
-            layout = .game(.init(gameID: "gravity-grab", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
-        case "snake-pit":
+            layout = .game(.init(gameID: "pong", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "snake-pit", "snake-pit-swipe":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let screen = ControllerScreen(
                 accessibilityID: "controller.layout.snake-pit",
                 accentColorHex: currentPlayer.colorHex,
                 components: [
-                    .text(.init(id: "snake.rule", text: "TURN • SURVIVE • THREE LIVES", style: .caption)),
-                    .directionPad(.init(id: "snake.direction", instruction: "CHOOSE YOUR NEXT TURN")),
+                    .text(.init(id: "snake.rule", text: "TURN • CUT THEM OFF • THREE LIVES", style: .caption)),
+                    .directionPad(.init(id: "snake.direction", instruction: "TAP OR SWIPE TO TURN")),
                 ]
             )
             layout = .game(.init(gameID: "snake-pit", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
-        case "last-light":
+        case "last-light", "last-light-swipe":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let screen = ControllerScreen(
                 accessibilityID: "controller.layout.last-light",
                 accentColorHex: currentPlayer.colorHex,
                 requestedInputs: .orientation,
                 components: [
-                    .text(.init(id: "light.rule", text: "DODGE THE RED", style: .caption)),
-                    .axisSurface(.init(id: "light.steer", binding: .twoDimensional, instruction: "DRAG TO MOVE")),
+                    .text(.init(id: "light.rule", text: "STAY IN THE LIGHT • DODGE THE RED", style: .caption)),
+                    .axisSurface(.init(id: "light.steer", binding: .twoDimensional, instruction: "DRAG WHERE TO GO", swipe: .relative)),
                 ]
             )
             layout = .game(.init(gameID: "last-light", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "bumper-brawl":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.bumper-brawl",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "bumper.rule", text: "PUSH RIVALS OFF THE ICE • TAP DASH", style: .caption)),
+                    .axisSurface(.init(id: "bumper.steer", binding: .twoDimensional, instruction: "DRAG TO PUSH", swipe: .heading)),
+                    .actionButton(.init(id: "bumper.dash", label: "DASH", route: .game("bumper.dash"))),
+                ]
+            )
+            layout = .game(.init(gameID: "bumper-brawl", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "paint-rush":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.paint-rush",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "paint.rule", text: "PAINT THE FLOOR • STEAL THEIR COLOR", style: .caption)),
+                    .axisSurface(.init(id: "paint.steer", binding: .twoDimensional, instruction: "DRAG TO MOVE", swipe: .heading)),
+                ]
+            )
+            layout = .game(.init(gameID: "paint-rush", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "sky-hop":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.sky-hop",
+                accentColorHex: currentPlayer.colorHex,
+                components: [
+                    .text(.init(id: "sky.rule", text: "TAP TO FLAP • LAST ONE FLYING WINS", style: .caption)),
+                    .actionButton(.init(id: "sky.flap", label: "FLAP", route: .game("sky.flap"))),
+                ]
+            )
+            layout = .game(.init(gameID: "sky-hop", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "hot-fuse":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.hot-fuse",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "fuse.rule", text: "PASS THE BOMB • DON'T HOLD IT AT THE BOOM", style: .caption)),
+                    .axisSurface(.init(id: "fuse.steer", binding: .twoDimensional, instruction: "DRAG TO RUN", swipe: .heading)),
+                ]
+            )
+            layout = .game(.init(gameID: "hot-fuse", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
+        case "turbo-loop":
+            client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
+            let screen = ControllerScreen(
+                accessibilityID: "controller.layout.turbo-loop",
+                accentColorHex: currentPlayer.colorHex,
+                requestedInputs: .orientation,
+                components: [
+                    .text(.init(id: "turbo.rule", text: "FIVE LAPS • HIT THE BOOST PADS", style: .caption)),
+                    .axisSurface(.init(id: "turbo.steer", binding: .twoDimensional, instruction: "POINT WHERE TO DRIVE", swipe: .heading)),
+                ]
+            )
+            layout = .game(.init(gameID: "turbo-loop", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
         case "spectator":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let game = GameDescriptor(id: "pong", title: "Pong", summary: "Winner stays", minimumPlayers: 1, maximumPlayers: 4, modifiers: [

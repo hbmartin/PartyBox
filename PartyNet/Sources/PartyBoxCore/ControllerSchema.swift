@@ -46,15 +46,28 @@ public enum AxisBinding: String, Codable, Sendable {
     case horizontal, twoDimensional
 }
 
+/// How a drag surface behaves when the phone's swipe (trackpad) touch style is on.
+public enum AxisSwipeStyle: String, Codable, Sendable {
+    /// Finger movement nudges the stick like a trackpad cursor, so lifting and
+    /// re-placing a finger never jumps the stick.
+    case relative
+    /// The direction of recent finger travel becomes a full-strength stick
+    /// direction. A tap without movement releases the stick to neutral.
+    case heading
+}
+
 public struct AxisSurfaceComponent: Codable, Equatable, Sendable {
     public let id: String
     public let binding: AxisBinding
     public let instruction: String
+    /// Swipe-mode hint. `nil` means `.relative`; omitted from the wire when nil.
+    public let swipe: AxisSwipeStyle?
 
-    public init(id: String, binding: AxisBinding, instruction: String) {
+    public init(id: String, binding: AxisBinding, instruction: String, swipe: AxisSwipeStyle? = nil) {
         self.id = id
         self.binding = binding
         self.instruction = instruction
+        self.swipe = swipe
     }
 }
 

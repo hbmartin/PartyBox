@@ -1,0 +1,37 @@
+{
+  "accentColorHex" : "#FF7A3D",
+  "accessibilityID" : "controller.layout.pong.bench",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.player",
+          "style" : "headline",
+          "text" : "★  P5 Jo",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.bench.position",
+          "style" : "title",
+          "text" : "ON DECK  #1",
+          "tint" : "success"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "pong.bench.rule",
+          "style" : "caption",
+          "text" : "YOU'RE IN WHEN A PADDLE FALLS  •  WINNER STAYS ON",
+          "tint" : "secondary"
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

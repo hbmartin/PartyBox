@@ -61,7 +61,7 @@ struct ControllerScreenGoldenTests {
         var output: [(name: String, screen: ControllerScreen)] = []
 
         for game in games {
-            let count = game.descriptor.id == "pong" ? 4 : 8
+            let count = 8
             let context = GameSessionContext(
                 participants: Array(participants.prefix(count)),
                 inputs: InputStore(), seed: 42, modifierID: nil
@@ -71,10 +71,7 @@ struct ControllerScreenGoldenTests {
                 for (index, edge) in ["bottom", "top", "left", "right"].enumerated() {
                     output.append(("pong-active-\(edge)", session.controllerScreen(for: participants[index].player.id)))
                 }
-                let qualifier = game.makeSession(context: .init(
-                    participants: Array(participants.prefix(5)), inputs: InputStore(), seed: 42, modifierID: nil
-                ), onEvents: { _ in })
-                output.append(("pong-active-qualifier", qualifier.controllerScreen(for: participants[0].player.id)))
+                output.append(("pong-active-bench", session.controllerScreen(for: participants[4].player.id)))
             } else {
                 output.append(("\(game.descriptor.id)-active", session.controllerScreen(for: participants[0].player.id)))
             }
@@ -102,8 +99,7 @@ struct ControllerScreenGoldenTests {
         )))
         output.append(("pong-spectator-no-vote", SpectatorScreenFactory.make(
             game: pong.descriptor,
-            state: .init(role: .waiting(position: 3),
-                         choices: pong.availableModifiers(participantCount: 5), tallies: [:], selection: nil)
+            state: .init(role: .waiting(position: 3), choices: [], tallies: [:], selection: nil)
         )))
         return output
     }

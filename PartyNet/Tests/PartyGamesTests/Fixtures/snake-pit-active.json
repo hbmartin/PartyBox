@@ -17,7 +17,7 @@
         "_0" : {
           "id" : "snake.rule",
           "style" : "caption",
-          "text" : "TURN • SURVIVE • THREE LIVES",
+          "text" : "TURN • CUT THEM OFF • THREE LIVES",
           "tint" : "secondary"
         }
       }
@@ -27,7 +27,7 @@
         "_0" : {
           "downLabel" : "DOWN",
           "id" : "snake.direction",
-          "instruction" : "CHOOSE YOUR NEXT TURN",
+          "instruction" : "TAP OR SWIPE TO TURN",
           "leftLabel" : "LEFT",
           "rightLabel" : "RIGHT",
           "upLabel" : "UP"

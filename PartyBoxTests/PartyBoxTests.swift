@@ -534,11 +534,14 @@ struct PartyBoxTests {
         ) == Array(participants.prefix(2)))
     }
 
-    @Test func selectedPongModifierIsValidOnlyForFourOrFewerParticipants() throws {
+    @Test func selectedPongModifierAppliesToBenchMatchesToo() throws {
         let game = try #require(PartyGames.all().first)
+        #expect(game.descriptor.id == "pong")
         let fastBall = try #require(game.descriptor.modifiers.first)
         #expect(HostCoordinator.applicableModifier(fastBall, for: game, participantCount: 4) == fastBall)
-        #expect(HostCoordinator.applicableModifier(fastBall, for: game, participantCount: 5) == nil)
+        #expect(HostCoordinator.applicableModifier(fastBall, for: game, participantCount: 8) == fastBall)
+        let foreign = GameModifierDescriptor(id: "not-a-pong-modifier", title: "NOPE", detail: "")
+        #expect(HostCoordinator.applicableModifier(foreign, for: game, participantCount: 4) == nil)
     }
 
     @Test func captainCanBuildAThreeEventCupAndScoreTheFirstEvent() async throws {
@@ -556,7 +559,8 @@ struct PartyBoxTests {
             let teammateID = try #require(teammate.player?.id)
 
             coordinator.perform(.select)
-            for _ in 0..<5 { coordinator.perform(.down) }
+            let cupIndex = try #require(coordinator.menuItems.firstIndex(of: "PARTY CUP"))
+            for _ in 0..<cupIndex { coordinator.perform(.down) }
             #expect(coordinator.menuItems[coordinator.menuSelection] == "PARTY CUP")
             #expect(!coordinator.controlStatusForTesting(teammateID).canToggleReady)
             coordinator.perform(.select)
