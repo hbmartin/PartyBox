@@ -48,7 +48,7 @@ Host (`PartyBox`):
 | `--freeze-scenario` | Keep a host `--scenario` screen fixed during screenshot UI tests; requires a Debug build, `--ui-testing`, and `--scenario <name>` |
 | `--ui-testing` | Marks a UI-test run |
 
-Controller (`PartyBox Controller` target):
+PartyPad controller (`PartyBox Controller` target):
 
 | Argument | Effect |
 |---|---|

@@ -24,7 +24,7 @@ PartyBox is a **star topology**. One host owns the game; every phone is a dumb-i
         ┌─────────────────────┴─────────────────────┐
         │                                           │
    ┌────▼─────────────────┐              ┌──────────▼──────────┐
-   │  PartyBox (host)     │◄─ TCP  ──────┤  PartyBox Controller│  ×8
+   │  PartyBox (host)     │◄─ TCP  ──────┤      PartyPad       │  ×8
    │  Apple TV  or  Mac   │   control    │  iPhone             │
    │  • owns game state   │              │  • picks a host     │
    │  • renders the arena │◄─ UDP  ──────┤  • sends 60 Hz input│
@@ -34,7 +34,7 @@ PartyBox is a **star topology**. One host owns the game; every phone is a dumb-i
 | | Target | Runs on |
 |---|---|---|
 | **Host** | `PartyBox` | Apple TV (tvOS 26) **or** Mac (macOS 26) — one target, two platforms |
-| **Controller** | `PartyBox Controller` | iPhone (iOS 26), portrait only |
+| **Controller** | `PartyBox Controller` | PartyPad on iPhone (iOS 26), portrait only |
 
 Facts worth knowing before you start:
 
@@ -108,7 +108,7 @@ You should see these schemes:
 
 ```
 PartyBox              ← the host app (tvOS + macOS)
-PartyBox Controller   ← the iPhone app
+PartyBox Controller   ← the PartyPad iPhone app
 partybox-fault        ┐
 partyload             ├ PartyNet test tools, not needed for a normal party
 PartyNet              │
@@ -224,7 +224,7 @@ The TV shows the lobby:
 ```
               LOCAL ARCADE
                PARTYBOX
-  Open PartyBox Controller on iPhone and choose this host
+  Open PartyPad on iPhone and choose this host
 
               [ Living-Room's PartyBox ]        ← your host name
 
@@ -403,7 +403,7 @@ Launch `PartyBox` on the Apple TV or Mac. It starts advertising immediately on l
 ✅ **You should see** on the phone:
 
 ```
-IPHONE CONTROLLER
+PARTYPAD
 PARTYBOX
 
 YOUR NAME
