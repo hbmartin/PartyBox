@@ -1,8 +1,9 @@
 # PartyBox
 
 A local-network party game for the living room. One **host** — an Apple TV or a Mac — runs the game on the
-big screen; up to **eight iPhones** join over Wi-Fi and act as the controllers. No accounts, no servers,
-no internet: just Bonjour on your LAN.
+big screen; up to **eight iPhones** join over Wi-Fi and act as the controllers. Gameplay runs over
+Bonjour on your LAN and works offline. Configured TestFlight builds send native crash diagnostics
+to Sentry.
 
 The library includes **Four-Way Pong**, **Signal Snap**, **Gravity Grab**, **Snake Pit**, and
 **Last Light**. Every game supports up to eight players (Pong switches to a short qualifier format
@@ -13,6 +14,8 @@ Phones also provide brief, gentle private color and haptic cues—never torch or
 > **▶ New here? Read [QUICKSTART.md](QUICKSTART.md).** It covers setup and signing, both host paths
 > (Apple TV and Mac), getting the controller onto your friends' phones, and a step-by-step playtest.
 > Use [network troubleshooting](docs/TROUBLESHOOTING.md) when connection problems arise.
+
+The [release guide](docs/RELEASE.md) covers TestFlight uploads and Sentry symbols for iPhone, Apple TV, and Mac.
 
 ## Targets
 

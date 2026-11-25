@@ -350,25 +350,12 @@ worth knowing if you're doing this repeatedly.
 
 ### 7.2 Everyone else — TestFlight
 
-This is the sane path for a real party where friends arrive with their own phones.
+Follow the [release guide](docs/RELEASE.md) to upload PartyPad for iPhone and, if needed, PartyBox for
+Apple TV and Mac. Use the same release build number for the host and controllers you plan to test
+together. After Apple processes the builds, assign them to the appropriate TestFlight groups. External
+testing may require Beta App Review before you can share an invite link.
 
-1. In App Store Connect, create an app record using your controller bundle ID
-   (e.g. `com.yourname.PartyBox-Controller`).
-2. In Xcode: scheme **`PartyBox Controller`**, destination **Any iOS Device (arm64)**, then
-   **Product ▸ Archive**.
-3. In the Organizer: **Distribute App ▸ TestFlight (and App Store)** ▸ upload.
-4. Once processing finishes, add testers:
-   - **Internal testing** — up to 100 App Store Connect users on your team, available immediately, no
-     review.
-   - **External testing** — up to 10,000 testers via a public link, but the **first build needs Beta App
-     Review** (usually a day or so). Do this before party day, not during it.
-5. Send friends the TestFlight link. They install the TestFlight app, tap the link, install PartyBox
-   Controller.
-
-Because you are only shipping the **controller** through TestFlight, the host app never leaves your Mac or
-Apple TV — that's the only piece you personally have to run.
-
-Use Apple's TestFlight crash and hang reports for the private beta. PartyBox adds no custom analytics.
+Configured TestFlight builds report native crashes to the shared Sentry project.
 If a tester reports a problem, **My History ▸ Prepare Redacted Diagnostics** creates an on-device JSON
 file containing state and transport counters but no names, controller IDs, IP addresses, or payloads.
 

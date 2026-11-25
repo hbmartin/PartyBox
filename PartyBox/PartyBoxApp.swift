@@ -156,6 +156,7 @@ private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate
 @main
 enum PartyBoxApp {
     static func main() {
+        CrashReporting.start(app: "partybox")
         let application = NSApplication.shared
         let applicationDelegate = PartyBoxApplicationDelegate()
         application.delegate = applicationDelegate
@@ -171,6 +172,7 @@ struct PartyBoxApp: App {
     @State private var coordinator: HostCoordinator
 
     init() {
+        CrashReporting.start(app: "partybox")
         preparePartyNetLiveClock()
         _coordinator = State(initialValue: HostCoordinator())
     }
