@@ -77,8 +77,8 @@ The normal gate also runs the local package's `PartyGamesTests` on tvOS through 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
 It generates candidates in a temporary directory, installs them only after both recording tests
 pass, and reruns ordinary comparisons. If verification fails, the script validates both backups
-before restoring the previous fixtures. The script prints the backup path before installing
-candidates. A missing or incomplete backup stops automatic restoration without deleting fixtures.
+before restoring the previous fixtures. The script prints the temporary rollback backup path before
+installing candidates. A missing or incomplete backup stops automatic restoration without deleting fixtures.
 If restoration fails or is interrupted and the backup is intact, the script keeps the originals
 under the printed `.verification/golden-backups/partybox-goldens.*` path, in `backup-games/` and
 `backup-host/`. It prints recovery instructions and saves them to `recovery.log` when it can write
