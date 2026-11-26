@@ -25,4 +25,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run PartyNet tests
-        run: swift test --package-path PartyNet
+        # Timing-sensitive networking tests share the hosted runner with the game simulations.
+        run: swift test --package-path PartyNet --no-parallel
