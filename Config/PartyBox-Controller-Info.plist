@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>PartyPad</string>
+	<key>PartyBoxSentryDSN</key>
+	<string>$(PARTYBOX_SENTRY_DSN)</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PartyPad uses your local network to find and control a nearby PartyBox host.</string>
 	<key>NSBonjourServices</key>

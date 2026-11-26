@@ -14,6 +14,7 @@ struct PartyBox_ControllerApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        CrashReporting.start(app: "partypad")
         preparePartyNetLiveClock()
         _coordinator = State(initialValue: ControllerCoordinator())
     }

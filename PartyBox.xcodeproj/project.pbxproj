@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		7ED65A9A95314256867C6478 /* Sentry-Static in Frameworks */ = {isa = PBXBuildFile; productRef = 7ED65A9A95314256867C6476 /* Sentry-Static */; };
+		7ED65A9A95314256867C6479 /* Sentry-Static in Frameworks */ = {isa = PBXBuildFile; productRef = 7ED65A9A95314256867C6477 /* Sentry-Static */; };
 		24B1CA0030486B0000592BFF /* PartyNet in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0330486B0000592BFF /* PartyNet */; };
 		24B1CA0130486B0000592BFF /* PartyNet in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0430486B0000592BFF /* PartyNet */; };
 		24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */ = {isa = PBXBuildFile; productRef = 24B1CA0830486B0000592BFF /* PartyBoxCore */; };
@@ -56,6 +58,12 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		7ED65A9A95314256867C6474 /* SharedApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = SharedApp;
+			path = Config/SharedApp;
+			sourceTree = "<group>";
+		};
 		24B1C9AC30486A7700592BFF /* PartyBox */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PartyBox;
@@ -97,6 +105,7 @@
 				24B1CA0530486B0000592BFF /* PartyBoxCore in Frameworks */,
 				24B1CA0630486B0000592BFF /* PartyGameRuntime in Frameworks */,
 				24B1CA0B30486B0000592BFF /* PartyGames in Frameworks */,
+				7ED65A9A95314256867C6478 /* Sentry-Static in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,6 +129,7 @@
 			files = (
 				24B1CA0130486B0000592BFF /* PartyNet in Frameworks */,
 				24B1CA0730486B0000592BFF /* PartyBoxCore in Frameworks */,
+				7ED65A9A95314256867C6479 /* Sentry-Static in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -149,6 +159,7 @@
 				24B1C9D930486AB200592BFF /* PartyBox Controller */,
 				24B1C9E730486AB900592BFF /* PartyBox ControllerTests */,
 				24B1C9F130486ABA00592BFF /* PartyBox ControllerUITests */,
+				7ED65A9A95314256867C6474 /* SharedApp */,
 				24B1C9AB30486A7700592BFF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -183,6 +194,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				24B1C9AC30486A7700592BFF /* PartyBox */,
+				7ED65A9A95314256867C6474 /* SharedApp */,
 			);
 			name = PartyBox;
 			packageProductDependencies = (
@@ -190,6 +202,7 @@
 				24B1CA0830486B0000592BFF /* PartyBoxCore */,
 				24B1CA0930486B0000592BFF /* PartyGameRuntime */,
 				24B1CA0C30486B0000592BFF /* PartyGames */,
+				7ED65A9A95314256867C6476 /* Sentry-Static */,
 			);
 			productName = PartyBox;
 			productReference = 24B1C9AA30486A7700592BFF /* PartyBox.app */;
@@ -255,11 +268,13 @@
 			);
 			fileSystemSynchronizedGroups = (
 				24B1C9D930486AB200592BFF /* PartyBox Controller */,
+				7ED65A9A95314256867C6474 /* SharedApp */,
 			);
 			name = "PartyBox Controller";
 			packageProductDependencies = (
 				24B1CA0430486B0000592BFF /* PartyNet */,
 				24B1CA0A30486B0000592BFF /* PartyBoxCore */,
+				7ED65A9A95314256867C6477 /* Sentry-Static */,
 			);
 			productName = "PartyBox Controller";
 			productReference = 24B1C9D830486AB100592BFF /* PartyBox Controller.app */;
@@ -356,6 +371,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				24B1CA0230486B0000592BFF /* XCLocalSwiftPackageReference "PartyNet" */,
+				7ED65A9A95314256867C6475 /* XCRemoteSwiftPackageReference "sentry-apple-binaries" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 24B1C9AB30486A7700592BFF /* Products */;
@@ -1015,7 +1031,28 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		7ED65A9A95314256867C6475 /* XCRemoteSwiftPackageReference "sentry-apple-binaries" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-apple-binaries.git";
+			requirement = {
+				kind = exactVersion;
+				version = 9.35.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		7ED65A9A95314256867C6476 /* Sentry-Static */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7ED65A9A95314256867C6475 /* XCRemoteSwiftPackageReference "sentry-apple-binaries" */;
+			productName = "Sentry-Static";
+		};
+		7ED65A9A95314256867C6477 /* Sentry-Static */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7ED65A9A95314256867C6475 /* XCRemoteSwiftPackageReference "sentry-apple-binaries" */;
+			productName = "Sentry-Static";
+		};
 		24B1CA0330486B0000592BFF /* PartyNet */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PartyNet;

@@ -1,10 +1,12 @@
 {
   "images" : [
     {
+      "filename" : "PartyBox.jpg",
       "idiom" : "tv",
       "scale" : "1x"
     },
     {
+      "filename" : "PartyBox@2x.jpg",
       "idiom" : "tv",
       "scale" : "2x"
     }

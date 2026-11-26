@@ -32,6 +32,9 @@ jobs:
       - name: Test golden fixture recording safety
         run: bash scripts/tests/record-goldens-test.sh
 
+      - name: Test distribution workflow
+        run: bash scripts/tests/distribute-test.sh
+
       - name: Validate JSON configuration and test plans
         run: |
           while IFS= read -r -d '' document; do
