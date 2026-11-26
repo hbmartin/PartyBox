@@ -301,6 +301,20 @@ struct SkyHopTests {
         #expect(ids.allSatisfy(sim.isActive))
     }
 
+    @Test func simultaneousCrashesWithTheSameScoreEndInADraw() throws {
+        let seats = Set(ArcadeHarness.playerIDs(2))
+        let match = ArcadeHarness.playOut(SkyHopGame(), players: 2, idle: seats)
+        let outcome = try #require(match.outcome)
+
+        #expect(outcome.title == "DRAW")
+        #expect(outcome.winner == nil)
+        #expect(outcome.standings.map(\.rank) == [1, 1])
+        #expect(outcome.playerOutcomes.map(\.outcome) == [.draw, .draw])
+        #expect(!match.events.contains { event in
+            if case .deviceCue(_, let cue) = event { cue.colorHex == ArcadeOutcomeBuilder.winnerColor } else { false }
+        })
+    }
+
     @Test func forfeitEliminatesOnceAndCanDecideTheMatch() {
         let ids = ArcadeHarness.playerIDs(2)
         var sim = Sim(players: ids, seed: 1)

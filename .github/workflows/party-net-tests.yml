@@ -1,0 +1,28 @@
+name: PartyNet tests
+
+on:
+  pull_request:
+    paths:
+      - 'PartyNet/**'
+      - '.github/workflows/party-net-tests.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'PartyNet/**'
+      - '.github/workflows/party-net-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  swift-tests:
+    name: Swift tests on macOS
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PartyNet tests
+        run: swift test --package-path PartyNet

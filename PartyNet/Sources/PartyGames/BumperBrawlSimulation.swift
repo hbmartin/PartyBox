@@ -228,6 +228,7 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
             lives: \.puck.lives,
             score: \.puck.score,
             eliminationOrder: eliminationOrder,
+            shareEliminationPlacements: true,
             detail: { entry in
                 solo
                     ? "\(Int(entry.puck.survivalTime))s on the ice • \(entry.puck.kos) drone KOs"

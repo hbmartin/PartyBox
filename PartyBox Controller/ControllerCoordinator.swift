@@ -589,7 +589,7 @@ final class ControllerCoordinator {
                 updateMotionCapture()
             case .haptic(let pattern): play(pattern)
             case .deviceCue(let cue): show(cue)
-            case .matchCompleted(let record):
+            case .matchCompleted(let record), .matchDrawn(let record):
                 await appendPersonalHistory(record)
             case .cupCompleted(let record):
                 await appendPersonalCupHistory(record)

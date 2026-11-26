@@ -300,5 +300,7 @@ public enum HostPresentation: Codable, Equatable, Sendable {
     case haptic(HapticPattern)
     case deviceCue(DeviceCue)
     case matchCompleted(PersonalMatchRecord)
+    // A distinct case lets older controllers skip draw history and still receive the game-over layout.
+    case matchDrawn(PersonalMatchRecord)
     case cupCompleted(PersonalCupRecord)
 }

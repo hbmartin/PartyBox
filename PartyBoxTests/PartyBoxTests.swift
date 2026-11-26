@@ -59,6 +59,34 @@ struct PartyBoxTests {
         #expect(cup.cupEventWins[solo.controllerID] == 1)
     }
 
+    @Test func cupAwardsEqualPointsForSharedPlacements() {
+        let participants = (0..<6).map { slot in
+            let id = PlayerID(UInt8(slot))
+            return GameParticipant(
+                player: PlayerInfo(id: id, displayName: "Player \(slot + 1)", colorHex: PlayerPalette.color(for: id)),
+                controllerID: ControllerID()
+            )
+        }
+        let ids = participants.map(\.player.id)
+        let cup = HostCupDirector()
+        cup.begin(participants: participants)
+
+        func score(ranks: [Int], outcomes: [MatchParticipantOutcome], winner: PlayerID?) {
+            cup.score(.init(
+                title: "Event complete", subtitle: "", winner: winner,
+                playerOutcomes: zip(ids, outcomes).map { .init(playerID: $0.0, outcome: $0.1) },
+                metrics: [], standings: zip(ids, ranks).map { .init(playerID: $0.0, rank: $0.1, score: 0) }
+            ), participants: participants)
+        }
+        score(ranks: [1, 1, 2, 2, 3, 4], outcomes: [.draw, .draw, .lost, .lost, .lost, .forfeited], winner: nil)
+        #expect(participants.map { cup.cupPoints[$0.controllerID] } == [8, 8, 6, 6, 5, 0])
+        #expect(participants.allSatisfy { cup.cupEventWins[$0.controllerID] == 0 })
+
+        score(ranks: [1, 2, 3, 4, 5, 6], outcomes: [.won, .lost, .lost, .lost, .lost, .forfeited], winner: ids[0])
+        #expect(participants.map { cup.cupPoints[$0.controllerID] } == [16, 14, 11, 10, 8, 0])
+        #expect(participants.map { cup.cupEventWins[$0.controllerID] } == [1, 0, 0, 0, 0, 0])
+    }
+
     @MainActor
     private final class CleanupGate {
         private(set) var isWaiting = false

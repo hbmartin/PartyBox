@@ -435,6 +435,7 @@ private struct GameControllerView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(screen.accessibilityID)
             }
+            .scrollBounceBehavior(.basedOnSize)
         } else {
             ConnectionView(title: "CONTROLLER UNAVAILABLE", detail: "This game sent an unsupported controller layout.", spinning: false, accessibilityIdentifier: "controller.layout.unsupported")
         }

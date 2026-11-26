@@ -280,11 +280,13 @@ struct ArcadeRankEntry: Equatable, Sendable {
     let playerID: PlayerID
     let score: Int
     let detail: String
+    let placementGroup: Int?
 
-    init(playerID: PlayerID, score: Int, detail: String = "") {
+    init(playerID: PlayerID, score: Int, detail: String = "", placementGroup: Int? = nil) {
         self.playerID = playerID
         self.score = score
         self.detail = detail
+        self.placementGroup = placementGroup
     }
 }
 
@@ -389,16 +391,28 @@ enum ArcadeOutcomeBuilder {
         let eligible = ordered.filter { !forfeited.contains($0.playerID) }
         ordered = eligible + ordered.filter { forfeited.contains($0.playerID) }
         let solo = participants.count == 1
-        let winnerID = solo ? nil : eligible.first?.playerID
+        var drawn: Set<PlayerID> = []
+        if !solo, let group = eligible.first?.placementGroup {
+            let leaders = eligible.prefix { $0.placementGroup == group }
+            if leaders.count > 1 { drawn = Set(leaders.map(\.playerID)) }
+        }
+        let winnerID = solo || !drawn.isEmpty ? nil : eligible.first?.playerID
         let winner = winnerID.flatMap { id in participants.first { $0.player.id == id }?.player }
-        let standings = ordered.enumerated().map { index, entry in
-            GameStanding(playerID: entry.playerID, rank: index + 1, score: entry.score, detail: entry.detail)
+        var rank = 0
+        var previousGroup: Int?
+        let standings = ordered.map { entry in
+            let group = forfeited.contains(entry.playerID) ? nil : entry.placementGroup
+            if group == nil || group != previousGroup { rank += 1 }
+            previousGroup = group
+            return GameStanding(playerID: entry.playerID, rank: rank, score: entry.score, detail: entry.detail)
         }
         let outcomes = participants.map { participant in
             let outcome: MatchParticipantOutcome = if forfeited.contains(participant.player.id) {
                 .forfeited
             } else if solo {
                 .practice
+            } else if drawn.contains(participant.player.id) {
+                .draw
             } else if participant.player.id == winnerID {
                 .won
             } else {
@@ -408,6 +422,8 @@ enum ArcadeOutcomeBuilder {
         }
         let headline = if solo {
             forfeited.isEmpty ? "PRACTICE COMPLETE" : "PRACTICE ENDED"
+        } else if !drawn.isEmpty {
+            "DRAW"
         } else if let winner {
             "P\(winner.number) \(winner.displayName) WINS"
         } else {
@@ -466,6 +482,7 @@ enum ArcadeRanking {
         lives: (Player) -> Int,
         score: (Player) -> Int,
         eliminationOrder: ArcadeEliminations,
+        shareEliminationPlacements: Bool = false,
         detail: (Player) -> String
     ) -> [ArcadeRankEntry] {
         let sorted = players.sorted { lhs, rhs in
@@ -482,7 +499,24 @@ enum ArcadeRanking {
             if score(lhs) != score(rhs) { return score(lhs) > score(rhs) }
             return id(lhs).rawValue < id(rhs).rawValue
         }
-        return sorted.map { ArcadeRankEntry(playerID: id($0), score: score($0), detail: detail($0)) }
+        var previousElimination: Int?
+        var previousScore: Int?
+        var group = 0
+        return sorted.map { player in
+            let playerID = id(player)
+            let points = score(player)
+            var placementGroup: Int?
+            if shareEliminationPlacements, !alive(player) {
+                let elimination = eliminationOrder.order(of: playerID)
+                if elimination >= 0 {
+                    if previousElimination != elimination || previousScore != points { group += 1 }
+                    previousElimination = elimination
+                    previousScore = points
+                    placementGroup = group
+                }
+            }
+            return ArcadeRankEntry(playerID: playerID, score: points, detail: detail(player), placementGroup: placementGroup)
+        }
     }
 
     static func byScore<Player>(
