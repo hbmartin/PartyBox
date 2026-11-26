@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+unset CDPATH
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp_dir="$(mktemp -d)"
@@ -49,6 +50,13 @@ case "$tool" in
             grep -q 'method</key><string>app-store-connect' "$export_plist"
             grep -q 'manageAppVersionAndBuildNumber</key><false' "$export_plist"
             printf 'apple %s\n' "$platform" >> "$STUB_CALLS"
+            if [[ -n "${STUB_APPLE_HOLD_DIR:-}" ]]; then
+                touch "$STUB_APPLE_HOLD_DIR/ready"
+                while [[ -d "$STUB_APPLE_HOLD_DIR" && ! -e "$STUB_APPLE_HOLD_DIR/release" ]]; do
+                    sleep 0.05
+                done
+                exit 1
+            fi
             [[ "$platform" != "${STUB_FAIL_APPLE:-}" ]]
             exit
         fi
@@ -167,19 +175,49 @@ expect_calls "archive ios" "archive tvos" "archive macos"
 run_dir="$(sed -n 's/^Release artifacts: //p' "$output")"
 [[ -f "$run_dir/archives-ready" ]] || fail "Expected resumable archives"
 [[ -n "$(find "$run_dir" -prune -perm 0700 -print)" ]] || fail "Expected a private release directory"
+[[ -n "$(find "$run_dir/ios" -prune -perm 0700 -print)" ]] || fail "Expected private platform directories"
+[[ -n "$(find "$run_dir/ios/archive.log" -perm 0600 -print)" ]] || fail "Expected private archive logs"
 
 ios_plist="$run_dir/ios/app.xcarchive/Products/Applications/PartyBox Controller.app/Info.plist"
+awk '{ sub(/^PartyBoxSentryEnvironment=testflight$/, "PartyBoxSentryEnvironment=local"); print }' \
+    "$ios_plist" > "$tmp_dir/local-info"
+mv "$tmp_dir/local-info" "$ios_plist"
+run_failure "ios archive has the wrong Sentry environment" --resume "$run_dir"
+expect_calls
 grep -v '^PartyBoxSentryEnvironment=' "$ios_plist" > "$tmp_dir/legacy-info"
 mv "$tmp_dir/legacy-info" "$ios_plist"
+
+mac_app="$run_dir/macos/app.xcarchive/Products/Applications/PartyBox.app"
+mac_plist="$mac_app/Contents/Info.plist"
+grep -v '^PartyBoxSentryEnvironment=' "$mac_plist" > "$tmp_dir/legacy-mac-info"
+mv "$tmp_dir/legacy-mac-info" "$mac_plist"
+mkdir "$mac_app/Contents/_CodeSignature"
+signature="$mac_app/Contents/_CodeSignature/CodeResources"
+printf 'stub signature\n' > "$signature"
+chmod 600 "$signature"
+run_failure "First affected path: .*CodeResources" --resume "$run_dir"
+expect_calls
+chmod 644 "$signature"
+chmod 700 "$mac_app/Contents/_CodeSignature"
+run_failure "First affected path: .*_CodeSignature" --resume "$run_dir"
+expect_calls
+chmod 755 "$mac_app/Contents/_CodeSignature"
+
 (
     cd "$checkout"
     CDPATH=. STUB_FAIL_APPLE=tvos run_failure "tvos Apple upload did not confirm delivery" \
         --resume ".distribution/${run_dir##*/}"
 )
 expect_calls "sentry ios" "sentry tvos" "sentry macos" "apple ios" "apple tvos"
+grep -F 'warning: ios legacy archive is missing its Sentry environment.' "$output" >/dev/null \
+    || fail "Expected an iOS legacy archive warning"
+[[ -n "$(find "$run_dir/ExportOptions.plist" -perm 0600 -print)" ]] || fail "Expected private export options"
 [[ -f "$run_dir/ios/apple-uploaded" ]] || fail "Missing iOS receipt"
 [[ -f "$run_dir/tvos/apple-upload-started" ]] || fail "Missing unconfirmed tvOS upload state"
 
+[[ -f "$run_dir/.lock" ]] || fail "Expected a persistent lock file"
+# Re-create the pre-upgrade directory format after the previous holder has exited.
+rm "$run_dir/.lock"
 mkdir "$run_dir/.lock"
 run_failure "stale lock recovery" --resume "$run_dir"
 expect_calls
@@ -197,5 +235,48 @@ expect_calls
 
 run_ok --build-number 124 --platform ios
 expect_calls "archive ios" "sentry ios" "apple ios"
+
+# A surviving Apple worker must keep the release locked after the script is killed.
+SENTRY_AUTH_TOKEN='' run_ok --build-number 125 --platform macos --archive-only
+held_run="$(sed -n 's/^Release artifacts: //p' "$output")"
+hold_dir="$tmp_dir/hold"
+mkdir "$hold_dir"
+STUB_APPLE_HOLD_DIR="$hold_dir" "$script" --resume "$held_run" > "$tmp_dir/holder.log" 2>&1 &
+holder=$!
+cleanup_holder() {
+    touch "$hold_dir/release"
+    if [[ -n "$holder" ]]; then
+        kill -TERM "$holder" 2>/dev/null || true
+        wait "$holder" 2>/dev/null || true
+    fi
+    rm -rf "$tmp_dir"
+}
+trap cleanup_holder EXIT
+
+for _ in $(seq 1 200); do
+    [[ -e "$hold_dir/ready" ]] && break
+    sleep 0.05
+done
+[[ -e "$hold_dir/ready" ]] || fail "Apple worker did not start"
+run_failure "Release directory is in use" --resume "$held_run"
+expect_calls
+kill -KILL "$holder"
+wait "$holder" 2>/dev/null || true
+holder=""
+run_failure "Release directory is in use" --resume "$held_run"
+expect_calls
+touch "$hold_dir/release"
+for _ in $(seq 1 200); do
+    if "$script" --resume "$held_run" > "$output" 2>&1; then
+        fail "Expected an unconfirmed Apple upload"
+    fi
+    if grep -q 'unconfirmed Apple upload' "$output"; then break; fi
+    grep -q 'Release directory is in use' "$output" || fail "Unexpected lock recovery error"
+    sleep 0.05
+done
+grep -q 'unconfirmed Apple upload' "$output" || fail "Lock was not released after Apple worker exited"
+trap 'rm -rf "$tmp_dir"' EXIT
+run_ok --resume "$held_run" --platform macos --retry-apple-upload
+expect_calls "sentry macos" "apple macos"
 
 printf 'Distribution workflow tests passed.\n'

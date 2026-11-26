@@ -86,6 +86,30 @@ mach_uuids() {
     xcrun dwarfdump --uuid "$1" | awk '/^UUID: / { print $2, $3 }' | sort
 }
 
+lock_release_directory() {
+    local lock_path="$run_dir/.lock" result=0
+    if [[ -d "$lock_path" ]]; then
+        die "Release directory has a legacy lock: $run_dir. See docs/RELEASE.md for stale lock recovery."
+    fi
+    # Keep the file and descriptor open for the lifetime of the run and its children.
+    exec 9>>"$lock_path"
+    case "$OSTYPE" in
+        darwin*) lockf -s -t 0 9 || result=$? ;;
+        linux*) flock -n -E 75 9 || result=$? ;;
+    esac
+    if [[ $result -eq 75 ]]; then
+        die "Release directory is in use: $run_dir. Wait for the active script and its upload processes to finish."
+    fi
+    [[ $result -eq 0 ]] || die "Could not lock the release directory: $run_dir"
+}
+
+validate_macos_permissions() {
+    local app=$1 invalid
+    invalid="$(find "$app" \( -type f ! -perm -444 -o -type d ! -perm -111 \) -print)" \
+        || die "Could not check macOS archive permissions at $app. Rebuild the archive."
+    [[ -z "$invalid" ]] || die "macOS archive has unreadable files or untraversable directories. Rebuild the archive. First affected path: ${invalid%%$'\n'*}"
+}
+
 validate_archive() {
     local platform=$1 archive="$run_dir/$1/app.xcarchive"
     local app info executable binary symbols app_uuids symbol_uuids sentry_environment
@@ -104,6 +128,8 @@ validate_archive() {
         [[ "$sentry_environment" == testflight ]] || die "$platform archive has the wrong Sentry environment."
     elif [[ -z "$resume_dir" ]]; then
         die "$platform archive is missing its Sentry environment."
+    else
+        printf 'distribute: warning: %s legacy archive is missing its Sentry environment.\n' "$platform" >&2
     fi
 
     executable="$(plist_value CFBundleExecutable "$info")" \
@@ -120,6 +146,9 @@ validate_archive() {
     symbol_uuids="$(mach_uuids "$symbols")" || die "Could not read $platform dSYM UUIDs."
     [[ -n "$app_uuids" && "$app_uuids" == "$symbol_uuids" ]] \
         || die "$platform app and dSYM UUIDs do not match."
+    if [[ "$platform" == macos && ! -f "$run_dir/macos/apple-uploaded" ]]; then
+        validate_macos_permissions "$app"
+    fi
 }
 
 upload_symbols() {
@@ -189,6 +218,11 @@ dsn_pattern='^https://[[:alnum:]]+@[^[:space:]/@?#]+(/[^[:space:]/?#]+)*/[0-9]+$
 require_tool xcodebuild
 require_tool xcrun
 require_tool plutil
+case "$OSTYPE" in
+    darwin*) require_tool lockf ;;
+    linux*) require_tool flock ;;
+    *) die "Release directory locking requires macOS or Linux." ;;
+esac
 
 if [[ "$archive_only" == false ]]; then
     [[ -n "${SENTRY_ORG:-}" && -n "${SENTRY_PROJECT:-}" && -n "$sentry_auth_token" ]] \
@@ -228,13 +262,7 @@ else
     run_dir="$(mktemp -d "$root_dir/.distribution/build-$build_number.XXXXXXXX")"
 fi
 
-if ! mkdir "$run_dir/.lock"; then
-    if [[ -d "$run_dir/.lock" ]]; then
-        die "Release directory is locked: $run_dir. See docs/RELEASE.md for stale lock recovery."
-    fi
-    die "Could not create the release directory lock: $run_dir"
-fi
-trap 'rmdir "$run_dir/.lock"' EXIT
+lock_release_directory
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf 'Release artifacts: %s\n' "$run_dir"

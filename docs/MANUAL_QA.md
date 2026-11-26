@@ -70,6 +70,8 @@ Recommended regression setup:
 
 For a release-candidate pass, use a Release host and the exact controller build intended for testers.
 Use Debug builds for diagnostics, deterministic seeds, bots, or direct-address testing.
+For macOS exception reporting, use a local Release build with a configured Sentry
+DSN. An uncaught AppKit exception terminates the app and is reported on relaunch.
 
 ## Evidence and diagnostics
 

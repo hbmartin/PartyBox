@@ -12,8 +12,7 @@ enum CrashReporting {
               let url = URLComponents(string: dsn),
               url.scheme == "https", let host = url.host, !host.isEmpty,
               let key = url.user, !key.isEmpty, url.password == nil,
-              let project = url.path.split(separator: "/").last, UInt64(project) != nil,
-              let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String else {
+              let project = url.path.split(separator: "/").last, UInt64(project) != nil else {
             return
         }
 
@@ -31,7 +30,6 @@ enum CrashReporting {
         let environment = (bundle.object(forInfoDictionaryKey: "PartyBoxSentryEnvironment") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         options.environment = environment.isEmpty ? "local" : environment
-        options.dist = "\(platform)-\(build)"
         options.sendDefaultPii = false
         options.sendClientReports = false
         #if os(macOS)
@@ -52,7 +50,12 @@ enum CrashReporting {
             var tags = event.tags ?? [:]
             tags["app"] = app
             tags["app_platform"] = platform
+            // Crash reports can be delivered by a later build. This context
+            // describes the process that crashed, even after an app update.
+            let recordedBuild = event.context?["app"]?["app_build"] as? String
+            let build = recordedBuild.flatMap { $0.isEmpty ? nil : $0 }
             tags["build"] = build
+            event.dist = build.map { "\(platform)-\($0)" }
             event.tags = tags
             return event
         }
