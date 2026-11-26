@@ -17,13 +17,15 @@ permissions:
 
 jobs:
   swift-tests:
-    name: Swift tests on macOS
+    name: Gameplay and protocol regressions on macOS
     runs-on: macos-26
     timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
-      - name: Run PartyNet tests
-        # Timing-sensitive networking tests share the hosted runner with the game simulations.
-        run: swift test --package-path PartyNet --no-parallel
+      - name: Run gameplay and protocol regressions
+        # Run the full timing-sensitive network suite with scripts/verify.sh on a development Mac.
+        run: >-
+          swift test --package-path PartyNet --no-parallel
+          --filter 'PartyGamesTests|drawHistoryUsesAnAdditivePresentationCase|UDPDelayKeepsPendingWorkBoundedPerSession'
