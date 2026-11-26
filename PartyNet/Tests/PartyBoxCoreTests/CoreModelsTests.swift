@@ -101,6 +101,29 @@ struct CoreModelsTests {
         #expect(try PartyBoxWireCodec.decode(ControllerCommand.self, from: PartyBoxWireCodec.encode(command)) == command)
     }
 
+    @Test func drawHistoryUsesAnAdditivePresentationCase() throws {
+        enum LegacyPresentation: Codable, Equatable {
+            case layout(ControllerLayout)
+            case matchCompleted(PersonalMatchRecord)
+        }
+        let draw = MatchRecord(
+            gameID: "sky-hop", gameTitle: "Sky Hop", endedAt: Date(timeIntervalSince1970: 0),
+            durationSeconds: 10, modifierTitle: nil,
+            participants: [.init(controllerID: firstID, displayName: "P1", colorHex: "#FFFFFF", outcome: .draw)],
+            metrics: []
+        )
+        let record = PersonalMatchRecord(record: draw, controllerID: firstID)
+        let presentation = HostPresentation.matchDrawn(record)
+        let payload = try PartyBoxWireCodec.encode(presentation)
+        #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: payload) == presentation)
+        #expect((try? PartyBoxWireCodec.decode(LegacyPresentation.self, from: payload)) == nil)
+
+        let layout = ControllerLayout.gameOver(.init(title: "DRAW", subtitle: "Sky Hop complete"))
+        let result = try PartyBoxWireCodec.encode(HostPresentation.layout(layout))
+        #expect(try PartyBoxWireCodec.decode(LegacyPresentation.self, from: result) == .layout(layout))
+        #expect(PartyNetConstants.protocolVersion == 5)
+    }
+
     @Test(arguments: [(0, 4), (9, 9), (4, 3), (1, 9)])
     func invalidGamePlayerBoundsFailDecoding(minimumPlayers: Int, maximumPlayers: Int) {
         let data = Data(

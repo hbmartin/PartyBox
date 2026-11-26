@@ -856,10 +856,13 @@ final class HostCoordinator {
 #endif
         guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
         records.applyMatchAppend(record, result: historyResult)
+        let isDraw = record.participants.contains { $0.outcome == .draw }
         for participant in participants {
             guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
             guard livePlayer(for: participant)?.isConnected == true else { continue }
-            await send(.matchCompleted(PersonalMatchRecord(record: record, controllerID: participant.controllerID)), to: participant.player.id)
+            let personalRecord = PersonalMatchRecord(record: record, controllerID: participant.controllerID)
+            let presentation: HostPresentation = isDraw ? .matchDrawn(personalRecord) : .matchCompleted(personalRecord)
+            await send(presentation, to: participant.player.id)
         }
         guard isCurrentMatch(matchID, lifecycleGeneration: lifecycleGeneration) else { return }
         if currentMatchIsCup {

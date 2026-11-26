@@ -154,6 +154,7 @@ struct SkyHopSimulation: ArcadeSimulation {
             lives: { _ in 0 },
             score: \.score,
             eliminationOrder: eliminationOrder,
+            shareEliminationPlacements: true,
             detail: { bird in
                 let gates = "\(bird.gates) \(bird.gates == 1 ? "gate" : "gates")"
                 guard let crashedAt = bird.crashedAt else { return "\(gates) • still flying" }

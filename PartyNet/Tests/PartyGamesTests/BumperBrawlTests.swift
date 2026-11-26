@@ -285,6 +285,28 @@ struct BumperBrawlTests {
         #expect(simulation.ranking().map(\.playerID) == [ids[2], ids[1], ids[0]])
     }
 
+    @Test func simultaneousRingOutsWithTheSameScoreEndInADraw() throws {
+        let ids = ArcadeHarness.playerIDs(2)
+        var simulation = Simulation(players: ids, seed: 7)
+        simulation.setLivesForTesting(1, playerID: ids[0])
+        simulation.setLivesForTesting(1, playerID: ids[1])
+        simulation.placeForTesting(ids[0], at: offset(0, -490))
+        simulation.placeForTesting(ids[1], at: offset(0, 490))
+        _ = simulation.step(deltaTime: frame, inputs: [:])
+        #expect(simulation.isFinished)
+
+        let events = ArcadeOutcomeBuilder.completionEvents(
+            title: "Bumper Brawl", participants: ArcadeHarness.participants(2),
+            ranking: simulation.ranking(), metric: simulation.resultMetric, forfeited: []
+        )
+        let outcome = try #require(events.compactMap { event -> GameOutcome? in
+            if case .completed(let outcome) = event { outcome } else { nil }
+        }.first)
+        #expect(outcome.winner == nil)
+        #expect(outcome.standings.map(\.rank) == [1, 1])
+        #expect(outcome.playerOutcomes.map(\.outcome) == [.draw, .draw])
+    }
+
     @Test func simultaneousRingOutsUseScoreBeforeSeatOrder() {
         let ids = ArcadeHarness.playerIDs(2)
         var simulation = Simulation(players: ids, seed: 7)

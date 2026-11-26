@@ -2,7 +2,7 @@ import Foundation
 import PartyNet
 
 public enum MatchParticipantOutcome: String, Codable, Equatable, Sendable {
-    case won, lost, forfeited, practice
+    case won, lost, forfeited, practice, draw
 }
 
 public struct MatchMetric: Codable, Equatable, Identifiable, Sendable {

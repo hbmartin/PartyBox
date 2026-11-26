@@ -82,10 +82,16 @@ final class HostCupDirector {
             return left.rawValue < right.rawValue
         }
         let pointsByRank = [8, 6, 5, 4, 3, 2, 1, 0]
-        for (index, participant) in eligible.enumerated() {
-            let points = pointsByRank[min(index, pointsByRank.count - 1)]
+        var pointsIndex = -1
+        var previousRank: Int?
+        for participant in eligible {
+            let playerID = participant.player.id
+            let rank = playerID == winner ? nil : ranks[playerID]
+            if rank == nil || rank != previousRank { pointsIndex += 1 }
+            previousRank = rank
+            let points = pointsByRank[min(pointsIndex, pointsByRank.count - 1)]
             cupPoints[participant.controllerID, default: 0] += points
-            if participant.player.id == winner { cupEventWins[participant.controllerID, default: 0] += 1 }
+            if playerID == winner { cupEventWins[participant.controllerID, default: 0] += 1 }
         }
     }
 

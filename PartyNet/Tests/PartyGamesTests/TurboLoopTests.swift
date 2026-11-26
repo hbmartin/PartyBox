@@ -153,13 +153,13 @@ struct TurboLoopTests {
         #expect(simulation.car(for: solo)?.lap == 0)
         #expect(simulation.car(for: solo)?.nextGate == 0)
 
-        // Follow the centerline closely through the marked checkpoints.
+        // Drive a racing line through the marked checkpoints at full throttle.
         var gateSequence: [Int] = []
         run(&simulation, seconds: 30, until: { $0.car(for: solo)?.lap == 1 }) { simulation in
             let gate = simulation.car(for: solo)?.nextGate ?? -1
             if gateSequence.last != gate { gateSequence.append(gate) }
             #expect(simulation.car(for: solo)?.lap == 0)
-            return halfThrottle(simulation, 100)
+            return [solo: follow(simulation, solo, lookahead: 100)]
         }
         let car = try #require(simulation.car(for: solo))
         #expect(gateSequence == [0, 1, 2, 3])
@@ -291,6 +291,17 @@ struct TurboLoopTests {
         #expect(ranking.map(\.playerID) == [first, second])
         #expect(ranking[0].detail == TurboLoopSimulation.formatTime(finishTime))
         #expect(ranking[1].detail == "Lap 1/\(TurboLoopSimulation.laps)")
+    }
+
+    @Test func carOverlappingTheRoadEdgeCreditsTheCheckpoint() {
+        var simulation = TurboLoopSimulation(players: [solo], seed: 1)
+        let gate = 2
+        simulation.setLapStateForTesting(solo, completedLaps: 2, nextGate: gate)
+        simulation.placeForTesting(solo, distance: simulation.track.gates[gate] - 5, lateral: 110, speed: 260)
+
+        _ = simulation.step(deltaTime: 0.05, inputs: [:])
+
+        #expect(simulation.car(for: solo)?.nextGate == 3)
     }
 
     @Test func projectedProgressOutsideTheRoadCannotAdvanceGatesOrFinish() throws {
@@ -443,12 +454,13 @@ struct TurboLoopTests {
         ])
     }
 
-    @Test func eightHardBotsFinishInsideTheCap() throws {
-        let result = ArcadeHarness.playOut(TurboLoopGame(), players: 8, difficulty: .hard)
+    @Test(arguments: [UInt64(1), 7, 42, 99])
+    func eightHardBotsFinishInsideTheCap(seed: UInt64) throws {
+        let result = ArcadeHarness.playOut(TurboLoopGame(), players: 8, seed: seed, difficulty: .hard)
         let outcome = try #require(result.outcome)
         #expect(result.seconds < 125)
         #expect(outcome.standings.count == 8)
-        #expect(outcome.standings.contains { $0.detail.contains(":") })
+        #expect(outcome.standings.allSatisfy { $0.detail.contains(":") }, "every hard bot finishes")
         #expect(outcome.winner != nil)
         #expect(outcome.metrics.first?.label == "Best lap")
         #expect(outcome.metrics.first?.value != "—")

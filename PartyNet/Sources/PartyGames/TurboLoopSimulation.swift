@@ -282,7 +282,7 @@ struct TurboLoopTrack: Sendable {
             let fraction = before / (before - after)
             let crossing = start + ((end - start) * fraction)
             let lateral = (crossing - gate.position).dot(tangent.perpendicular)
-            guard abs(lateral) <= Self.halfWidth else { return nil }
+            guard abs(lateral) <= Self.halfWidth + TurboLoopSimulation.carRadius else { return nil }
             return (index, fraction, before < 0)
         }.sorted { $0.1 < $1.1 }
     }

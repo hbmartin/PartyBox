@@ -552,7 +552,14 @@ private struct HistoryView: View {
                                     .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.55))
                             }
                             Text(record.participants.map {
-                                "\($0.displayName)\($0.kind == .bot ? " [BOT]" : "") \($0.outcome == .won ? "won" : "lost")"
+                                let result = switch $0.outcome {
+                                case .won: "won"
+                                case .lost: "lost"
+                                case .draw: "drew"
+                                case .forfeited: "forfeited"
+                                case .practice: "practiced"
+                                }
+                                return "\($0.displayName)\($0.kind == .bot ? " [BOT]" : "") \(result)"
                             }.joined(separator: "  •  "))
                                 .font(.subheadline)
                             if let modifier = record.modifierTitle {
