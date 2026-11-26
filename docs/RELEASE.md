@@ -32,8 +32,8 @@ scripts/distribute.sh --build-number 43 --platform ios
 ```
 
 The default builds iPhone, Apple TV, and Mac. The script checks the platform,
-build number, embedded DSN, and binary-to-dSYM UUIDs on every archive. It waits
-for Sentry to process the symbols before uploading to Apple.
+build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs on every
+new archive. It waits for Sentry to process the symbols before uploading to Apple.
 
 For signed archives alone, use `--archive-only`. This mode requires `APPLE_TEAM_ID`
 and `SENTRY_DSN`. Xcode can contact Apple for provisioning. The script prints the
@@ -53,6 +53,10 @@ External groups may require Beta App Review.
 
 ## Recover an upload
 
+- If resume reports a locked release directory after a forced quit or restart,
+  verify that the previous distribution script and its upload processes have
+  stopped. Remove the empty lock directory with `rmdir "<release-dir>/.lock"`
+  and keep all upload receipts. Then follow the upload status checks below.
 - If archiving or archive validation failed, check `archive.log`, fix the issue,
   and run again with the same build number. The upload stages start only after
   all selected archives pass validation.
@@ -71,12 +75,16 @@ External groups may require Beta App Review.
 
 Sentry starts in Release builds with a configured DSN. Native crash reports
 include diagnostic data such as stack traces, OS and app versions, and device
-model. Sentry events use the `testflight` environment and the `app`, `app_platform`,
+model. The distribution script embeds the `testflight` environment. A local
+Release build defaults to `local`, and a TestFlight build promoted to the App
+Store keeps its embedded environment. Events use the `app`, `app_platform`,
 and `build` tags. The host reports as `partybox` and the controller as `partypad`.
 
 For first-release verification, use a local Release test build for each platform
 with a temporary controlled crash after Sentry starts. Run it without a debugger,
 then relaunch it to deliver the report. Upload that test build’s matching dSYMs.
-Confirm that Sentry shows app function names and source line information and
-that the app, platform, and build tags identify the test build. Use the
-shipping archives for the TestFlight upload.
+Confirm that Sentry shows app function names and source line information in the
+`local` environment and that the app, platform, and build tags identify the
+test build. On macOS, also raise a temporary Objective-C exception from an AppKit
+event handler. The app should terminate and report the exception after relaunch.
+Use the shipping archives for the TestFlight upload.

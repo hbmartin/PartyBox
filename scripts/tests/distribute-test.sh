@@ -22,12 +22,14 @@ case "$tool" in
     xcodebuild)
         # The Sentry credential must be absent even from Xcode's process environment.
         [[ -z "${SENTRY_AUTH_TOKEN+x}" ]]
+        [[ "$(umask)" == 0022 ]]
         archive=""
         export_plist=""
         exporting=false
         scheme=""
         build=""
         dsn=""
+        sentry_environment=""
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 -exportArchive) exporting=true ;;
@@ -36,6 +38,7 @@ case "$tool" in
                 -scheme) scheme=$2; shift ;;
                 CURRENT_PROJECT_VERSION=*) build="${1#*=}" ;;
                 PARTYBOX_SENTRY_DSN=*) dsn="${1#*=}" ;;
+                PARTYBOX_SENTRY_ENVIRONMENT=*) sentry_environment="${1#*=}" ;;
             esac
             shift
         done
@@ -67,6 +70,9 @@ case "$tool" in
         mkdir -p "$binary_dir"
         printf 'CFBundleVersion=%s\nPartyBoxSentryDSN=%s\nCFBundleSupportedPlatforms.0=%s\nCFBundleExecutable=%s\n' \
             "$build" "$dsn" "$supported" "$scheme" > "$plist_dir/Info.plist"
+        if [[ "${STUB_OMIT_SENTRY_ENVIRONMENT:-}" != true ]]; then
+            printf 'PartyBoxSentryEnvironment=%s\n' "${STUB_SENTRY_ENVIRONMENT:-$sentry_environment}" >> "$plist_dir/Info.plist"
+        fi
         printf 'A8230261-A8C4-4484-B75C-7C06E61236D8\n' > "$binary_dir/$scheme"
         dwarf_dir="$archive/dSYMs/$scheme.app.dSYM/Contents/Resources/DWARF"
         if [[ "$platform" != "${STUB_MISSING_SYMBOLS:-}" ]]; then
@@ -148,6 +154,11 @@ expect_calls "archive ios" "archive tvos" "archive macos"
 STUB_WRONG_SYMBOLS=tvos run_failure "UUIDs do not match" --build-number 123
 expect_calls "archive ios" "archive tvos" "archive macos"
 
+STUB_OMIT_SENTRY_ENVIRONMENT=true run_failure "missing its Sentry environment" --build-number 123 --platform ios
+expect_calls "archive ios"
+STUB_SENTRY_ENVIRONMENT=local run_failure "wrong Sentry environment" --build-number 123 --platform ios
+expect_calls "archive ios"
+
 STUB_FAIL_SENTRY=tvos run_failure "tvos symbol upload failed" --build-number 123
 expect_calls "archive ios" "archive tvos" "archive macos" "sentry ios" "sentry tvos"
 
@@ -155,11 +166,25 @@ SENTRY_AUTH_TOKEN='' run_ok --build-number 123 --archive-only
 expect_calls "archive ios" "archive tvos" "archive macos"
 run_dir="$(sed -n 's/^Release artifacts: //p' "$output")"
 [[ -f "$run_dir/archives-ready" ]] || fail "Expected resumable archives"
+[[ -n "$(find "$run_dir" -prune -perm 0700 -print)" ]] || fail "Expected a private release directory"
 
-STUB_FAIL_APPLE=tvos run_failure "tvos Apple upload did not confirm delivery" --resume "$run_dir"
+ios_plist="$run_dir/ios/app.xcarchive/Products/Applications/PartyBox Controller.app/Info.plist"
+grep -v '^PartyBoxSentryEnvironment=' "$ios_plist" > "$tmp_dir/legacy-info"
+mv "$tmp_dir/legacy-info" "$ios_plist"
+(
+    cd "$checkout"
+    CDPATH=. STUB_FAIL_APPLE=tvos run_failure "tvos Apple upload did not confirm delivery" \
+        --resume ".distribution/${run_dir##*/}"
+)
 expect_calls "sentry ios" "sentry tvos" "sentry macos" "apple ios" "apple tvos"
 [[ -f "$run_dir/ios/apple-uploaded" ]] || fail "Missing iOS receipt"
 [[ -f "$run_dir/tvos/apple-upload-started" ]] || fail "Missing unconfirmed tvOS upload state"
+
+mkdir "$run_dir/.lock"
+run_failure "stale lock recovery" --resume "$run_dir"
+expect_calls
+rmdir "$run_dir/.lock"
+[[ -f "$run_dir/ios/apple-uploaded" && -f "$run_dir/tvos/apple-upload-started" ]] || fail "Lock recovery lost upload state"
 
 run_failure "unconfirmed Apple upload" --resume "$run_dir"
 expect_calls
