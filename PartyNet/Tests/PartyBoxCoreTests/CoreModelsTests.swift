@@ -220,6 +220,38 @@ struct CoreModelsTests {
         #expect(PersonalCupRecord(record: cup, controllerID: ControllerID()) == nil)
     }
 
+    @Test func coChampionTrophiesRemainCompatibleWithOlderCupRecords() throws {
+        let standings = [firstID, secondID].map { id in
+            CupStandingRecord(
+                controllerID: id, displayName: "Player", colorHex: "#32E6FF",
+                kind: .human, rank: 1, points: 22, eventWins: 1
+            )
+        }
+        let cup = CupRecord(endedAt: Date(timeIntervalSince1970: 100), gameIDs: [], matchRecordIDs: [], standings: standings)
+        let personal = try #require(PersonalCupRecord(record: cup, controllerID: firstID))
+        let wire = HostPresentation.cupCompleted(personal)
+        #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: PartyBoxWireCodec.encode(wire)) == wire)
+        #expect(HistoryAggregation.cups([personal]).won == 1)
+
+        struct LegacyTrophy: Decodable {
+            let rank: Int
+            let isChampion: Bool
+        }
+        let data = try JSONEncoder().encode(personal)
+        let olderReader = try JSONDecoder().decode(LegacyTrophy.self, from: data)
+        #expect(olderReader.rank == 1)
+        #expect(olderReader.isChampion)
+
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "isCoChampion")
+        let olderRecord = try JSONDecoder().decode(
+            PersonalCupRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(olderRecord.isChampion)
+        #expect(olderRecord.isCoChampion == nil)
+    }
+
     @Test func malformedCupRanksDoNotCountAsPodiums() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),

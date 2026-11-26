@@ -473,8 +473,15 @@ struct ArcadeEliminations: Equatable, Sendable {
 }
 
 enum ArcadeRanking {
-    /// Survivors first (most lives, then score), then eliminated players with
-    /// the latest elimination first, ties broken by score then player id.
+    private struct SurvivalRank: Equatable {
+        let alive: Bool
+        // Lives for survivors, elimination batch for everyone else.
+        let survival: Int
+        let score: Int
+    }
+
+    /// Survivors are ranked by lives and score. Eliminated players are ranked by
+    /// their elimination batch and score. Seat order keeps tied rows stable.
     static func bySurvival<Player>(
         _ players: [Player],
         id: (Player) -> PlayerID,
@@ -482,40 +489,34 @@ enum ArcadeRanking {
         lives: (Player) -> Int,
         score: (Player) -> Int,
         eliminationOrder: ArcadeEliminations,
-        shareEliminationPlacements: Bool = false,
+        shareTiedPlacements: Bool = false,
         detail: (Player) -> String
     ) -> [ArcadeRankEntry] {
-        let sorted = players.sorted { lhs, rhs in
-            let leftAlive = alive(lhs)
-            let rightAlive = alive(rhs)
-            if leftAlive != rightAlive { return leftAlive }
-            if leftAlive {
-                if lives(lhs) != lives(rhs) { return lives(lhs) > lives(rhs) }
-            } else {
-                let leftOut = eliminationOrder.order(of: id(lhs))
-                let rightOut = eliminationOrder.order(of: id(rhs))
-                if leftOut != rightOut { return leftOut > rightOut }
-            }
-            if score(lhs) != score(rhs) { return score(lhs) > score(rhs) }
-            return id(lhs).rawValue < id(rhs).rawValue
-        }
-        var previousElimination: Int?
-        var previousScore: Int?
-        var group = 0
-        return sorted.map { player in
+        let ranked = players.map { player in
             let playerID = id(player)
-            let points = score(player)
+            let isAlive = alive(player)
+            let survival = isAlive ? lives(player) : eliminationOrder.order(of: playerID)
+            let rank = SurvivalRank(alive: isAlive, survival: survival, score: score(player))
+            return (player: player, id: playerID, rank: rank)
+        }.sorted { lhs, rhs in
+            if lhs.rank.alive != rhs.rank.alive { return lhs.rank.alive }
+            if lhs.rank.survival != rhs.rank.survival { return lhs.rank.survival > rhs.rank.survival }
+            if lhs.rank.score != rhs.rank.score { return lhs.rank.score > rhs.rank.score }
+            return lhs.id.rawValue < rhs.id.rawValue
+        }
+        var previousRank: SurvivalRank?
+        var group = 0
+        return ranked.map { entry in
             var placementGroup: Int?
-            if shareEliminationPlacements, !alive(player) {
-                let elimination = eliminationOrder.order(of: playerID)
-                if elimination >= 0 {
-                    if previousElimination != elimination || previousScore != points { group += 1 }
-                    previousElimination = elimination
-                    previousScore = points
-                    placementGroup = group
-                }
+            if shareTiedPlacements, entry.rank.alive || entry.rank.survival >= 0 {
+                if previousRank != entry.rank { group += 1 }
+                previousRank = entry.rank
+                placementGroup = group
             }
-            return ArcadeRankEntry(playerID: playerID, score: points, detail: detail(player), placementGroup: placementGroup)
+            return ArcadeRankEntry(
+                playerID: entry.id, score: entry.rank.score,
+                detail: detail(entry.player), placementGroup: placementGroup
+            )
         }
     }
 

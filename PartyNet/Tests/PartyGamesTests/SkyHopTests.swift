@@ -301,6 +301,19 @@ struct SkyHopTests {
         #expect(ids.allSatisfy(sim.isActive))
     }
 
+    @Test func equalSurvivorsShareFirstAtTheTimeCap() throws {
+        var sim = Sim(players: ArcadeHarness.playerIDs(2), seed: 1)
+        sim.setGatesForTesting([farGate(id: 1)])
+        sim.setElapsedForTesting(Sim.duration - (frame / 2))
+
+        _ = sim.step(deltaTime: frame, inputs: [:])
+
+        #expect(sim.birds.allSatisfy { $0.alive })
+        let outcome = try #require(ArcadeHarness.finishedDuel(sim))
+        #expect(outcome.winner == nil)
+        #expect(outcome.playerOutcomes.map(\.outcome) == [.draw, .draw])
+    }
+
     @Test func simultaneousCrashesWithTheSameScoreEndInADraw() throws {
         let seats = Set(ArcadeHarness.playerIDs(2))
         let match = ArcadeHarness.playOut(SkyHopGame(), players: 2, idle: seats)

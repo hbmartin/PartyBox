@@ -26,6 +26,15 @@ enum ArcadeHarness {
         (0..<count).map { PlayerID(UInt8($0)) }
     }
 
+    static func finishedDuel(_ simulation: some ArcadeSimulation) -> GameOutcome? {
+        guard simulation.isFinished else { return nil }
+        let events = ArcadeOutcomeBuilder.completionEvents(
+            title: "Arcade", participants: participants(2),
+            ranking: simulation.ranking(), metric: simulation.resultMetric, forfeited: []
+        )
+        return PlayOut(events: events).outcome
+    }
+
     struct PlayOut {
         var events: [GameEvent] = []
         var seconds = 0.0

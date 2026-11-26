@@ -87,6 +87,39 @@ struct PartyBoxTests {
         #expect(participants.map { cup.cupEventWins[$0.controllerID] } == [1, 0, 0, 0, 0, 0])
     }
 
+    @Test func drawnEventAndSplitWinsProduceTwoCupChampions() throws {
+        let ids = [bottom, top]
+        let participants = ids.map { id in
+            GameParticipant(
+                player: PlayerInfo(id: id, displayName: "Player \(id.rawValue + 1)", colorHex: PlayerPalette.color(for: id)),
+                controllerID: ControllerID()
+            )
+        }
+        let cup = HostCupDirector()
+        cup.begin(participants: participants)
+        for winner in [nil, bottom, top] as [PlayerID?] {
+            cup.score(.init(
+                title: "Event complete", subtitle: "", winner: winner,
+                playerOutcomes: ids.map { id in
+                    .init(playerID: id, outcome: winner.map { $0 == id ? .won : .lost } ?? .draw)
+                },
+                metrics: [], standings: ids.map { id in
+                    .init(playerID: id, rank: winner == nil || winner == id ? 1 : 2, score: 0)
+                }
+            ), participants: participants)
+        }
+
+        let record = cup.makeRecord(livePlayers: [:])
+        #expect(record.champions.map(\.controllerID) == participants.map(\.controllerID))
+        #expect(record.champions.map(\.points) == [22, 22])
+        #expect(record.champions.map(\.eventWins) == [1, 1])
+        for participant in participants {
+            let personal = try #require(PersonalCupRecord(record: record, controllerID: participant.controllerID))
+            #expect(personal.isChampion)
+            #expect(personal.isCoChampion == true)
+        }
+    }
+
     @MainActor
     private final class CleanupGate {
         private(set) var isWaiting = false

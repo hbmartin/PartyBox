@@ -926,7 +926,12 @@ final class HostCoordinator {
         }
         guard isCurrentLifecycle(lifecycleGeneration) else { return false }
         phase = .cupComplete(record)
-        statusMessage = record.standings.first.map { "\($0.displayName) won the Party Cup" } ?? "Party Cup complete"
+        let champions = record.champions
+        if champions.count > 1 {
+            statusMessage = "\(champions.count) players share the Party Cup title"
+        } else {
+            statusMessage = champions.first.map { "\($0.displayName) won the Party Cup" } ?? "Party Cup complete"
+        }
         return true
     }
 
@@ -1069,10 +1074,18 @@ final class HostCoordinator {
                 botDifficultyChange: botDifficultyChange
             ))
         case .cupStandings:
-            let leader = cupLeaderboard.first
+            let leaders = cupLeaderboard.filter { $0.rank == 1 }
+            let subtitle: String
+            if let leader = leaders.first {
+                subtitle = leaders.count == 1
+                    ? "\(leader.displayName) leads with \(leader.points) points"
+                    : "\(leaders.count) players tied for the lead with \(leader.points) points"
+            } else {
+                subtitle = "Party Cup continues"
+            }
             return .gameOver(.init(
                 title: "EVENT \(cupEventIndex + 1) COMPLETE",
-                subtitle: leader.map { "\($0.displayName) leads with \($0.points) points" } ?? "Party Cup continues",
+                subtitle: subtitle,
                 nextUp: selectedCupGameIDs.indices.contains(cupEventIndex + 1)
                     ? games.first(where: { $0.descriptor.id == selectedCupGameIDs[cupEventIndex + 1] })?.descriptor.title
                     : nil,
@@ -1082,8 +1095,14 @@ final class HostCoordinator {
             let own = record.standings.first { standing in
                 host.controllerID(for: playerID) == standing.controllerID
             }
+            let title: String
+            if own?.rank == 1 {
+                title = record.champions.count > 1 ? "YOU SHARE THE PARTY CUP TITLE" : "YOU WON THE PARTY CUP"
+            } else {
+                title = "PARTY CUP COMPLETE"
+            }
             return .gameOver(.init(
-                title: own?.rank == 1 ? "YOU WON THE PARTY CUP" : "PARTY CUP COMPLETE",
+                title: title,
                 subtitle: own.map { "#\($0.rank)  •  \($0.points) POINTS  •  \($0.eventWins) EVENT WINS" } ?? "See the final standings on the TV",
                 control: controlStatus(for: playerID)
             ))

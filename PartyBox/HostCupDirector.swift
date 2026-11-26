@@ -105,15 +105,21 @@ final class HostCupDirector {
             if leftWins != rightWins { return leftWins > rightWins }
             return lhs.player.id.rawValue < rhs.player.id.rawValue
         }
-        return sorted.enumerated().map { index, participant in
-            CupStandingRecord(
+        var rank = 0
+        var previous: (points: Int, eventWins: Int)?
+        return sorted.map { participant in
+            let points = cupPoints[participant.controllerID, default: 0]
+            let eventWins = cupEventWins[participant.controllerID, default: 0]
+            if points != previous?.points || eventWins != previous?.eventWins { rank += 1 }
+            previous = (points, eventWins)
+            return CupStandingRecord(
                 controllerID: participant.controllerID,
                 displayName: livePlayers[participant.controllerID]?.displayName ?? participant.player.displayName,
                 colorHex: participant.player.colorHex,
                 kind: participant.player.kind,
-                rank: index + 1,
-                points: cupPoints[participant.controllerID, default: 0],
-                eventWins: cupEventWins[participant.controllerID, default: 0]
+                rank: rank,
+                points: points,
+                eventWins: eventWins
             )
         }
     }
