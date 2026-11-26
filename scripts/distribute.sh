@@ -37,11 +37,15 @@ require_tool() {
 run_xcodebuild() {
     local log=$1
     shift
-    (umask 022; xcodebuild "$@") 2>&1 | tee -a "$log"
+    (
+        umask 022
+        if [[ "$1" != -exportArchive ]]; then exec 9>&-; fi
+        exec xcodebuild "$@"
+    ) 2>&1 | tee -a "$log" 9>&-
 }
 
 plist_value() {
-    plutil -extract "$1" raw -o - "$2"
+    plutil -extract "$1" raw -o - "$2" 9>&-
 }
 
 platform_settings() {
@@ -70,7 +74,7 @@ platform_settings() {
 archive_platform() {
     local platform=$1 archive_dir="$run_dir/$1"
     platform_settings "$platform"
-    mkdir -p "$archive_dir"
+    mkdir -p "$archive_dir" 9>&-
     printf 'Archiving %s (%s)\n' "$scheme" "$platform"
 
     run_xcodebuild "$archive_dir/archive.log" \
@@ -82,17 +86,18 @@ archive_platform() {
         || die "$platform archive failed. See $archive_dir/archive.log"
 }
 
-mach_uuids() {
+mach_uuids() (
+    exec 9>&-
     xcrun dwarfdump --uuid "$1" | awk '/^UUID: / { print $2, $3 }' | sort
-}
+)
 
 lock_release_directory() {
     local lock_path="$run_dir/.lock" result=0
     if [[ -d "$lock_path" ]]; then
         die "Release directory has a legacy lock: $run_dir. See docs/RELEASE.md for stale lock recovery."
     fi
-    # Keep the file and descriptor open for the lifetime of the run and its children.
-    exec 9>>"$lock_path"
+    # Keep the lock in this shell and in any surviving Apple export.
+    exec 9>>"$lock_path" || die "Could not open the release directory lock: $lock_path"
     case "$OSTYPE" in
         darwin*) lockf -s -t 0 9 || result=$? ;;
         linux*) flock -n -E 75 9 || result=$? ;;
@@ -105,7 +110,7 @@ lock_release_directory() {
 
 validate_macos_permissions() {
     local app=$1 invalid
-    invalid="$(find "$app" \( -type f ! -perm -444 -o -type d ! -perm -111 \) -print)" \
+    invalid="$(find "$app" \( -type f ! -perm -444 -o -type d ! -perm -111 \) -print 9>&-)" \
         || die "Could not check macOS archive permissions at $app. Rebuild the archive."
     [[ -z "$invalid" ]] || die "macOS archive has unreadable files or untraversable directories. Rebuild the archive. First affected path: ${invalid%%$'\n'*}"
 }
@@ -128,7 +133,7 @@ validate_archive() {
         [[ "$sentry_environment" == testflight ]] || die "$platform archive has the wrong Sentry environment."
     elif [[ -z "$resume_dir" ]]; then
         die "$platform archive is missing its Sentry environment."
-    else
+    elif [[ ! -f "$run_dir/$platform/apple-uploaded" ]]; then
         printf 'distribute: warning: %s legacy archive is missing its Sentry environment.\n' "$platform" >&2
     fi
 
@@ -156,22 +161,22 @@ upload_symbols() {
     printf 'Uploading %s debug symbols to Sentry\n' "$1"
     SENTRY_AUTH_TOKEN="$sentry_auth_token" SENTRY_ALLOW_FAILURE=0 sentry-cli debug-files upload --wait \
         --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "$archive_dir/app.xcarchive/dSYMs" \
-        2>&1 | tee -a "$archive_dir/sentry.log" \
+        9>&- 2>&1 | tee -a "$archive_dir/sentry.log" 9>&- \
         || die "$1 symbol upload failed. See $archive_dir/sentry.log"
 }
 
 upload_apple() {
     local archive_dir="$run_dir/$1" attempt_dir
-    attempt_dir="$(mktemp -d "$archive_dir/apple-attempt.XXXXXXXX")"
+    attempt_dir="$(mktemp -d "$archive_dir/apple-attempt.XXXXXXXX" 9>&-)"
     printf 'Uploading %s build %s to App Store Connect\n' "$1" "$build_number"
-    date -u > "$archive_dir/apple-upload-started"
+    date -u 9>&- > "$archive_dir/apple-upload-started"
     run_xcodebuild "$archive_dir/apple.log" -exportArchive \
         -archivePath "$archive_dir/app.xcarchive" \
         -exportOptionsPlist "$run_dir/ExportOptions.plist" \
         -exportPath "$attempt_dir/export" -allowProvisioningUpdates \
         || die "$1 Apple upload did not confirm delivery. Check $archive_dir/apple.log and App Store Connect before retrying."
-    date -u >> "$archive_dir/apple-upload-started"
-    mv "$archive_dir/apple-upload-started" "$archive_dir/apple-uploaded"
+    date -u 9>&- >> "$archive_dir/apple-upload-started"
+    mv "$archive_dir/apple-upload-started" "$archive_dir/apple-uploaded" 9>&-
     printf 'Apple accepted the %s upload for processing.\n' "$1"
 }
 
@@ -301,7 +306,7 @@ for platform in "${pending_platforms[@]}"; do
     upload_symbols "$platform"
 done
 
-cat > "$run_dir/ExportOptions.plist" <<PLIST
+cat 9>&- > "$run_dir/ExportOptions.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

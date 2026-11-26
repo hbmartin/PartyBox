@@ -57,14 +57,19 @@ External groups may require Beta App Review.
 
 ## Recover an upload
 
-- If a release directory is in use, wait for the previous distribution script and
-  its upload processes to stop. Leave the regular lock file in place. If resume
+- If a release directory is in use, use `lsof "<release-dir>/.lock"` to identify
+  the holder. Wait for the previous distribution script and its Apple export to
+  stop. Leave the regular lock file in place. If resume
   reports a legacy lock directory, verify that the previous script and its upload
   processes have stopped, then remove the empty directory with `rmdir "<release-dir>/.lock"`
   and keep all upload receipts. Then follow the upload status checks below.
 - If archiving or archive validation failed, check `archive.log`, fix the issue,
   and run again with the same build number. The upload stages start only after
-  all selected archives pass validation.
+  all selected archives pass validation. If a pending Mac archive fails the
+  permission check, resume the valid iOS and tvOS archives separately using
+  `--platform ios` and `--platform tvos`. Rebuild only the Mac archive with
+  `scripts/distribute.sh --build-number N --platform macos`, using the original
+  build number and keeping the receipts in the original release directory.
 - If symbol upload failed, check `sentry.log`, fix the error, and resume from the
   printed release directory. Sentry skips debug files it already has.
 - If an Apple upload failed or was interrupted, check `apple.log` and the

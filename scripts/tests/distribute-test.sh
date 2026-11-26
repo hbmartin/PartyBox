@@ -46,6 +46,7 @@ case "$tool" in
         platform_dir="${archive%/*}"
         platform="${platform_dir##*/}"
         if [[ "$exporting" == true ]]; then
+            (: >&9) 2>/dev/null || exit 1
             grep -q 'destination</key><string>upload' "$export_plist"
             grep -q 'method</key><string>app-store-connect' "$export_plist"
             grep -q 'manageAppVersionAndBuildNumber</key><false' "$export_plist"
@@ -61,6 +62,15 @@ case "$tool" in
             exit
         fi
 
+        if (: >&9) 2>/dev/null; then exit 1; fi
+        if [[ -n "${STUB_ARCHIVE_HOLD_DIR:-}" ]]; then
+            (
+                touch "$STUB_ARCHIVE_HOLD_DIR/ready"
+                while [[ -d "$STUB_ARCHIVE_HOLD_DIR" && ! -e "$STUB_ARCHIVE_HOLD_DIR/release" ]]; do
+                    sleep 0.05
+                done
+            ) </dev/null >/dev/null 2>&1 &
+        fi
         printf 'archive %s\n' "$platform" >> "$STUB_CALLS"
         app="$archive/Products/Applications/$scheme.app"
         binary_dir=$app
@@ -92,16 +102,19 @@ case "$tool" in
         fi
         ;;
     xcrun)
+        if (: >&9) 2>/dev/null; then exit 1; fi
         [[ -z "${SENTRY_AUTH_TOKEN+x}" ]]
         [[ "$1 $2" == 'dwarfdump --uuid' ]]
         printf 'UUID: %s (arm64) %s\n' "$(cat "$3")" "$3"
         ;;
     plutil)
+        if (: >&9) 2>/dev/null; then exit 1; fi
         [[ -z "${SENTRY_AUTH_TOKEN+x}" ]]
         awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); found=1 }
             END { if (!found) exit 1 }' "$6"
         ;;
     sentry-cli)
+        if (: >&9) 2>/dev/null; then exit 1; fi
         [[ "$SENTRY_AUTH_TOKEN" == stub-upload-token ]]
         [[ "$*" == "debug-files upload --wait --org partybox-org --project shared "* ]]
         archive_dir="${8%/app.xcarchive/dSYMs}"
@@ -186,12 +199,14 @@ run_failure "ios archive has the wrong Sentry environment" --resume "$run_dir"
 expect_calls
 grep -v '^PartyBoxSentryEnvironment=' "$ios_plist" > "$tmp_dir/legacy-info"
 mv "$tmp_dir/legacy-info" "$ios_plist"
+chmod 644 "$ios_plist"
 
 mac_app="$run_dir/macos/app.xcarchive/Products/Applications/PartyBox.app"
 mac_plist="$mac_app/Contents/Info.plist"
 grep -v '^PartyBoxSentryEnvironment=' "$mac_plist" > "$tmp_dir/legacy-mac-info"
 mv "$tmp_dir/legacy-mac-info" "$mac_plist"
-mkdir "$mac_app/Contents/_CodeSignature"
+chmod 644 "$mac_plist"
+mkdir -m 755 "$mac_app/Contents/_CodeSignature"
 signature="$mac_app/Contents/_CodeSignature/CodeResources"
 printf 'stub signature\n' > "$signature"
 chmod 600 "$signature"
@@ -216,6 +231,10 @@ grep -F 'warning: ios legacy archive is missing its Sentry environment.' "$outpu
 [[ -f "$run_dir/tvos/apple-upload-started" ]] || fail "Missing unconfirmed tvOS upload state"
 
 [[ -f "$run_dir/.lock" ]] || fail "Expected a persistent lock file"
+rm "$run_dir/.lock"
+ln -s "$tmp_dir/absent/lock" "$run_dir/.lock"
+run_failure "Could not open the release directory lock" --resume "$run_dir"
+expect_calls
 # Re-create the pre-upgrade directory format after the previous holder has exited.
 rm "$run_dir/.lock"
 mkdir "$run_dir/.lock"
@@ -232,9 +251,26 @@ run_ok --resume "$run_dir"
 expect_calls "sentry macos" "apple macos"
 run_ok --resume "$run_dir"
 expect_calls
+if grep -Fq 'legacy archive is missing its Sentry environment' "$output"; then
+    fail "An already uploaded archive produced a legacy environment warning"
+fi
 
 run_ok --build-number 124 --platform ios
 expect_calls "archive ios" "sentry ios" "apple ios"
+
+# A detached archive helper can outlive the archive without holding its release lock.
+archive_hold="$tmp_dir/archive-hold"
+mkdir "$archive_hold"
+STUB_ARCHIVE_HOLD_DIR="$archive_hold" run_ok --build-number 126 --platform macos --archive-only
+archive_run="$(sed -n 's/^Release artifacts: //p' "$output")"
+for _ in $(seq 1 200); do
+    [[ -e "$archive_hold/ready" ]] && break
+    sleep 0.05
+done
+[[ -e "$archive_hold/ready" ]] || fail "Detached archive helper did not start"
+run_ok --resume "$archive_run" --platform macos
+expect_calls "sentry macos" "apple macos"
+touch "$archive_hold/release"
 
 # A surviving Apple worker must keep the release locked after the script is killed.
 SENTRY_AUTH_TOKEN='' run_ok --build-number 125 --platform macos --archive-only
