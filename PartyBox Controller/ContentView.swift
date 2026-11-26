@@ -73,18 +73,16 @@ private struct HostPickerView: View {
                 ControllerWordmark(kicker: "PARTYPAD", title: "PARTYBOX")
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("YOUR NAME").font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
+                    Text("YOUR NAME (OPTIONAL)").font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.55))
                     HStack {
-                        TextField("Player", text: $coordinator.displayName)
+                        TextField("Your name (optional)", text: $coordinator.displayNameDraft, prompt: Text("Player"))
                             .accessibilityIdentifier("controller.name.field")
                             .textInputAutocapitalization(.words)
                             .autocorrectionDisabled()
                             .focused($editingName)
-                            .onSubmit { Task { await coordinator.rename() } }
-                        Button("SAVE") {
-                            editingName = false
-                            Task { await coordinator.rename() }
-                        }
+                            .submitLabel(.done)
+                            .onSubmit(saveName)
+                        Button("SAVE", action: saveName)
                         .accessibilityIdentifier("controller.name.save")
                         .accessibilityValue("Saved \(coordinator.savedDisplayName)")
                         .font(.caption.monospaced().weight(.black))
@@ -119,6 +117,7 @@ private struct HostPickerView: View {
                     } else {
                         ForEach(coordinator.client.hosts) { host in
                             Button {
+                                editingName = false
                                 Task { await coordinator.connect(to: host) }
                             } label: {
                                 HStack(spacing: 16) {
@@ -172,9 +171,15 @@ private struct HostPickerView: View {
             }
             .padding(24)
         }
+        .scrollDismissesKeyboard(.interactively)
         .sheet(isPresented: $showingHistory) {
             PersonalHistoryView(coordinator: coordinator) { showingHistory = false }
         }
+    }
+
+    private func saveName() {
+        editingName = false
+        Task { await coordinator.saveDisplayName() }
     }
 
     private var discoveryHelpMessage: String {
@@ -206,7 +211,10 @@ private struct ConnectedControllerView: View {
                             Image(systemName: player.mark.systemImageName)
                                 .foregroundStyle(Color.controllerHex(player.colorHex))
                         }
-                        Text(playerLabel).font(.headline.weight(.black)).lineLimit(1)
+                        Text(playerLabel)
+                            .font(.headline.weight(.black))
+                            .lineLimit(1)
+                            .accessibilityIdentifier("controller.player.label")
                     }
                 }
                 Spacer()
@@ -273,7 +281,7 @@ private struct ConnectedControllerView: View {
     }
 
     private var playerLabel: String {
-        guard let player = coordinator.currentPlayer else { return coordinator.displayName }
+        guard let player = coordinator.currentPlayer else { return coordinator.savedDisplayName }
         return "\(player.mark.glyph)  P\(player.number)  \(player.displayName)"
     }
 }
