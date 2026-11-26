@@ -39,12 +39,14 @@ PartyBox is a **star topology**. One host owns the game; every phone is a dumb-i
 Facts worth knowing before you start:
 
 - **8 controllers max.** The 9th phone is rejected with *"This PartyBox already has 8 controllers."*
-- **All 8 play.** Four-Way Pong uses its four-seat arena for up to four players and a short qualifier
-  format for five to eight; the other games put everyone straight into the same round.
+- **All 8 play.** Four-Way Pong seats four at a time; with five or more, the rest wait on a
+  winner-stays bench and rotate in as paddles fall. The other games put everyone straight into the same round.
 - **1 player is enough to start** — a solo match is a practice run.
-- **Five games:** Four-Way Pong, Signal Snap, Gravity Grab, Snake Pit, and Last Light.
+- **Eight games:** Four-Way Pong, Snake Pit, Last Light, Bumper Brawl, Paint Rush, Sky Hop, Hot Fuse,
+  and Turbo Loop.
 - **Two ways to play:** pick any game in Free Play, or let the captain choose three distinct events for a Party Cup.
-- **Phone controls:** touch by default; calibrated motion is optional in Controller Settings.
+- **Phone controls:** touch by default. Controller Settings (or the in-game chip) switches arrow pads and
+  drag pads to a swipe (trackpad) style; calibrated motion is also optional.
 - **No encryption and no join code.** Anyone on the same LAN who has the app can join your party. Use a
   network you trust; don't run this on conference Wi-Fi.
 
@@ -441,8 +443,8 @@ Repeat steps 2–4. Slots P2, P3, P4 fill. Each gets a different color and mark.
 
 ### Step 6 — Add phones 5 through 8
 
-They connect exactly the same way. All eight can play Signal Snap, Gravity Grab, Snake Pit, Last Light,
-and Pong's qualifier format. Classic Four-Way Pong rounds still use the four-seat arena.
+They connect exactly the same way. All eight play every game. In Four-Way Pong, players five to eight
+start **ON DECK** and take over a paddle when its player is knocked out.
 
 ✅ A **9th** phone is rejected with **CAN'T JOIN** and
 *"This PartyBox already has 8 controllers."*
@@ -452,7 +454,7 @@ and Pong's qualifier format. Classic Four-Way Pong rounds still use the four-sea
 The captain taps **OPEN GAME MENU** (or you press Select on the remote / Return on the Mac).
 The crown identifies the captain; other phones ready up instead of changing shared navigation.
 
-✅ TV: **GAME SELECT** with five games, **PARTY CUP**, and **HISTORY & LEADERBOARD**.
+✅ TV: **GAME SELECT** with eight games, **PARTY CUP**, and **HISTORY & LEADERBOARD**.
 ✅ Every phone switches to the menu layout: the game name plus **▲ ▼**, **SELECT**, **BACK**.
 
 ### Step 8 — Start the match
@@ -465,12 +467,18 @@ The TV and phone controls depend on the selected game:
 - **Four-Way Pong, 1–4 players:** the TV shows the classic arena with a life counter (`◆◆◆`) along
   each occupied edge. Every active phone becomes a paddle track in that player's color, labelled
   `P<n> <name>`.
-- **Four-Way Pong, 5–8 players:** everyone plays the horizontal **GATE** qualifier on their phone;
-  the top four advance to the classic arena.
-- **Signal Snap:** match the TV symbol with the phone's direction pad.
-- **Gravity Grab:** steer around the ring with the two-dimensional drag surface or optional motion.
-- **Snake Pit:** turn with the direction pad and protect your three lives.
-- **Last Light:** use two-dimensional drag or optional motion to dodge the red hazards.
+- **Four-Way Pong, 5–8 players:** the first four take the edges with two lives each. Everyone else
+  sees **ON DECK #n** and rotates onto the next edge that falls. The last paddle standing once the bench
+  is empty wins.
+- **Snake Pit:** light cycles that speed up every 15 seconds. Turn with the direction pad (or swipe),
+  cut rivals off, and protect your three lives.
+- **Last Light:** drag or tilt to dodge falling blocks, laser sweepers, and seekers; standing in the
+  shrinking spotlight scores triple.
+- **Bumper Brawl:** sumo on a shrinking ice rink. Drag to push, tap **DASH** to slam; three lives.
+- **Paint Rush:** 45 seconds to paint the most floor. Steal rivals' tiles and grab BOOST and SPLAT.
+- **Sky Hop:** tap the big **FLAP** button through ever-tighter gates. One crash and you're out.
+- **Hot Fuse:** pass the bomb by touching someone before the hidden fuse blows. Solo is a defuse drill.
+- **Turbo Loop:** five quick laps of a top-down circuit. Point where to drive; hit the boost pads.
 
 For classic 1–4 player Pong, the paddle-track orientation is:
 

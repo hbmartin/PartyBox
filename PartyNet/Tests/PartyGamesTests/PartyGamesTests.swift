@@ -8,6 +8,8 @@ import Testing
 @Suite("Deterministic PartyGames")
 @MainActor
 struct PartyGamesTests {
+    static let lineup = ["pong", "snake-pit", "last-light", "bumper-brawl", "paint-rush", "sky-hop", "hot-fuse", "turbo-loop"]
+
     private let bottom = PlayerID(0)
     private let top = PlayerID(1)
 
@@ -198,7 +200,7 @@ struct PartyGamesTests {
         #expect(game.descriptor.maximumPlayers == 8)
         #expect(game.descriptor.modifiers.map(\.id) == ["fast-ball", "big-paddles", "extra-life"])
         #expect(game.availableModifiers(participantCount: 4) == game.descriptor.modifiers)
-        #expect(game.availableModifiers(participantCount: 5).isEmpty)
+        #expect(game.availableModifiers(participantCount: 8) == game.descriptor.modifiers)
         let player = PlayerInfo(id: bottom, displayName: "Ada", colorHex: "#32E6FF")
         let session = game.makeSession(
             context: .init(
@@ -248,10 +250,11 @@ struct PartyGamesTests {
         #expect(abs(try #require(scene.paddlePosition(for: bottom)) + 0.9) < 0.001)
     }
 
-    @Test func gameLibraryProvidesFiveCupEligibleGamesAndEightPlayerNewGames() {
+    @Test func gameLibraryListsTheCupEligibleEightPlayerLineup() {
         let games = PartyGames.all()
-        #expect(games.map(\.descriptor.id) == ["pong", "signal-snap", "gravity-grab", "snake-pit", "last-light"])
+        #expect(games.map(\.descriptor.id) == PartyGamesTests.lineup)
         #expect(games.allSatisfy { $0.descriptor.isCupEligible })
+        #expect(games.allSatisfy { $0.descriptor.minimumPlayers == 1 })
         #expect(games.allSatisfy { $0.descriptor.maximumPlayers == 8 })
     }
 
@@ -263,279 +266,15 @@ struct PartyGamesTests {
 
         #expect(zip(parity, parity.dropFirst()).contains { $0.0 == $0.1 })
         #expect(Array(directions.prefix(4)) != Array(directions.dropFirst(4).prefix(4)))
+        var bounded = ArcadeRandomNumberGenerator(seed: 7)
+        #expect((0..<500).allSatisfy { _ in (0..<3).contains(bounded.index(below: 3)) })
+        #expect((0..<500).allSatisfy { _ in (0..<1).contains(bounded.unit()) })
     }
 
-    @Test func easyArcadeBotsCrossTheSignalActivationThreshold() throws {
-        let playerID = PlayerID(0)
-        let participant = GameParticipant(
-            player: .init(id: playerID, displayName: "Bot", colorHex: "#32E6FF", kind: .bot),
-            controllerID: ControllerID()
-        )
-
-        for mode in [ArcadeChallengeMode.pongQualifiers, .signalSnap] {
-            let session = ArcadeChallengeSession(
-                mode: mode,
-                supportsMotion: false,
-                context: .init(
-                    participants: [participant],
-                    inputs: InputStore(),
-                    seed: 42,
-                    modifierID: nil
-                ),
-                onEvents: { _ in }
-            )
-            let input = try #require(session.botInput(
-                for: playerID,
-                difficulty: .easy,
-                deltaTime: .milliseconds(16)
-            ))
-            #expect(max(abs(input.axisX), abs(input.axisY)) > 0.58)
-        }
-    }
-
-    @Test func signalRecenteringCannotScoreTwiceInOneRound() throws {
-        let playerID = PlayerID(0)
-        let inputs = InputStore()
-        let session = ArcadeChallengeSession(
-            mode: .signalSnap,
-            supportsMotion: false,
-            context: .init(
-                participants: [.init(
-                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
-                    controllerID: ControllerID()
-                )],
-                inputs: inputs,
-                seed: 42,
-                modifierID: nil
-            ),
-            onEvents: { _ in }
-        )
-        for step in 0...5 {
-            session.updateForTesting(Double(step) * 0.05)
-        }
-        let direction = session.signalDirectionForTesting()
-        let axes: (Float, Float) = switch direction {
-        case "up": (0, 1)
-        case "down": (0, -1)
-        case "left": (-1, 0)
-        default: (1, 0)
-        }
-
-        #expect(inputs.update(
-            .init(token: 1, sequence: 1, clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-            for: playerID
-        ))
-        session.updateForTesting(0.30)
-        let firstScore = try #require(session.scoreForTesting(playerID))
-        #expect(firstScore > 0)
-
-        #expect(inputs.update(
-            .init(token: 1, sequence: 2, clientTimeMs: 2, axisX: 0, axisY: 0),
-            for: playerID
-        ))
-        session.updateForTesting(0.35)
-        #expect(inputs.update(
-            .init(token: 1, sequence: 3, clientTimeMs: 3, axisX: axes.0, axisY: axes.1),
-            for: playerID
-        ))
-        session.updateForTesting(0.40)
-
-        #expect(session.scoreForTesting(playerID) == firstScore)
-    }
-
-    @Test func heldSignalInputIsAcceptedAfterTheRoundActivationDelay() throws {
-        let playerID = PlayerID(0)
-        let inputs = InputStore()
-        let session = ArcadeChallengeSession(
-            mode: .signalSnap,
-            supportsMotion: false,
-            context: .init(
-                participants: [.init(
-                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
-                    controllerID: ControllerID()
-                )],
-                inputs: inputs,
-                seed: 42,
-                modifierID: nil
-            ),
-            onEvents: { _ in }
-        )
-        let axes: (Float, Float) = switch session.signalDirectionForTesting() {
-        case "up": (0, 1)
-        case "down": (0, -1)
-        case "left": (-1, 0)
-        default: (1, 0)
-        }
-        #expect(inputs.update(
-            .init(token: 1, sequence: 1, clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-            for: playerID
-        ))
-
-        for step in 0...5 {
-            session.updateForTesting(Double(step) * 0.05)
-        }
-
-        #expect(try #require(session.scoreForTesting(playerID)) > 0)
-    }
-
-    @Test func signalInputEventsIgnoreInputInsertionAndStateStorageOrder() throws {
-        let participants = (0..<4).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
-        let firstInputs = InputStore()
-        let secondInputs = InputStore()
-        var firstEvents: [GameEvent] = []
-        var secondEvents: [GameEvent] = []
-        let first = ArcadeChallengeSession(
-            mode: .signalSnap,
-            supportsMotion: false,
-            context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
-            onEvents: { firstEvents.append(contentsOf: $0) }
-        )
-        let second = ArcadeChallengeSession(
-            mode: .signalSnap,
-            supportsMotion: false,
-            context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
-            onEvents: { secondEvents.append(contentsOf: $0) }
-        )
-        second.reverseStorageForTesting()
-        let axes: (Float, Float) = switch first.signalDirectionForTesting() {
-        case "up": (0, 1)
-        case "down": (0, -1)
-        case "left": (-1, 0)
-        default: (1, 0)
-        }
-        #expect(second.signalDirectionForTesting() == first.signalDirectionForTesting())
-        for (index, participant) in participants.enumerated() {
-            #expect(firstInputs.update(
-                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-                for: participant.player.id
-            ))
-        }
-        for (index, participant) in participants.reversed().enumerated() {
-            #expect(secondInputs.update(
-                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-                for: participant.player.id
-            ))
-        }
-
-        for step in 0...5 {
-            let time = Double(step) * 0.05
-            first.updateForTesting(time)
-            second.updateForTesting(time)
-        }
-
-        #expect(firstEvents.map(eventSignature) == secondEvents.map(eventSignature))
-        let cueOrder = firstEvents.compactMap { event -> PlayerID? in
-            if case .deviceCue(let playerID, _) = event { playerID } else { nil }
-        }
-        #expect(cueOrder == participants.map(\.player.id))
-    }
-
-    @Test func gravityEventsIgnoreInputInsertionAndStateStorageOrder() {
-        let participants = (0..<4).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
-        let firstInputs = InputStore()
-        let secondInputs = InputStore()
-        var firstEvents: [GameEvent] = []
-        var secondEvents: [GameEvent] = []
-        let first = ArcadeChallengeSession(
-            mode: .gravityGrab,
-            supportsMotion: true,
-            context: .init(participants: participants, inputs: firstInputs, seed: 42, modifierID: nil),
-            onEvents: { firstEvents.append(contentsOf: $0) }
-        )
-        let second = ArcadeChallengeSession(
-            mode: .gravityGrab,
-            supportsMotion: true,
-            context: .init(participants: participants, inputs: secondInputs, seed: 42, modifierID: nil),
-            onEvents: { secondEvents.append(contentsOf: $0) }
-        )
-        second.reverseStorageForTesting()
-        var random = ArcadeRandomNumberGenerator(seed: 42)
-        let targetAngle = Double(random.next() % 628) / 100
-        let axes = (Float(cos(targetAngle)), Float(sin(targetAngle)))
-        for (index, participant) in participants.enumerated() {
-            #expect(firstInputs.update(
-                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-                for: participant.player.id
-            ))
-        }
-        for (index, participant) in participants.reversed().enumerated() {
-            #expect(secondInputs.update(
-                .init(token: 1, sequence: UInt32(index + 1), clientTimeMs: 1, axisX: axes.0, axisY: axes.1),
-                for: participant.player.id
-            ))
-        }
-
-        for step in 0...13 {
-            let time = Double(step) * 0.05
-            first.updateForTesting(time)
-            second.updateForTesting(time)
-        }
-
-        #expect(firstEvents.map(eventSignature) == secondEvents.map(eventSignature))
-        let cueOrder = firstEvents.compactMap { event -> PlayerID? in
-            if case .deviceCue(let playerID, _) = event { playerID } else { nil }
-        }
-        #expect(cueOrder == participants.map(\.player.id))
-    }
-
-    @Test func gravityInputIsNormalizedWithoutChangingDirection() throws {
-        let playerID = PlayerID(0)
-        let inputs = InputStore()
-        let session = ArcadeChallengeSession(
-            mode: .gravityGrab,
-            supportsMotion: true,
-            context: .init(
-                participants: [.init(
-                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
-                    controllerID: ControllerID()
-                )],
-                inputs: inputs,
-                seed: 42,
-                modifierID: nil
-            ),
-            onEvents: { _ in }
-        )
-        #expect(inputs.update(.init(
-            token: 1,
-            sequence: 1,
-            clientTimeMs: 1,
-            axisX: 0.3,
-            axisY: 0.4
-        ), for: playerID))
-
-        session.updateForTesting(0)
-
-        let state = try #require(session.snapshotForTesting()[playerID])
-        #expect(abs(state.x - 0.6) < 0.000_001)
-        #expect(abs(state.y - 0.8) < 0.000_001)
-    }
-
-    @Test func soloArcadeEliminationCompletesImmediately() throws {
+    @Test func soloArcadeEliminationCompletesWithPracticeOutcomeAndGameSubtitle() throws {
         let playerID = PlayerID(0)
         var events: [GameEvent] = []
-        let session = ArcadeChallengeSession(
-            mode: .lastLight,
-            supportsMotion: true,
+        let session = try #require(LastLightGame().makeSession(
             context: .init(
                 participants: [.init(
                     player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
@@ -546,36 +285,11 @@ struct PartyGamesTests {
                 modifierID: nil
             ),
             onEvents: { events.append(contentsOf: $0) }
-        )
-        session.setLivesForTesting(1, playerID: playerID)
+        ) as? ArcadeSession<LastLightRenderer>)
 
-        session.loseLifeForTesting(playerID)
+        session.forfeit(playerID)
 
-        #expect(try #require(session.snapshotForTesting()[playerID]).alive == false)
-        #expect(events.contains { if case .completed = $0 { true } else { false } })
-    }
-
-    @Test func soloArcadeCupEventRetainsPracticeOutcomeAndGameSubtitle() throws {
-        let playerID = PlayerID(0)
-        var events: [GameEvent] = []
-        let session = ArcadeChallengeSession(
-            mode: .lastLight,
-            supportsMotion: true,
-            context: .init(
-                participants: [.init(
-                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
-                    controllerID: ControllerID()
-                )],
-                inputs: InputStore(),
-                seed: 42,
-                modifierID: nil
-            ),
-            onEvents: { events.append(contentsOf: $0) }
-        )
-        session.setLivesForTesting(1, playerID: playerID)
-
-        session.loseLifeForTesting(playerID)
-
+        #expect(session.isCompletedForTesting)
         let completed = try #require(events.compactMap { event -> GameOutcome? in
             if case .completed(let outcome) = event { outcome } else { nil }
         }.first)
@@ -587,170 +301,84 @@ struct PartyGamesTests {
 
     @Test(arguments: [1, 2])
     func arcadeForfeitUsesSharedEliminationCompletion(playerCount: Int) throws {
-        let participants = (0..<playerCount).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
         var events: [GameEvent] = []
-        let session = ArcadeChallengeSession(
-            mode: .snakePit,
-            supportsMotion: false,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
+        let session = SnakePitGame().makeSession(
+            context: .init(
+                participants: ArcadeHarness.participants(playerCount, kind: .human),
+                inputs: InputStore(), seed: 42, modifierID: nil
+            ),
             onEvents: { events.append(contentsOf: $0) }
         )
 
         session.forfeit(PlayerID(0))
+        session.forfeit(PlayerID(0))
 
-        #expect(events.contains(.eliminated(PlayerID(0))))
+        #expect(events.filter { $0 == .eliminated(PlayerID(0)) }.count == 1)
         let completed = try #require(events.compactMap { event -> GameOutcome? in
             if case .completed(let outcome) = event { outcome } else { nil }
         }.first)
         #expect(completed.winner == (playerCount == 1 ? nil : PlayerID(1)))
+        if playerCount == 2 {
+            #expect(completed.playerOutcomes.contains(.init(playerID: PlayerID(0), outcome: .forfeited)))
+            #expect(completed.standings.map(\.playerID) == [PlayerID(1), PlayerID(0)])
+        }
     }
 
-    @Test func seededLastLightCollisionsIgnoreDictionaryStorageOrder() {
-        let participants = (0..<6).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
-        let first = ArcadeChallengeSession(
-            mode: .lastLight,
-            supportsMotion: true,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
-            onEvents: { _ in }
-        )
-        let second = ArcadeChallengeSession(
-            mode: .lastLight,
-            supportsMotion: true,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
-            onEvents: { _ in }
-        )
-        second.reverseStorageForTesting()
-        first.prepareLastLightCollisionForTesting()
-        second.prepareLastLightCollisionForTesting()
-
-        first.updateForTesting(0)
-        second.updateForTesting(0)
-
-        #expect(first.snapshotForTesting() == second.snapshotForTesting())
-    }
-
-    @Test func simultaneousLastLightEliminationsFinishAfterAllCollisionEvents() {
-        let participants = (0..<2).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
-        var events: [GameEvent] = []
-        let session = ArcadeChallengeSession(
-            mode: .lastLight,
-            supportsMotion: true,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
-            onEvents: { events.append(contentsOf: $0) }
-        )
-        for participant in participants {
-            session.setLivesForTesting(1, playerID: participant.player.id)
-        }
-        session.prepareLastLightCollisionForTesting()
-
-        session.updateForTesting(0)
-
-        #expect(events.compactMap { event -> PlayerID? in
-            if case .eliminated(let playerID) = event { playerID } else { nil }
-        } == participants.map(\.player.id))
-        #expect(events.count(where: { if case .completed = $0 { true } else { false } }) == 1)
-        #expect(events.last.map { if case .completed = $0 { true } else { false } } == true)
-        let completedEventCount = events.count
-        session.updateForTesting(1)
-        #expect(events.count == completedEventCount)
-    }
-
-    @Test func seededSnakeSimulationIgnoresDictionaryStorageOrder() {
-        let participants = (0..<6).map { index in
-            let playerID = PlayerID(UInt8(index))
-            return GameParticipant(
-                player: .init(
-                    id: playerID,
-                    displayName: "P\(index + 1)",
-                    colorHex: PlayerPalette.color(for: playerID)
-                ),
-                controllerID: ControllerID()
-            )
-        }
-        let first = ArcadeChallengeSession(
-            mode: .snakePit,
-            supportsMotion: false,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
-            onEvents: { _ in }
-        )
-        let second = ArcadeChallengeSession(
-            mode: .snakePit,
-            supportsMotion: false,
-            context: .init(participants: participants, inputs: InputStore(), seed: 42, modifierID: nil),
-            onEvents: { _ in }
-        )
-        second.reverseStorageForTesting()
-
-        for step in 0...100 {
-            let time = Double(step) * 0.05
-            first.updateForTesting(time)
-            second.updateForTesting(time)
-        }
-
-        #expect(first.snapshotForTesting() == second.snapshotForTesting())
-    }
-
-    @Test func snakeTrailRenderingReusesItsBoundedNodePool() throws {
-        let playerID = PlayerID(0)
-        let session = ArcadeChallengeSession(
-            mode: .snakePit,
-            supportsMotion: false,
+    @Test func arcadeSessionsRouteTapsAndTurnsFromPhonesAndBots() throws {
+        let inputs = InputStore()
+        let session = try #require(SnakePitGame().makeSession(
             context: .init(
-                participants: [.init(
-                    player: .init(id: playerID, displayName: "Ada", colorHex: "#32E6FF"),
-                    controllerID: ControllerID()
-                )],
-                inputs: InputStore(),
-                seed: 42,
-                modifierID: nil
+                participants: ArcadeHarness.participants(2, kind: .human),
+                inputs: inputs, seed: 42, modifierID: nil
             ),
             onEvents: { _ in }
-        )
+        ) as? ArcadeSession<SnakePitRenderer>)
+        session.skipIntroForTesting()
+        let start = try #require(session.simulationForTesting.snake(for: PlayerID(0)))
+        #expect(start.direction == .right)
 
-        for step in 0...20 {
-            session.updateForTesting(Double(step) * 0.05)
-        }
-        let initial = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
-        #expect(!initial.isEmpty)
+        session.handle(action: .init(id: "snake.direction", value: .choice("up")), from: PlayerID(0))
+        session.handle(action: .init(id: "snake.direction", value: .choice("sideways")), from: PlayerID(0))
+        session.advanceForTesting(seconds: 0.2)
 
-        for step in 21...60 {
-            session.updateForTesting(Double(step) * 0.05)
-        }
-        let later = try #require(session.snakeTrailNodeIdentitiesForTesting()[playerID])
-
-        #expect(Array(later.prefix(initial.count)) == initial)
-        #expect(later.count <= 36)
+        #expect(session.simulationForTesting.snake(for: PlayerID(0))?.direction == .up)
     }
+
+    @Test func arcadeBotsHoldTapsLongEnoughToSurviveTheInputSendLoop() {
+        let inputs = InputStore()
+        let sampler = ArcadeInputSampler(store: inputs)
+        let playerID = PlayerID(0)
+        func send(_ buttons: Buttons, _ sequence: UInt32) {
+            inputs.update(.init(token: 1, sequence: sequence, clientTimeMs: 0, axisX: 0.25, axisY: -0.5, buttons: buttons), for: playerID)
+        }
+
+        send(.primary, 1)
+        let first = sampler.sample(players: [playerID])[playerID]
+        send(.primary, 2)
+        let held = sampler.sample(players: [playerID])[playerID]
+        send([], 3)
+        _ = sampler.sample(players: [playerID])
+        sampler.queuePress(for: playerID)
+        sampler.queueTurn(.left, for: playerID)
+        let queued = sampler.sample(players: [playerID])[playerID]
+        let drained = sampler.sample(players: [playerID])[playerID]
+
+        #expect(first?.pressed == true)
+        #expect(first?.axisX == 0.25)
+        #expect(first?.axisY == -0.5)
+        #expect(held?.pressed == false)
+        #expect(queued?.pressed == true)
+        #expect(queued?.turns == [.left])
+        #expect(drained?.pressed == false)
+        #expect(drained?.turns.isEmpty == true)
+    }
+
+    @Test func arcadeRampClampsBeforeAndAfterItsWindow() {
+        #expect(arcadeRamp(from: 10, to: 20, start: 5, end: 15, at: 0) == 10)
+        #expect(arcadeRamp(from: 10, to: 20, start: 5, end: 15, at: 10) == 15)
+        #expect(arcadeRamp(from: 10, to: 20, start: 5, end: 15, at: 99) == 20)
+    }
+
 
     @Test func everyGameBuildsAValidEightPlayerControllerAndBotSession() {
         let participants = (0..<8).map { index in

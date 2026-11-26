@@ -40,10 +40,15 @@ final class PartyBox_ControllerUITests: XCTestCase {
     @MainActor func testPaddleTopLayout() { assertLayout("paddle-top", identifier: "controller.layout.paddle.top") }
     @MainActor func testPaddleLeftLayout() { assertLayout("paddle-left", identifier: "controller.layout.paddle.left") }
     @MainActor func testPaddleRightLayout() { assertLayout("paddle-right", identifier: "controller.layout.paddle.right") }
-    @MainActor func testSignalSnapLayout() { assertLayout("signal-snap", identifier: "controller.layout.signal-snap") }
-    @MainActor func testGravityGrabLayout() { assertLayout("gravity-grab", identifier: "controller.layout.gravity-grab") }
+    @MainActor func testPongBenchLayout() { assertLayout("pong-bench", identifier: "controller.layout.pong.bench") }
     @MainActor func testSnakePitLayout() { assertLayout("snake-pit", identifier: "controller.layout.snake-pit") }
+    @MainActor func testSnakePitSwipeLayout() { assertLayout("snake-pit-swipe", identifier: "controller.layout.snake-pit") }
     @MainActor func testLastLightLayout() { assertLayout("last-light", identifier: "controller.layout.last-light") }
+    @MainActor func testBumperBrawlLayout() { assertLayout("bumper-brawl", identifier: "controller.layout.bumper-brawl") }
+    @MainActor func testPaintRushLayout() { assertLayout("paint-rush", identifier: "controller.layout.paint-rush") }
+    @MainActor func testSkyHopLayout() { assertLayout("sky-hop", identifier: "controller.layout.sky-hop") }
+    @MainActor func testHotFuseLayout() { assertLayout("hot-fuse", identifier: "controller.layout.hot-fuse") }
+    @MainActor func testTurboLoopLayout() { assertLayout("turbo-loop", identifier: "controller.layout.turbo-loop") }
     @MainActor func testSpectatorLayout() { assertLayout("spectator", identifier: "controller.layout.spectator") }
     @MainActor func testGameOverLayout() { assertLayout("game-over", identifier: "controller.layout.gameOver") }
     @MainActor func testHistoryLayout() { assertLayout("history", identifier: "controller.layout.history") }
@@ -62,16 +67,31 @@ final class PartyBox_ControllerUITests: XCTestCase {
         switch scenario {
         case "spectator":
             XCTAssertEqual(element("controller.spectator.position", in: app).label, "#2 IN QUEUE")
-        case "signal-snap":
-            for direction in ["up", "down", "left", "right"] {
-                XCTAssertTrue(element("signal.direction.\(direction)", in: app).exists)
-            }
+        case "pong-bench":
+            XCTAssertEqual(element("pong.bench.position", in: app).label, "ON DECK  #1")
         case "snake-pit":
-            XCTAssertTrue(element("snake.direction", in: app).exists)
-        case "gravity-grab":
-            XCTAssertTrue(element("gravity.steer", in: app).exists)
+            for direction in ["up", "down", "left", "right"] {
+                XCTAssertTrue(element("snake.direction.\(direction)", in: app).exists)
+            }
+            XCTAssertEqual(element("controller.touchStyle.toggle", in: app).value as? String, "buttons")
+        case "snake-pit-swipe":
+            XCTAssertTrue(element("snake.direction.swipe", in: app).exists)
+            XCTAssertFalse(element("snake.direction.up", in: app).exists)
+            XCTAssertEqual(element("controller.touchStyle.toggle", in: app).value as? String, "swipe")
         case "last-light":
             XCTAssertTrue(element("light.steer", in: app).exists)
+        case "bumper-brawl":
+            XCTAssertTrue(element("bumper.steer", in: app).exists)
+            XCTAssertTrue(element("bumper.dash", in: app).exists)
+        case "paint-rush":
+            XCTAssertTrue(element("paint.steer", in: app).exists)
+        case "sky-hop":
+            XCTAssertTrue(element("sky.flap", in: app).exists)
+            XCTAssertFalse(element("controller.touchStyle.toggle", in: app).exists)
+        case "hot-fuse":
+            XCTAssertTrue(element("fuse.steer", in: app).exists)
+        case "turbo-loop":
+            XCTAssertTrue(element("turbo.steer", in: app).exists)
         case "game-over":
             XCTAssertTrue(element("controller.gameOver.next", in: app).exists)
             XCTAssertTrue(element("controller.gameOver.menu", in: app).exists)

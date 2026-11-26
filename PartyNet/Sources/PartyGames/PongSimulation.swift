@@ -11,10 +11,21 @@ struct SeatAssignment: Equatable, Sendable {
 }
 
 struct PongRules: Equatable, Sendable {
+    /// Seats on the court; anyone beyond this waits on the bench.
+    static let courtSize = 4
+
     var startingSpeed = 560.0
     var maximumSpeed = 1_150.0
     var paddleLength = 220.0
     var initialLives = 3
+
+    /// Bench matches (five or more players) start everyone on two lives so the
+    /// whole rotation still finishes in about two minutes.
+    static func standard(participantCount: Int) -> PongRules {
+        var rules = PongRules()
+        if participantCount > courtSize { rules.initialLives = 2 }
+        return rules
+    }
 }
 
 struct PongPoint: Equatable, Sendable {
@@ -54,6 +65,8 @@ enum PongEvent: Equatable, Sendable {
     case lostLife(PlayerID, remaining: Int)
     case eliminated(PlayerID)
     case forfeited(PlayerID)
+    /// A benched player took over the edge of someone just knocked out.
+    case rotatedIn(PlayerID, edge: PaddleEdge)
     case gameOver(winner: PlayerID?, rally: Int)
 }
 
@@ -68,15 +81,18 @@ struct PongSimulation: Sendable {
     private(set) var respawnRemaining = 1.0
     private(set) var rallyCount = 0
     private(set) var isFinished = false
+    /// Players waiting to rotate onto the court, next up first.
+    private(set) var bench: [PlayerID]
 
     let rules: PongRules
 
     private let multiplayer: Bool
     private var randomState: UInt64
-    private let edgeByPlayerID: [PlayerID: PaddleEdge]
+    private var edgeByPlayerID: [PlayerID: PaddleEdge]
 
     init(
         assignments: [SeatAssignment],
+        bench: [PlayerID] = [],
         seed: UInt64 = 0x5041_5254_5942_4F58,
         rules: PongRules = PongRules()
     ) {
@@ -85,7 +101,11 @@ struct PongSimulation: Sendable {
             ($0.edge, PongPlayer(playerID: $0.playerID, edge: $0.edge, lives: rules.initialLives))
         })
         edgeByPlayerID = Dictionary(uniqueKeysWithValues: assignments.map { ($0.playerID, $0.edge) })
-        multiplayer = assignments.count > 1
+        let seated = Set(assignments.map(\.playerID))
+        self.bench = bench.reduce(into: []) { result, playerID in
+            if !seated.contains(playerID), !result.contains(playerID) { result.append(playerID) }
+        }
+        multiplayer = assignments.count + self.bench.count > 1
         randomState = seed == 0 ? 1 : seed
     }
 
@@ -164,13 +184,29 @@ struct PongSimulation: Sendable {
 #endif
 
     mutating func forfeit(_ playerID: PlayerID) -> [PongEvent] {
-        guard !isFinished,
-              let edge = edgeByPlayerID[playerID], players[edge]?.isActive == true
-        else { return [] }
+        guard !isFinished else { return [] }
+        if let benchIndex = bench.firstIndex(of: playerID) {
+            bench.remove(at: benchIndex)
+            var events: [PongEvent] = [.forfeited(playerID)]
+            finishIfNeeded(events: &events)
+            return events
+        }
+        guard let edge = edgeByPlayerID[playerID], players[edge]?.isActive == true else { return [] }
         players[edge]?.lives = 0
         var events: [PongEvent] = [.forfeited(playerID)]
+        rotateBenchIn(at: edge, events: &events)
         finishIfNeeded(events: &events)
         return events
+    }
+
+    /// Hands a knocked-out edge to the next benched player, if any.
+    private mutating func rotateBenchIn(at edge: PaddleEdge, events: inout [PongEvent]) {
+        guard !bench.isEmpty, let outgoing = players[edge], !outgoing.isActive else { return }
+        let incoming = bench.removeFirst()
+        edgeByPlayerID.removeValue(forKey: outgoing.playerID)
+        edgeByPlayerID[incoming] = edge
+        players[edge] = PongPlayer(playerID: incoming, edge: edge, lives: rules.initialLives)
+        events.append(.rotatedIn(incoming, edge: edge))
     }
 
     mutating func step(deltaTime rawDelta: Double) -> [PongEvent] {
@@ -283,7 +319,10 @@ struct PongSimulation: Sendable {
         player.lives = max(0, player.lives - 1)
         players[edge] = player
         events.append(.lostLife(player.playerID, remaining: player.lives))
-        if player.lives == 0 { events.append(.eliminated(player.playerID)) }
+        if player.lives == 0 {
+            events.append(.eliminated(player.playerID))
+            rotateBenchIn(at: edge, events: &events)
+        }
         finishIfNeeded(events: &events)
         if !isFinished {
             ballPosition = .zero
@@ -294,6 +333,7 @@ struct PongSimulation: Sendable {
 
     private mutating func finishIfNeeded(events: inout [PongEvent]) {
         let survivors = activePlayers
+        guard bench.isEmpty else { return }
         if multiplayer, survivors.count <= 1 {
             isFinished = true
             ballVelocity = .zero

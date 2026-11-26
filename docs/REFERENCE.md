@@ -44,7 +44,7 @@ Host (`PartyBox`):
 | `--seed <UInt64>` | Deterministic Pong physics |
 | `--disable-animations` | Remove SwiftUI transitions |
 | `--disable-effects` | Mute the arcade sounds |
-| `--scenario <name>` | Static UI fixture, **networking disabled**: `empty-lobby`, `menu`, `four-way-match`, `game-over` (any other value, e.g. `four-player-lobby`, gives a populated lobby) |
+| `--scenario <name>` | Static UI fixture, **networking disabled**: `empty-lobby`, `menu`, `four-way-match`, `<game-id>-match` for every other game (e.g. `turbo-loop-match`), `cup-setup`, `cup-standings`, `cup-final-match`, `cup-complete`, `game-over` (any other value, e.g. `four-player-lobby`, gives a populated lobby) |
 | `--freeze-scenario` | Keep a host `--scenario` screen fixed during screenshot UI tests; requires a Debug build, `--ui-testing`, and `--scenario <name>` |
 | `--ui-testing` | Marks a UI-test run |
 
@@ -58,7 +58,7 @@ PartyPad controller (`PartyBox Controller` target):
 | `--defaults-suite <name>` | Isolate `UserDefaults` |
 | `--disable-effects` | Suppress haptics |
 | `--disable-animations`, `--seed`, `--ui-testing` | As above |
-| `--scenario <name>` | Static UI fixture: `empty-picker`, `populated-picker`, `connecting`, `menu`, `paddle-bottom`/`-top`/`-left`/`-right`, `spectator`, `game-over`, `reconnecting`, `full-rejection`, `version-rejection`, `local-network-denial`, `connection-loss` |
+| `--scenario <name>` | Static UI fixture: `empty-picker`, `populated-picker`, `connecting`, `menu`, `paddle-bottom`/`-top`/`-left`/`-right`, `pong-bench`, one per game (`snake-pit`, `last-light`, `bumper-brawl`, `paint-rush`, `sky-hop`, `hot-fuse`, `turbo-loop`; append `-swipe`, e.g. `snake-pit-swipe`, for the swipe touch style), `spectator`, `game-over`, `reconnecting`, `full-rejection`, `version-rejection`, `local-network-denial`, `connection-loss` |
 
 > `--bot-count 4 --host-name "Test PartyBox"` on the host is the fastest way to confirm a full four-player
 > match works before anyone shows up.

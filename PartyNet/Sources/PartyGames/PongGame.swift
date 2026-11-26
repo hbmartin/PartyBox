@@ -18,7 +18,7 @@ struct PongGame: PartyGame {
     let descriptor = GameDescriptor(
         id: "pong",
         title: "FOUR-WAY PONG",
-        summary: "1–8 players  •  Qualifiers for parties over four",
+        summary: "1–8 players  •  Five or more rotate in from the bench",
         minimumPlayers: 1,
         maximumPlayers: 8,
         modifiers: [fastBall, bigPaddles, extraLife],
@@ -26,39 +26,26 @@ struct PongGame: PartyGame {
         supportsMotion: true
     )
 
-    static func rules(for modifierID: String?) -> PongRules {
-        var rules = PongRules()
+    static func rules(for modifierID: String?, participantCount: Int = PongRules.courtSize) -> PongRules {
+        var rules = PongRules.standard(participantCount: participantCount)
         switch modifierID {
         case fastBall.id: rules.startingSpeed *= 1.25
         case bigPaddles.id: rules.paddleLength *= 1.35
-        case extraLife.id: rules.initialLives = 4
+        case extraLife.id: rules.initialLives += 1
         default: break
         }
         return rules
-    }
-
-    func availableModifiers(participantCount: Int) -> [GameModifierDescriptor] {
-        participantCount > 4 ? [] : descriptor.modifiers
     }
 
     func makeSession(
         context: GameSessionContext,
         onEvents: @escaping @MainActor ([GameEvent]) -> Void
     ) -> any PartyGameSession {
-        if context.participants.count > 4 {
-            ArcadeChallengeSession(
-                mode: .pongQualifiers,
-                supportsMotion: descriptor.supportsMotion,
-                context: context,
-                onEvents: onEvents
-            )
-        } else {
-            PongGameSession(
-                supportsMotion: descriptor.supportsMotion,
-                context: context,
-                onEvents: onEvents
-            )
-        }
+        PongGameSession(
+            supportsMotion: descriptor.supportsMotion,
+            context: context,
+            onEvents: onEvents
+        )
     }
 }
 
@@ -106,9 +93,11 @@ final class PongGameSession: PartyGameSession {
         let assignments = zip(context.participants, PaddleEdge.allCases).map {
             SeatAssignment(playerID: $0.0.player.id, edge: $0.1)
         }
-        let rules = PongGame.rules(for: context.modifierID)
+        let bench = context.participants.dropFirst(PongRules.courtSize).map(\.player.id)
+        let rules = PongGame.rules(for: context.modifierID, participantCount: context.participants.count)
         pongScene = PongScene(
             assignments: assignments,
+            bench: bench,
             players: context.participants.map(\.player),
             inputs: context.inputs,
             seed: context.seed,
@@ -130,6 +119,30 @@ final class PongGameSession: PartyGameSession {
     }
 
     func controllerScreen(for playerID: PlayerID) -> ControllerScreen {
+        if let position = pongScene.benchPosition(for: playerID),
+           let participant = context.participants.first(where: { $0.player.id == playerID }) {
+            return ControllerScreen(
+                accessibilityID: "controller.layout.pong.bench",
+                accentColorHex: participant.player.colorHex,
+                // Keep motion warm while on deck so tilt is ready the moment you rotate in.
+                requestedInputs: supportsMotion ? .orientation : [],
+                components: [
+                    .text(.init(
+                        id: "pong.player",
+                        text: "\(participant.player.mark.glyph)  P\(participant.player.number) \(participant.player.displayName)",
+                        style: .headline,
+                        tint: .accent
+                    )),
+                    .text(.init(id: "pong.bench.position", text: "ON DECK  #\(position)", style: .title, tint: .success)),
+                    .text(.init(
+                        id: "pong.bench.rule",
+                        text: "YOU'RE IN WHEN A PADDLE FALLS  •  WINNER STAYS ON",
+                        style: .caption,
+                        tint: .secondary
+                    )),
+                ]
+            )
+        }
         guard let edge = pongScene.edge(for: playerID),
               let participant = context.participants.first(where: { $0.player.id == playerID }) else {
             return ControllerScreen(
@@ -222,6 +235,9 @@ final class PongGameSession: PartyGameSession {
                 translated.append(.audio(.error))
                 translated.append(.deviceCue(playerID, .init(colorHex: "#FF375F", haptic: .error)))
                 translated.append(.eliminated(playerID))
+            case .rotatedIn(let playerID, _):
+                translated.append(.audio(.success))
+                translated.append(.deviceCue(playerID, .init(colorHex: "#39FF88", haptic: .success)))
             case let .gameOver(winner, rally):
                 translated.append(.audio(.success))
                 if let winner {

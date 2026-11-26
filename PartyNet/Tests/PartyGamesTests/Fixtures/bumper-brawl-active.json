@@ -1,0 +1,50 @@
+{
+  "accentColorHex" : "#32E6FF",
+  "accessibilityID" : "controller.layout.bumper-brawl",
+  "components" : [
+    {
+      "text" : {
+        "_0" : {
+          "id" : "arcade.player",
+          "style" : "headline",
+          "text" : "●  P1 Ada",
+          "tint" : "accent"
+        }
+      }
+    },
+    {
+      "text" : {
+        "_0" : {
+          "id" : "bumper.rule",
+          "style" : "caption",
+          "text" : "PUSH RIVALS OFF THE ICE • TAP DASH",
+          "tint" : "secondary"
+        }
+      }
+    },
+    {
+      "axisSurface" : {
+        "_0" : {
+          "binding" : "twoDimensional",
+          "id" : "bumper.steer",
+          "instruction" : "DRAG TO PUSH  •  MOTION OPTIONAL",
+          "swipe" : "heading"
+        }
+      }
+    },
+    {
+      "actionButton" : {
+        "_0" : {
+          "id" : "bumper.dash",
+          "label" : "DASH",
+          "route" : {
+            "game" : {
+              "_0" : "bumper.dash"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "requestedInputs" : 1
+}

@@ -13,18 +13,21 @@ final class PongScene: SKScene {
     private let ballNode = SKShapeNode(circleOfRadius: PongSimulation.ballRadius)
     private let countdownLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
     private var paddleNodes: [PaddleEdge: SKShapeNode] = [:]
+    private var nameLabels: [PaddleEdge: SKLabelNode] = [:]
     private var lifeLabels: [PaddleEdge: SKLabelNode] = [:]
+    private let onDeckLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
     private let trailNode = SKNode()
 
     init(
         assignments: [SeatAssignment],
+        bench: [PlayerID] = [],
         players: [PlayerInfo],
         inputs: InputStore,
         seed: UInt64 = UInt64.random(in: 1...UInt64.max),
         rules: PongRules = PongRules(),
         onEvents: @escaping ([PongEvent]) -> Void
     ) {
-        simulation = PongSimulation(assignments: assignments, seed: seed, rules: rules)
+        simulation = PongSimulation(assignments: assignments, bench: bench, seed: seed, rules: rules)
         inputStore = inputs
         playerInfo = Dictionary(uniqueKeysWithValues: players.map { ($0.id, $0) })
         self.onEvents = onEvents
@@ -77,6 +80,11 @@ final class PongScene: SKScene {
         simulation.paddlePosition(for: playerID)
     }
 
+    /// One-based place in the on-deck queue, or nil when seated or out.
+    func benchPosition(for playerID: PlayerID) -> Int? {
+        simulation.bench.firstIndex(of: playerID).map { $0 + 1 }
+    }
+
     static func paddlePosition(from frame: InputFrame) -> Double {
         return Double(frame.axisX)
     }
@@ -98,6 +106,30 @@ final class PongScene: SKScene {
     }
 
     func animateForTesting(_ events: [PongEvent]) { animate(events) }
+
+    var onDeckTextForTesting: String? { onDeckLabel.text }
+
+    func nameLabelTextForTesting(_ edge: PaddleEdge) -> String? { nameLabels[edge]?.text }
+
+    func forceMissForTesting(_ edge: PaddleEdge) {
+        guard let player = simulation.players[edge] else { return }
+        simulation.setPaddle(for: player.playerID, normalizedPosition: -1)
+        let position: PongPoint
+        let velocity: PongPoint
+        switch edge {
+        case .bottom: (position, velocity) = (PongPoint(x: 300, y: -480), PongPoint(x: 0, y: -100))
+        case .top: (position, velocity) = (PongPoint(x: 300, y: 480), PongPoint(x: 0, y: 100))
+        case .left: (position, velocity) = (PongPoint(x: -480, y: 300), PongPoint(x: -100, y: 0))
+        case .right: (position, velocity) = (PongPoint(x: 480, y: 300), PongPoint(x: 100, y: 0))
+        }
+        simulation.setBallForTesting(position: position, velocity: velocity)
+        let events = simulation.step(deltaTime: 0.05)
+        syncNodes()
+        if !events.isEmpty {
+            animate(events)
+            onEvents(events)
+        }
+    }
 #endif
 
     private func buildScene(assignments: [SeatAssignment]) {
@@ -125,52 +157,44 @@ final class PongScene: SKScene {
         addChild(border)
 
         for assignment in assignments {
-            let info = playerInfo[assignment.playerID]
-            let color = SKColor.partyHex(info?.colorHex ?? "#FFFFFF")
             let horizontal = assignment.edge == .bottom || assignment.edge == .top
             let size = horizontal
                 ? CGSize(width: simulation.rules.paddleLength, height: PongSimulation.paddleThickness)
                 : CGSize(width: PongSimulation.paddleThickness, height: simulation.rules.paddleLength)
             let paddle = SKShapeNode(rectOf: size, cornerRadius: 12)
-            paddle.fillColor = color
             paddle.strokeColor = .white.withAlphaComponent(0.8)
             paddle.lineWidth = 2
             paddle.glowWidth = 18
-            if let info {
-                let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-                mark.name = "paddle-mark-\(info.mark.rawValue)"
-                mark.text = info.mark.glyph
-                mark.fontSize = 21
-                mark.fontColor = .black.withAlphaComponent(0.82)
-                mark.horizontalAlignmentMode = .center
-                mark.verticalAlignmentMode = .center
-                mark.position = CGPoint(x: 0, y: -1)
-                mark.zPosition = 2
-                paddle.addChild(mark)
-            }
             addChild(paddle)
             paddleNodes[assignment.edge] = paddle
 
             let label = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
             label.fontSize = 25
-            label.fontColor = color
             label.horizontalAlignmentMode = .center
             label.verticalAlignmentMode = .center
-            label.text = "P\(info?.number ?? Int(assignment.playerID.rawValue) + 1)  \(info?.displayName ?? "Player")"
             label.position = labelPosition(for: assignment.edge)
             if !horizontal { label.zRotation = assignment.edge == .left ? .pi / 2 : -.pi / 2 }
             addChild(label)
+            nameLabels[assignment.edge] = label
 
             let lives = SKLabelNode(fontNamed: "AvenirNext-Heavy")
             lives.fontSize = 23
-            lives.fontColor = color
             lives.horizontalAlignmentMode = .center
             lives.verticalAlignmentMode = .center
             lives.position = lifePosition(for: assignment.edge)
             if !horizontal { lives.zRotation = assignment.edge == .left ? .pi / 2 : -.pi / 2 }
             addChild(lives)
             lifeLabels[assignment.edge] = lives
+
+            style(assignment.edge, for: assignment.playerID)
         }
+
+        onDeckLabel.fontSize = 26
+        onDeckLabel.fontColor = SKColor(red: 0.72, green: 0.78, blue: 0.96, alpha: 0.9)
+        onDeckLabel.horizontalAlignmentMode = .right
+        onDeckLabel.position = CGPoint(x: 1_878, y: 1_025)
+        addChild(onDeckLabel)
+        updateOnDeck()
 
         trailNode.zPosition = 4
         addChild(trailNode)
@@ -195,6 +219,38 @@ final class PongScene: SKScene {
         title.horizontalAlignmentMode = .left
         title.position = CGPoint(x: 42, y: 1_025)
         addChild(title)
+    }
+
+    /// Colors and labels one edge for the player currently holding it.
+    private func style(_ edge: PaddleEdge, for playerID: PlayerID) {
+        let info = playerInfo[playerID]
+        let color = SKColor.partyHex(info?.colorHex ?? "#FFFFFF")
+        if let paddle = paddleNodes[edge] {
+            paddle.fillColor = color
+            paddle.children.filter { $0.name?.hasPrefix("paddle-mark-") == true }.forEach { $0.removeFromParent() }
+            if let info {
+                let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                mark.name = "paddle-mark-\(info.mark.rawValue)"
+                mark.text = info.mark.glyph
+                mark.fontSize = 21
+                mark.fontColor = .black.withAlphaComponent(0.82)
+                mark.horizontalAlignmentMode = .center
+                mark.verticalAlignmentMode = .center
+                mark.position = CGPoint(x: 0, y: -1)
+                mark.zPosition = 2
+                paddle.addChild(mark)
+            }
+        }
+        nameLabels[edge]?.fontColor = color
+        nameLabels[edge]?.text = "P\(info?.number ?? Int(playerID.rawValue) + 1)  \(info?.displayName ?? "Player")"
+        lifeLabels[edge]?.fontColor = color
+        lifeLabels[edge]?.removeAllActions()
+        lifeLabels[edge]?.alpha = 1
+    }
+
+    private func updateOnDeck() {
+        let queue = simulation.bench.compactMap { playerInfo[$0].map { "P\($0.number)" } }
+        onDeckLabel.text = queue.isEmpty ? nil : "ON DECK  " + queue.joined(separator: "  ")
     }
 
     private func syncNodes() {
@@ -239,8 +295,18 @@ final class PongScene: SKScene {
                 ]))
             case let .eliminated(playerID), let .forfeited(playerID):
                 clearTrail()
+                updateOnDeck()
                 guard let edge = simulation.edge(for: playerID) else { continue }
                 lifeLabels[edge]?.run(.fadeAlpha(to: 0.2, duration: 0.25))
+            case let .rotatedIn(playerID, edge):
+                style(edge, for: playerID)
+                updateOnDeck()
+                for node in [paddleNodes[edge], nameLabels[edge]].compactMap({ $0 }) {
+                    node.run(.sequence([
+                        .scale(to: 1.25, duration: 0.12),
+                        .scale(to: 1, duration: 0.2),
+                    ]))
+                }
             case .gameOver:
                 clearTrail()
             }

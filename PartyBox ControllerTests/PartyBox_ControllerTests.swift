@@ -305,7 +305,7 @@ struct PartyBox_ControllerTests {
             let coordinator = ControllerCoordinator(
                 defaults: defaults,
                 configuration: .init(arguments: [
-                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                    "PartyBox Controller", "--ui-testing", "--scenario", "last-light", "--disable-effects",
                 ]),
                 motionSampler: sampler
             )
@@ -487,7 +487,7 @@ struct PartyBox_ControllerTests {
             let coordinator = ControllerCoordinator(
                 defaults: defaults,
                 configuration: .init(arguments: [
-                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                    "PartyBox Controller", "--ui-testing", "--scenario", "last-light", "--disable-effects",
                 ]),
                 motionSampler: sampler
             )
@@ -535,7 +535,7 @@ struct PartyBox_ControllerTests {
             let coordinator = ControllerCoordinator(
                 defaults: defaults,
                 configuration: .init(arguments: [
-                    "PartyBox Controller", "--ui-testing", "--scenario", "gravity-grab", "--disable-effects",
+                    "PartyBox Controller", "--ui-testing", "--scenario", "last-light", "--disable-effects",
                 ]),
                 motionSampler: sampler
             )
@@ -808,6 +808,56 @@ struct PartyBox_ControllerTests {
         #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 265, extent: extent) == 1)
         #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 300, extent: extent) == 1)
         #expect(AxisSurfaceGeometry.normalizedCoordinate(location: 20, extent: 40) == 0)
+    }
+
+    @Test func swipePadTurnsOnceTheFingerTravelsAndOneStrokeCanTurnTwice() {
+        var tracker = SwipeGestureInterpreter.DirectionTracker()
+        #expect(tracker.update(to: CGPoint(x: 100, y: 100)) == nil)
+        #expect(tracker.update(to: CGPoint(x: 110, y: 104)) == nil)
+        #expect(tracker.update(to: CGPoint(x: 130, y: 104)) == "right")
+        #expect(tracker.update(to: CGPoint(x: 160, y: 106)) == nil, "Same direction in one stroke is not resent")
+        #expect(tracker.update(to: CGPoint(x: 162, y: 70)) == "up", "Screen y grows downward")
+        tracker.end()
+        #expect(tracker.update(to: CGPoint(x: 0, y: 0)) == nil)
+        #expect(tracker.update(to: CGPoint(x: 0, y: 30)) == "down")
+        #expect(tracker.update(to: CGPoint(x: -30, y: 30)) == "left")
+    }
+
+    @Test func headingSwipesAimAFullStickAndATapReleasesIt() throws {
+        var tracker = SwipeGestureInterpreter.HeadingTracker()
+        #expect(tracker.update(to: CGPoint(x: 50, y: 50)) == nil)
+        let swiped = tracker.update(to: CGPoint(x: 50, y: 20))
+        let aim = try #require(swiped)
+        #expect(abs(aim.x) < 0.000_1)
+        #expect(abs(aim.y - 1) < 0.000_1)
+        #expect(tracker.end() == false)
+
+        _ = tracker.update(to: CGPoint(x: 10, y: 10))
+        _ = tracker.update(to: CGPoint(x: 13, y: 12))
+        #expect(tracker.end() == true)
+    }
+
+    @Test func relativeSwipesNudgeTheStickLikeATrackpadCursor() {
+        let nudged = SwipeGestureInterpreter.relativeAxis(current: 0, delta: 50, extent: 320)
+        #expect(nudged > 0 && nudged < 1)
+        #expect(SwipeGestureInterpreter.relativeAxis(current: 0.9, delta: 400, extent: 320) == 1)
+        #expect(SwipeGestureInterpreter.relativeAxis(current: -0.9, delta: -400, extent: 320) == -1)
+        #expect(SwipeGestureInterpreter.relativeAxis(current: 0.3, delta: 0, extent: 320) == 0.3)
+        #expect(SwipeGestureInterpreter.relativeAxis(current: 0.3, delta: 10, extent: 0) == 0.3)
+    }
+
+    @Test func gestureSurfacesLockScrollingAndOfferTheTouchStyleToggle() {
+        let pad = ControllerScreen(accessibilityID: "pad", accentColorHex: "#32E6FF", components: [
+            .directionPad(.init(id: "snake.direction", instruction: "TURN")),
+        ])
+        let flap = ControllerScreen(accessibilityID: "flap", accentColorHex: "#32E6FF", components: [
+            .actionButton(.init(id: "sky.flap", label: "FLAP", route: .game("sky.flap"))),
+        ])
+        #expect(!SwipeGestureInterpreter.hasGestureSurface(pad, swipeEnabled: false))
+        #expect(SwipeGestureInterpreter.hasGestureSurface(pad, swipeEnabled: true))
+        #expect(SwipeGestureInterpreter.hasGestureSurface(flap, swipeEnabled: false))
+        #expect(SwipeGestureInterpreter.offersTouchStyle(pad))
+        #expect(!SwipeGestureInterpreter.offersTouchStyle(flap))
     }
 
     @Test func motionRetryDelayBacksOffAndCaps() {

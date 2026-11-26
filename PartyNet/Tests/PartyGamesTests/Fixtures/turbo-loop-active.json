@@ -1,6 +1,6 @@
 {
   "accentColorHex" : "#32E6FF",
-  "accessibilityID" : "controller.layout.gravity-grab",
+  "accessibilityID" : "controller.layout.turbo-loop",
   "components" : [
     {
       "text" : {
@@ -15,9 +15,9 @@
     {
       "text" : {
         "_0" : {
-          "id" : "gravity.rule",
+          "id" : "turbo.rule",
           "style" : "caption",
-          "text" : "STEER AROUND THE RING • REACH OUT TO GRAB",
+          "text" : "FIVE LAPS • HIT THE BOOST PADS",
           "tint" : "secondary"
         }
       }
@@ -26,8 +26,9 @@
       "axisSurface" : {
         "_0" : {
           "binding" : "twoDimensional",
-          "id" : "gravity.steer",
-          "instruction" : "DRAG TO AIM  •  MOTION OPTIONAL"
+          "id" : "turbo.steer",
+          "instruction" : "POINT WHERE TO DRIVE  •  MOTION OPTIONAL",
+          "swipe" : "heading"
         }
       }
     }

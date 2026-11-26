@@ -106,8 +106,8 @@ Stop and file a blocker if any step fails.
 | SMOKE-01 | Cold-launch PartyBox on the Apple TV. | The lobby appears with eight open slots and `Ready for controllers`. No layout is clipped at the television edges. |
 | SMOKE-02 | Cold-launch PartyPad on one iPhone and allow Local Network access if asked. | The Apple TV host appears within four seconds as `READY TO JOIN`. |
 | SMOKE-03 | Set a player name, save it, and join the host. | PartyPad reaches `YOU'RE IN`; TV slot P1 shows the same name and an active seat. |
-| SMOKE-04 | Open the game menu from the captain phone. | The TV shows five games, Party Cup, and History & Leaderboard. The phone changes to menu controls. |
-| SMOKE-05 | Start Signal Snap and complete one round with touch controls. | Input is responsive, score/state agree on TV and phone, and the latency badge remains green under normal LAN conditions. |
+| SMOKE-04 | Open the game menu from the captain phone. | The TV shows eight games, Party Cup, and History & Leaderboard. The phone changes to menu controls. |
+| SMOKE-05 | Start Snake Pit and complete one round with touch controls, then repeat with the swipe touch style. | Input is responsive, score/state agree on TV and phone, and the latency badge remains green under normal LAN conditions. |
 | SMOKE-06 | Send the phone to the background for about five seconds, then return. | The TV briefly shows `RECONNECTING…`; the phone returns to the same player number, color, and layout. |
 | SMOKE-07 | Finish the match and choose the game menu. | Results are correct, controls still work, and the game menu returns without restarting either app. |
 | SMOKE-08 | Quit and relaunch PartyBox. | PartyPad returns to the host picker instead of silently joining the new host session. The relaunched host reappears. |
@@ -210,11 +210,11 @@ motion in PartyPad settings.
 |---|---|---|
 | GAME-01 | Four-Way Pong, one player | A practice match starts; bottom paddle follows touch; rally count increments; result is `PRACTICE COMPLETE`. |
 | GAME-02 | Four-Way Pong, two to four players | Join order maps to bottom, top, left, and right. Every paddle follows its own phone. Lives start at three, decrement correctly, and elimination/winner results agree everywhere. |
-| GAME-03 | Four-Way Pong, five to eight players | Every phone enters the horizontal GATE qualifier. Exactly the expected top four advance to the classic arena, with identity and scores preserved. |
-| GAME-04 | Signal Snap | Each direction produces the matching semantic input. Correct and incorrect responses score consistently; simultaneous answers resolve deterministically. |
-| GAME-05 | Gravity Grab | The two-dimensional drag surface covers the intended range without jumps or dead zones. Optional calibrated motion provides stable neutral and usable full-range steering. |
-| GAME-06 | Snake Pit | Direction input turns reliably; collisions and three lives are consistent on TV and phones; eliminated players cannot continue affecting play. |
-| GAME-07 | Last Light | Touch or motion movement is responsive; red hazards and elimination are synchronized; the final winner is correct. |
+| GAME-03 | Four-Way Pong, five to eight players | Four players start on the edges with two lives; phones five to eight show `ON DECK #n` in queue order. A knocked-out edge is recolored and relabelled for the next bench player, whose phone switches to that paddle. The match ends only when the bench is empty and one paddle remains. |
+| GAME-04 | Snake Pit | Arrow taps and swipe strokes both turn reliably, including an L-shaped stroke producing two turns. Trails persist; crashes, respawn ghosting, and three lives agree on TV and phones; speed visibly increases at 15, 30, and 45 seconds. |
+| GAME-05 | Last Light | Drag, swipe, or motion movement is responsive and speed-capped (no teleporting). Rain, sweepers (from 15s), and seekers (from 30s) are telegraphed before they can hit. The final winner is correct. |
+| GAME-06 | Bumper Brawl and Hot Fuse | Steering, DASH (fires on touch-down), ring-outs, KO credit, bomb passing, tag-back immunity, and fuse booms are consistent on TV and phones. Solo shows drones. |
+| GAME-07 | Paint Rush, Sky Hop, and Turbo Loop | Paint coverage and the percentage bar agree; FLAP latency feels immediate and crashes eliminate; laps count only when driven the right way and the 8-second finish window ends the race. |
 | GAME-08 | Results and rematch | `NEXT MATCH` starts a clean rematch with the same roster. Scores, lives, and temporary effects do not leak from the prior round. |
 | GAME-09 | Results and menu | `GAME MENU` returns all devices to the menu. No phone remains stuck in the previous control layout. |
 | GAME-10 | No early exit | During a running match, verify the intentional lack of a quit action. Back/Menu input must not leave some devices in a different state. |
@@ -289,8 +289,8 @@ motion in PartyPad settings.
 
 - [ ] **LOAD-01 — Four controllers:** Keep four phones connected for 15 minutes while playing multiple
   games. All inputs remain responsive and no controller changes seats.
-- [ ] **LOAD-02 — Eight controllers:** Join the full room and play at least Signal Snap, Gravity Grab,
-  Snake Pit, Last Light, and Pong's qualifier. Monitor latency badges and the host log.
+- [ ] **LOAD-02 — Eight controllers:** Join the full room and play at least Snake Pit, Paint Rush,
+  Sky Hop, Turbo Loop, and an eight-player Pong bench match. Monitor latency badges and the host log.
 - [ ] **LOAD-03 — Simultaneous join:** Have several phones tap the host row at nearly the same time. Each
   receives one unique seat; no duplicate slot or captain appears.
 - [ ] **LOAD-04 — Simultaneous input:** With all controllers connected, continuously manipulate controls
@@ -364,7 +364,7 @@ A release candidate passes manual QA when:
 
 - Every smoke test passes on a physical Apple TV and physical iPhone.
 - Every applicable full-regression test passes, or has a documented product-approved exception.
-- All five games complete with correct results using real controller input.
+- All eight games complete with correct results using real controller input.
 - A short disconnect restores the same identity, while a long disconnect releases the seat cleanly.
 - Local Network denial and restoration are understandable on both host and controller.
 - Four-controller testing has no seat corruption or input crossover.

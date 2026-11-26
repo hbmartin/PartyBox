@@ -1492,14 +1492,18 @@ final class HostCoordinator {
         }
         switch scenario {
         case "menu": phase = .gameMenu
-        case "four-way-match", "signal-snap-match", "gravity-grab-match", "snake-pit-match", "last-light-match", "cup-final-match":
+        case "four-way-match", "snake-pit-match", "last-light-match", "bumper-brawl-match", "paint-rush-match",
+             "sky-hop-match", "hot-fuse-match", "turbo-loop-match", "cup-final-match":
             let gameID = [
                 "four-way-match": "pong",
-                "signal-snap-match": "signal-snap",
-                "gravity-grab-match": "gravity-grab",
                 "snake-pit-match": "snake-pit",
                 "last-light-match": "last-light",
-                "cup-final-match": "gravity-grab",
+                "bumper-brawl-match": "bumper-brawl",
+                "paint-rush-match": "paint-rush",
+                "sky-hop-match": "sky-hop",
+                "hot-fuse-match": "hot-fuse",
+                "turbo-loop-match": "turbo-loop",
+                "cup-final-match": "turbo-loop",
             ][scenario]
             guard let gameID, let gameIndex = games.firstIndex(where: { $0.descriptor.id == gameID }) else {
                 assertionFailure("Missing game for UI fixture \(scenario)")
@@ -1516,7 +1520,7 @@ final class HostCoordinator {
             currentScene = currentSession?.scene
             phase = .playing
             if scenario == "cup-final-match" {
-                selectedCupGameIDs = ["pong", "signal-snap", "gravity-grab"]
+                selectedCupGameIDs = ["pong", "sky-hop", "turbo-loop"]
                 cupParticipants = fixtureParticipants
                 cupEventIndex = selectedCupGameIDs.count - 1
                 cupPoints = Dictionary(uniqueKeysWithValues: fixtureParticipants.map { ($0.controllerID, 0) })
@@ -1524,18 +1528,18 @@ final class HostCoordinator {
                 currentMatchIsCup = true
             }
         case "cup-setup":
-            selectedCupGameIDs = ["pong", "signal-snap"]
+            selectedCupGameIDs = ["pong", "sky-hop"]
             cupSetupSelection = 2
             phase = .cupSetup
         case "cup-standings":
-            selectedCupGameIDs = ["pong", "signal-snap", "gravity-grab"]
+            selectedCupGameIDs = ["pong", "sky-hop", "turbo-loop"]
             cupParticipants = fixtureParticipants
             for (index, participant) in fixtureParticipants.enumerated() {
                 cupPoints[participant.controllerID] = 8 - index
                 cupEventWins[participant.controllerID] = index == 0 ? 1 : 0
             }
             phase = .cupStandings(.init(
-                title: "EVENT 1 COMPLETE", subtitle: "Signal Snap complete",
+                title: "EVENT 1 COMPLETE", subtitle: "Sky Hop complete",
                 winner: fixturePlayers.first?.id,
                 playerOutcomes: fixturePlayers.map {
                     .init(playerID: $0.id, outcome: $0.id == fixturePlayers.first?.id ? .won : .lost)
@@ -1558,7 +1562,7 @@ final class HostCoordinator {
             }
             phase = .cupComplete(.init(
                 endedAt: Date(),
-                gameIDs: ["pong", "signal-snap", "gravity-grab"],
+                gameIDs: ["pong", "sky-hop", "turbo-loop"],
                 matchRecordIDs: [],
                 standings: standings
             ))
