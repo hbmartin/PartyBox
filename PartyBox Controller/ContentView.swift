@@ -199,13 +199,14 @@ private struct ConnectedControllerView: View {
                     Text(hostName)
                         .font(.caption.monospaced().weight(.bold))
                         .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
                         .accessibilityIdentifier("controller.state.connected")
                     HStack(spacing: 7) {
                         if let player = coordinator.currentPlayer {
                             Image(systemName: player.mark.systemImageName)
                                 .foregroundStyle(Color.controllerHex(player.colorHex))
                         }
-                        Text(playerLabel).font(.headline.weight(.black))
+                        Text(playerLabel).font(.headline.weight(.black)).lineLimit(1)
                     }
                 }
                 Spacer()
@@ -213,20 +214,24 @@ private struct ConnectedControllerView: View {
                     Text("\(Int(rtt.rounded())) MS")
                         .font(.caption2.monospaced().weight(.bold))
                         .foregroundStyle(rtt < 50 ? ControllerTheme.lime : .orange)
+                        .lineLimit(1)
                 }
                 Button { showingHistory = true } label: {
-                    Image(systemName: "clock.arrow.circlepath").font(.title3).foregroundStyle(.white.opacity(0.55))
+                    headerIcon("clock.arrow.circlepath")
                 }
+                .accessibilityLabel("Match history")
                 .accessibilityIdentifier("controller.history.open")
                 Button { showingSettings = true } label: {
-                    Image(systemName: "gearshape.fill").font(.title3).foregroundStyle(.white.opacity(0.55))
+                    headerIcon("gearshape.fill")
                 }
+                .accessibilityLabel("Controller settings")
                 .accessibilityIdentifier("controller.settings.open")
                 Button {
                     Task { await coordinator.returnToPicker() }
                 } label: {
-                    Image(systemName: "xmark.circle.fill").font(.title2).foregroundStyle(.white.opacity(0.55))
+                    headerIcon("xmark.circle.fill")
                 }
+                .accessibilityLabel("Disconnect")
             }
             .padding(.horizontal, 22)
             .padding(.top, 14)
@@ -257,6 +262,14 @@ private struct ConnectedControllerView: View {
         .sheet(isPresented: $showingSettings) {
             ControllerSettingsView(coordinator: coordinator) { showingSettings = false }
         }
+    }
+
+    private func headerIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 22))
+            .foregroundStyle(.white.opacity(0.55))
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     private var playerLabel: String {
@@ -397,8 +410,7 @@ private struct GameControllerView: View {
     var body: some View {
         if let screen {
             ScrollView {
-                VStack(spacing: 20) {
-                    Spacer(minLength: 12)
+                VStack(spacing: 16) {
                     ForEach(Array(screen.components.enumerated()), id: \.offset) { _, component in
                         ControllerComponentView(
                             component: component,
@@ -406,21 +418,23 @@ private struct GameControllerView: View {
                             gameID: gameID,
                             coordinator: coordinator
                         )
+                        .id(coordinator.touchGestureGeneration)
                     }
-                    if SwipeGestureInterpreter.offersTouchStyle(screen) {
+                    if coordinator.canUseMotionSteering {
+                        SteeringSourcePicker(coordinator: coordinator)
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("controller.steeringSource")
+                    }
+                    if !coordinator.usesMotionSteering, SwipeGestureInterpreter.offersTouchStyle(screen) {
                         TouchStyleToggle(coordinator: coordinator)
                     }
-                    Spacer(minLength: 12)
                 }
-                .padding(20)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(screen.accessibilityID)
             }
-            // Drag and swipe surfaces own vertical gestures; scrolling would steal them.
-            .scrollDisabled(SwipeGestureInterpreter.hasGestureSurface(
-                screen,
-                swipeEnabled: coordinator.swipeControlsEnabled
-            ))
         } else {
             ConnectionView(title: "CONTROLLER UNAVAILABLE", detail: "This game sent an unsupported controller layout.", spinning: false, accessibilityIdentifier: "controller.layout.unsupported")
         }
@@ -505,7 +519,8 @@ private struct ControllerComponentView: View {
     private func trigger(_ button: ActionButtonComponent) {
         switch button.route {
         case .game(let actionID):
-            Task { await coordinator.sendGameAction(id: actionID, value: .trigger, gameID: gameID) }
+            let action = coordinator.gamePress(id: actionID, gameID: gameID)
+            Task { await coordinator.sendGameAction(action, gameID: gameID) }
         case .spectatorVote:
             Task { await coordinator.sendSpectator(.vote(button.id)) }
         case .spectatorReaction:
@@ -625,50 +640,27 @@ private struct AxisSurface: View {
                         )
                 }
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        switch swipeStyle {
-                        case nil:
-                            let x = AxisSurfaceGeometry.normalizedCoordinate(
-                                location: value.location.x,
-                                extent: width
-                            )
-                            let y = component.binding == .twoDimensional
-                                ? -AxisSurfaceGeometry.normalizedCoordinate(
-                                    location: value.location.y,
-                                    extent: height
-                                ) : 0
-                            coordinator.client.setAxes(axisX: x, axisY: y)
-                        case .relative:
-                            defer { lastLocation = value.location }
-                            guard let previous = lastLocation else { return }
-                            let x = SwipeGestureInterpreter.relativeAxis(
-                                current: coordinator.client.inputAxisX,
-                                delta: value.location.x - previous.x,
-                                extent: width
-                            )
-                            let y = component.binding == .twoDimensional
-                                ? SwipeGestureInterpreter.relativeAxis(
-                                    current: coordinator.client.inputAxisY,
-                                    delta: previous.y - value.location.y,
-                                    extent: height
-                                ) : 0
-                            coordinator.client.setAxes(axisX: x, axisY: y)
-                        case .heading:
-                            guard let aim = heading.update(to: value.location) else { return }
-                            if component.binding == .twoDimensional {
-                                coordinator.client.setAxes(axisX: aim.x, axisY: aim.y)
-                            } else {
-                                coordinator.client.setAxes(axisX: aim.x >= 0 ? 1 : -1, axisY: 0)
+                .overlay {
+                    GameplayTouchSurface(enabled: !coordinator.usesMotionSteering) { phase, location in
+                        switch phase {
+                        case .began:
+                            lastLocation = nil
+                            _ = heading.end()
+                            updateAxes(at: location, width: width, height: height)
+                        case .moved:
+                            updateAxes(at: location, width: width, height: height)
+                        case .ended:
+                            lastLocation = nil
+                            let tapped = heading.end()
+                            if swipeStyle == .heading, tapped {
+                                coordinator.setTouchAxes(axisX: 0, axisY: 0)
                             }
+                        case .cancelled:
+                            lastLocation = nil
+                            _ = heading.end()
                         }
                     }
-                    .onEnded { _ in
-                        lastLocation = nil
-                        if swipeStyle == .heading, heading.end() {
-                            coordinator.client.setAxes(axisX: 0, axisY: 0)
-                        }
-                    })
+                }
                 .accessibilityIdentifier(component.id)
                 .accessibilityValue(String(format: "%.3f, %.3f", coordinator.client.inputAxisX, coordinator.client.inputAxisY))
             }
@@ -676,14 +668,43 @@ private struct AxisSurface: View {
             Text(instruction).font(.caption.monospaced().weight(.black)).foregroundStyle(.white.opacity(0.48))
         }
     }
+
+    private func updateAxes(at location: CGPoint, width: CGFloat, height: CGFloat) {
+        let twoDimensional = component.binding == .twoDimensional
+        switch swipeStyle {
+        case nil:
+            let x = AxisSurfaceGeometry.normalizedCoordinate(location: location.x, extent: width)
+            let y = twoDimensional
+                ? -AxisSurfaceGeometry.normalizedCoordinate(location: location.y, extent: height) : 0
+            coordinator.setTouchAxes(axisX: x, axisY: y)
+        case .relative:
+            defer { lastLocation = location }
+            guard let previous = lastLocation else { return }
+            let x = SwipeGestureInterpreter.relativeAxis(
+                current: coordinator.client.inputAxisX, delta: location.x - previous.x, extent: width
+            )
+            let y = twoDimensional ? SwipeGestureInterpreter.relativeAxis(
+                current: coordinator.client.inputAxisY, delta: previous.y - location.y, extent: height
+            ) : 0
+            coordinator.setTouchAxes(axisX: x, axisY: y)
+        case .heading:
+            guard let aim = heading.update(to: location) else { return }
+            if twoDimensional {
+                coordinator.setTouchAxes(axisX: aim.x, axisY: aim.y)
+            } else {
+                coordinator.setTouchAxes(axisX: aim.x >= 0 ? 1 : -1, axisY: 0)
+            }
+        }
+    }
 }
 
 extension AxisSurface {
     fileprivate var instruction: String {
+        if coordinator.usesMotionSteering { return "TILT TO STEER" }
         switch swipeStyle {
-        case nil: component.instruction
-        case .relative: "SWIPE TO NUDGE  •  LIFT AND SWIPE AGAIN"
-        case .heading: "SWIPE THE WAY TO GO  •  TAP TO STOP"
+        case nil: return component.instruction
+        case .relative: return "SWIPE TO NUDGE  •  LIFT AND SWIPE AGAIN"
+        case .heading: return "SWIPE THE WAY TO GO  •  TAP TO STOP"
         }
     }
 }
@@ -711,13 +732,21 @@ private struct SwipePad: View {
             }
             .frame(height: 280)
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    guard let direction = tracker.update(to: value.location) else { return }
-                    shownDirection = direction
-                    Task { await coordinator.sendGameAction(id: component.id, value: .choice(direction), gameID: gameID) }
+            .overlay {
+                GameplayTouchSurface { phase, location in
+                    switch phase {
+                    case .began:
+                        tracker.end()
+                        _ = tracker.update(to: location)
+                    case .moved:
+                        guard let direction = tracker.update(to: location) else { return }
+                        shownDirection = direction
+                        Task { await coordinator.sendGameAction(id: component.id, value: .choice(direction), gameID: gameID) }
+                    case .ended, .cancelled:
+                        tracker.end()
+                    }
                 }
-                .onEnded { _ in tracker.end() })
+            }
             .accessibilityElement()
             .accessibilityLabel("Swipe pad")
             .accessibilityIdentifier("\(component.id).swipe")
@@ -753,29 +782,38 @@ private struct PressActionButton: View {
     let component: ActionButtonComponent
     let accent: Color
     let onPress: () -> Void
-    @State private var isPressed = false
+    @State private var press = GameplayPressState()
 
     var body: some View {
         Text(component.label)
             .font(.system(size: 40, weight: .black, design: .rounded))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, minHeight: 120)
-            .background(accent.opacity(isPressed ? 0.9 : 0.42), in: RoundedRectangle(cornerRadius: 28))
-            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(.white.opacity(isPressed ? 0.9 : 0.35), lineWidth: 3))
-            .scaleEffect(isPressed ? 0.97 : 1)
+            .background(accent.opacity(press.isPressed ? 0.9 : 0.42), in: RoundedRectangle(cornerRadius: 28))
+            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(.white.opacity(press.isPressed ? 0.9 : 0.35), lineWidth: 3))
+            .scaleEffect(press.isPressed ? 0.97 : 1)
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !isPressed else { return }
-                    isPressed = true
-                    onPress()
+            .overlay {
+                GameplayTouchSurface { phase, _ in
+                    if press.handle(phase) { onPress() }
                 }
-                .onEnded { _ in isPressed = false })
+            }
             .accessibilityElement()
             .accessibilityLabel(component.label)
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier(component.id)
             .accessibilityAction { onPress() }
+    }
+}
+
+private struct SteeringSourcePicker: View {
+    @Bindable var coordinator: ControllerCoordinator
+
+    var body: some View {
+        Picker("Steering source", selection: $coordinator.steeringSource) {
+            Text("Touch").tag(SteeringSource.touch)
+            Text("Motion").tag(SteeringSource.motion)
+        }
     }
 }
 
@@ -1035,6 +1073,8 @@ private struct ControllerSettingsView: View {
         NavigationStack {
             Form {
                 Section("CONTROLS") {
+                    SteeringSourcePicker(coordinator: coordinator)
+                        .accessibilityIdentifier("controller.settings.steeringSource")
                     Picker("Touch style", selection: $coordinator.swipeControlsEnabled) {
                         Text("Buttons & stick").tag(false)
                         Text("Swipe (trackpad)").tag(true)
@@ -1042,14 +1082,13 @@ private struct ControllerSettingsView: View {
                     .accessibilityIdentifier("controller.settings.touchStyle")
                     Text("Swipe turns arrow pads into a swipe pad, and drag pads move like a trackpad instead of jumping to your finger.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Toggle("Motion controls", isOn: $coordinator.motionControlEnabled)
                     Button("CALIBRATE CURRENT POSITION") { coordinator.calibrateMotion() }
                         .disabled(!coordinator.motionControlEnabled || !coordinator.canCalibrateMotion)
                     if coordinator.motionControlEnabled && !coordinator.canCalibrateMotion {
                         Text(motionCalibrationMessage)
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Touch is the default. Turn on motion to steer by tilting this phone.")
+                    Text("Choose Motion to steer by tilting in supported games.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("PHONE EFFECTS") {

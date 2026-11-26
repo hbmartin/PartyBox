@@ -85,6 +85,22 @@ struct PongBenchTests {
         #expect(game.activePlayers.count == 4)
     }
 
+    @Test func seatedForfeitStartsAFreshServeForTheBenchReplacement() {
+        let ids = ArcadeHarness.playerIDs(6)
+        var game = PongSimulation(assignments: seats(4), bench: [ids[4], ids[5]], rules: .standard(participantCount: 6))
+        game.setBallForTesting(position: .init(x: 300, y: -480), velocity: .init(x: 0, y: -100))
+
+        let benchedForfeit = game.forfeit(ids[5])
+        #expect(benchedForfeit == [.forfeited(ids[5])])
+        #expect(game.countdown == nil)
+        let seatedForfeit = game.forfeit(ids[0])
+        #expect(seatedForfeit == [.forfeited(ids[0]), .rotatedIn(ids[4], edge: .bottom)])
+        #expect(game.countdown == 1)
+        let followingFrame = game.step(deltaTime: 0.05)
+        #expect(followingFrame.isEmpty)
+        #expect(game.players[.bottom]?.lives == 2)
+    }
+
     @Test func benchedPhonesShowTheirPlaceThenTheirPaddleAfterRotating() throws {
         var events: [GameEvent] = []
         let session = try #require(PongGame().makeSession(

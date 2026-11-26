@@ -105,6 +105,33 @@ final class PartyBox_ControllerUITests: XCTestCase {
     }
 
     @MainActor
+    func testGameControlsScrollAtLargestAccessibilityTextSize() {
+        let app = launch(scenario: "bumper-brawl", additional: [
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
+        ])
+        defer { app.terminate() }
+        let dash = element("bumper.dash", in: app)
+        let touchStyle = element("controller.touchStyle.toggle", in: app)
+        let scroll = app.scrollViews.firstMatch
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+
+        func reveal(_ control: XCUIElement) {
+            for _ in 0..<5 where !control.isHittable {
+                let lowerGutter = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.85))
+                let upperGutter = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.20))
+                lowerGutter.press(forDuration: 0.05, thenDragTo: upperGutter)
+            }
+            XCTAssertTrue(control.isHittable)
+        }
+
+        reveal(dash)
+        dash.tap()
+        reveal(touchStyle)
+        touchStyle.tap()
+        XCTAssertEqual(touchStyle.value as? String, "swipe")
+    }
+
+    @MainActor
     func testPaddleEndpointsUpdateLocalValueImmediately() throws {
         let app = launch(scenario: "paddle-left")
         let track = element("controller.paddle.track", in: app)

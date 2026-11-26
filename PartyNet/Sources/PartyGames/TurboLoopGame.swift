@@ -99,6 +99,7 @@ final class TurboLoopRenderer: ArcadeRenderer {
         dashes.zPosition = 3
         scene.gameLayer.addChild(dashes)
 
+        for gate in track.gatePoses.dropLast() { buildCheckpoint(gate, in: scene) }
         buildStartLine(track: track, in: scene)
         for pad in track.pads { buildPad(pad, in: scene) }
 
@@ -127,6 +128,18 @@ final class TurboLoopRenderer: ArcadeRenderer {
     }
 
     // MARK: Track furniture
+
+    private func buildCheckpoint(_ gate: TurboLoopTrack.Pose, in scene: ArcadeScene) {
+        let normal = ArcadeVector(angle: gate.heading).perpendicular * TurboLoopTrack.halfWidth
+        let path = CGMutablePath()
+        path.move(to: scene.point(gate.position - normal))
+        path.addLine(to: scene.point(gate.position + normal))
+        let line = SKShapeNode(path: path.copy(dashingWithPhase: 0, lengths: [13, 8]))
+        line.strokeColor = SKColor(red: 0.35, green: 0.9, blue: 1, alpha: 0.65)
+        line.lineWidth = 4
+        line.zPosition = 3
+        scene.gameLayer.addChild(line)
+    }
 
     private func buildStartLine(track: TurboLoopTrack, in scene: ArcadeScene) {
         let line = SKNode()

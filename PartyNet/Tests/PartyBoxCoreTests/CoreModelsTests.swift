@@ -6,6 +6,28 @@ import Testing
 
 @Suite("PartyBox application protocol")
 struct CoreModelsTests {
+    @Test func dashSteeringIsAnOptionalAdditionToTheGameAction() throws {
+        struct LegacyAction: Codable, Equatable {
+            let id: String
+            let value: ControllerActionValue
+        }
+
+        let legacy = LegacyAction(id: "bumper.dash", value: .trigger)
+        let legacyData = try PartyBoxWireCodec.encode(legacy)
+        let legacyDecoded = try PartyBoxWireCodec.decode(ControllerAction.self, from: legacyData)
+        #expect(legacyDecoded == .init(id: "bumper.dash", value: .trigger))
+        let encodedLegacy = try JSONSerialization.jsonObject(with: PartyBoxWireCodec.encode(legacyDecoded))
+        let legacyKeys = try #require(encodedLegacy as? [String: Any]).keys
+        #expect(Set(legacyKeys) == ["id", "value"])
+
+        let current = ControllerAction(
+            id: "bumper.dash", value: .trigger, steering: .init(axisX: 1, axisY: -0.5)
+        )
+        let currentData = try PartyBoxWireCodec.encode(current)
+        #expect(try PartyBoxWireCodec.decode(LegacyAction.self, from: currentData) == legacy)
+        #expect(try PartyBoxWireCodec.decode(ControllerAction.self, from: currentData) == current)
+    }
+
     private enum DiagnosticsTestError: Error {
         case encodingTimedOut
         case removalFailed

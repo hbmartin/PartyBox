@@ -67,7 +67,7 @@ struct LastLightSimulation: ArcadeSimulation {
     private var scoreAccumulator = 0.0
     private var sweeperCount = 0
     private var announcedStage = 0
-    private var eliminationOrder: [PlayerID] = []
+    private var eliminationOrder = ArcadeEliminations()
     private let indexByID: [PlayerID: Int]
     private let multiplayer: Bool
 
@@ -144,7 +144,7 @@ struct LastLightSimulation: ArcadeSimulation {
     mutating func forfeit(_ playerID: PlayerID) -> [ArcadeEvent] {
         guard !isFinished, let index = indexByID[playerID], players[index].alive else { return [] }
         players[index].lives = 0
-        eliminationOrder.append(playerID)
+        eliminationOrder.record(playerID)
         var events: [ArcadeEvent] = [.eliminated(playerID)]
         finishIfDecided(events: &events)
         return events
@@ -336,6 +336,7 @@ struct LastLightSimulation: ArcadeSimulation {
     }
 
     private mutating func resolveHits(events: inout [ArcadeEvent]) {
+        let firstEvent = events.count
         var consumed: Set<Int> = []
         var anyEliminated = false
         for index in players.indices where players[index].alive && !players[index].isInvulnerable {
@@ -347,7 +348,6 @@ struct LastLightSimulation: ArcadeSimulation {
             players[index].invulnerableRemaining = Self.invulnerability
             if players[index].lives <= 0 {
                 players[index].lives = 0
-                eliminationOrder.append(players[index].playerID)
                 events.append(.eliminated(players[index].playerID))
                 anyEliminated = true
             } else {
@@ -355,7 +355,10 @@ struct LastLightSimulation: ArcadeSimulation {
             }
         }
         if !consumed.isEmpty { hazards.removeAll { consumed.contains($0.id) } }
-        if anyEliminated { finishIfDecided(events: &events) }
+        if anyEliminated {
+            eliminationOrder.recordBatch(events[firstEvent...])
+            finishIfDecided(events: &events)
+        }
     }
 
     private mutating func awardScore(delta: Double) {

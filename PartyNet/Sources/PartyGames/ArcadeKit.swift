@@ -189,6 +189,8 @@ struct ArcadeInput: Equatable, Sendable {
     var axisY: Double = 0
     /// True on the frame a tap (phone action button) or bot button press arrived.
     var pressed = false
+    /// Steering sampled by the controller at the instant of a DASH press.
+    var pressSteering: ArcadeVector?
     /// Direction-pad or swipe turns received since the previous frame, in order.
     var turns: [ArcadeDirection] = []
 
@@ -204,17 +206,29 @@ struct ArcadeInput: Equatable, Sendable {
 /// rising edge of that bit is also treated as a tap.
 @MainActor
 final class ArcadeInputSampler {
+    private struct Press {
+        let steering: ArcadeVector?
+    }
+
     private let store: InputStore
     private var heldButtons: [PlayerID: Bool] = [:]
-    private var queuedPresses: Set<PlayerID> = []
+    private var queuedPresses: [PlayerID: Press] = [:]
     private var queuedTurns: [PlayerID: [ArcadeDirection]] = [:]
 
     init(store: InputStore) {
         self.store = store
     }
 
-    func queuePress(for playerID: PlayerID) {
-        queuedPresses.insert(playerID)
+    func queuePress(for playerID: PlayerID, steering: ControllerSteering? = nil) {
+        guard queuedPresses[playerID] == nil else { return }
+        let aim = steering.flatMap { steering -> ArcadeVector? in
+            guard steering.axisX.isFinite, steering.axisY.isFinite else { return nil }
+            return ArcadeVector(
+                x: min(max(Double(steering.axisX), -1), 1),
+                y: min(max(Double(steering.axisY), -1), 1)
+            )
+        }
+        queuedPresses[playerID] = Press(steering: aim)
     }
 
     func queueTurn(_ direction: ArcadeDirection, for playerID: PlayerID) {
@@ -232,10 +246,12 @@ final class ArcadeInputSampler {
             let held = frame?.buttons.contains(.primary) ?? false
             let rising = held && !(heldButtons[playerID] ?? false)
             heldButtons[playerID] = held
+            let press = queuedPresses[playerID]
             inputs[playerID] = ArcadeInput(
                 axisX: Double(frame?.axisX ?? 0),
                 axisY: Double(frame?.axisY ?? 0),
-                pressed: rising || queuedPresses.contains(playerID),
+                pressed: rising || press != nil,
+                pressSteering: press?.steering,
                 turns: queuedTurns[playerID] ?? []
             )
         }
@@ -370,17 +386,19 @@ enum ArcadeOutcomeBuilder {
         for playerID in participantIDs where !seen.contains(playerID) {
             ordered.append(ArcadeRankEntry(playerID: playerID, score: 0))
         }
+        let eligible = ordered.filter { !forfeited.contains($0.playerID) }
+        ordered = eligible + ordered.filter { forfeited.contains($0.playerID) }
         let solo = participants.count == 1
-        let winnerID = solo ? nil : ordered.first(where: { !forfeited.contains($0.playerID) })?.playerID
+        let winnerID = solo ? nil : eligible.first?.playerID
         let winner = winnerID.flatMap { id in participants.first { $0.player.id == id }?.player }
         let standings = ordered.enumerated().map { index, entry in
             GameStanding(playerID: entry.playerID, rank: index + 1, score: entry.score, detail: entry.detail)
         }
         let outcomes = participants.map { participant in
-            let outcome: MatchParticipantOutcome = if solo {
-                .practice
-            } else if forfeited.contains(participant.player.id) {
+            let outcome: MatchParticipantOutcome = if forfeited.contains(participant.player.id) {
                 .forfeited
+            } else if solo {
+                .practice
             } else if participant.player.id == winnerID {
                 .won
             } else {
@@ -389,7 +407,7 @@ enum ArcadeOutcomeBuilder {
             return PlayerMatchOutcome(playerID: participant.player.id, outcome: outcome)
         }
         let headline = if solo {
-            "PRACTICE COMPLETE"
+            forfeited.isEmpty ? "PRACTICE COMPLETE" : "PRACTICE ENDED"
         } else if let winner {
             "P\(winner.number) \(winner.displayName) WINS"
         } else {
@@ -418,7 +436,26 @@ extension Duration {
     }
 }
 
-/// Helpers simulations share for building `ranking()`.
+/// Groups eliminations that were resolved in the same gameplay step.
+struct ArcadeEliminations: Equatable, Sendable {
+    private var groups: [[PlayerID]] = []
+
+    mutating func record(_ playerID: PlayerID) {
+        groups.append([playerID])
+    }
+
+    mutating func recordBatch(_ events: ArraySlice<ArcadeEvent>) {
+        let eliminated = events.compactMap { event -> PlayerID? in
+            if case .eliminated(let playerID) = event { playerID } else { nil }
+        }
+        if !eliminated.isEmpty { groups.append(eliminated) }
+    }
+
+    func order(of playerID: PlayerID) -> Int {
+        groups.firstIndex { $0.contains(playerID) } ?? -1
+    }
+}
+
 enum ArcadeRanking {
     /// Survivors first (most lives, then score), then eliminated players with
     /// the latest elimination first, ties broken by score then player id.
@@ -428,7 +465,7 @@ enum ArcadeRanking {
         alive: (Player) -> Bool,
         lives: (Player) -> Int,
         score: (Player) -> Int,
-        eliminationOrder: [PlayerID],
+        eliminationOrder: ArcadeEliminations,
         detail: (Player) -> String
     ) -> [ArcadeRankEntry] {
         let sorted = players.sorted { lhs, rhs in
@@ -438,8 +475,8 @@ enum ArcadeRanking {
             if leftAlive {
                 if lives(lhs) != lives(rhs) { return lives(lhs) > lives(rhs) }
             } else {
-                let leftOut = eliminationOrder.firstIndex(of: id(lhs)) ?? -1
-                let rightOut = eliminationOrder.firstIndex(of: id(rhs)) ?? -1
+                let leftOut = eliminationOrder.order(of: id(lhs))
+                let rightOut = eliminationOrder.order(of: id(rhs))
                 if leftOut != rightOut { return leftOut > rightOut }
             }
             if score(lhs) != score(rhs) { return score(lhs) > score(rhs) }

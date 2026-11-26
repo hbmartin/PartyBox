@@ -447,7 +447,8 @@ The crown identifies the captain; other phones ready up instead of changing shar
 ### Step 8 — Start the match
 
 Pick a game and complete the ready check, then tap **SELECT**. For Party Cup, the captain first chooses
-three distinct games; placement points carry through all three events.
+three distinct games. Placement points carry through all three events. A player who forfeits earns
+zero points and no win for that event and keeps points from earlier events.
 
 The TV and phone controls depend on the selected game:
 
@@ -465,7 +466,8 @@ The TV and phone controls depend on the selected game:
 - **Paint Rush:** 45 seconds to paint the most floor. Steal rivals' tiles and grab BOOST and SPLAT.
 - **Sky Hop:** tap the big **FLAP** button through ever-tighter gates. One crash and you're out.
 - **Hot Fuse:** pass the bomb by touching someone before the hidden fuse blows. Solo is a defuse drill.
-- **Turbo Loop:** five quick laps of a top-down circuit. Point where to drive; hit the boost pads.
+- **Turbo Loop:** five quick laps of a top-down circuit. Point where to drive, cross the marked
+  checkpoints in order, and hit the boost pads.
 
 For classic 1–4 player Pong, the paddle-track orientation is:
 
@@ -477,7 +479,8 @@ For classic 1–4 player Pong, the paddle-track orientation is:
 | 4th | right | `BOTTOM ← PADDLE → TOP` |
 
 Drag anywhere on the track to move — you don't have to grab the paddle itself. Touch is the default.
-Where a game supports it, use the gear on the phone to enable and calibrate optional motion controls.
+Where a game supports it, choose **Touch** or **Motion** on the controller. Use the gear to calibrate
+Motion or choose **Buttons & stick** or **Swipe** for Touch.
 
 ### Step 9 — Play, and watch the diagnostics
 

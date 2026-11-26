@@ -213,8 +213,8 @@ motion in PartyPad settings.
 | GAME-03 | Four-Way Pong, five to eight players | Four players start on the edges with two lives; phones five to eight show `ON DECK #n` in queue order. A knocked-out edge is recolored and relabelled for the next bench player, whose phone switches to that paddle. The match ends only when the bench is empty and one paddle remains. |
 | GAME-04 | Snake Pit | Arrow taps and swipe strokes both turn reliably, including an L-shaped stroke producing two turns. Trails persist; crashes, respawn ghosting, and three lives agree on TV and phones; speed visibly increases at 15, 30, and 45 seconds. |
 | GAME-05 | Last Light | Drag, swipe, or motion movement is responsive and speed-capped (no teleporting). Rain, sweepers (from 15s), and seekers (from 30s) are telegraphed before they can hit. The final winner is correct. |
-| GAME-06 | Bumper Brawl and Hot Fuse | Steering, DASH (fires on touch-down), ring-outs, KO credit, bomb passing, tag-back immunity, and fuse booms are consistent on TV and phones. Solo shows drones. |
-| GAME-07 | Paint Rush, Sky Hop, and Turbo Loop | Paint coverage and the percentage bar agree; FLAP latency feels immediate and crashes eliminate; laps count only when driven the right way and the 8-second finish window ends the race. |
+| GAME-06 | Bumper Brawl and Hot Fuse | Steer and DASH with two fingers. DASH fires on touch-down and follows the direction the phone held at that instant. Ring-outs, KO credit, bomb passing, tag-back immunity, and fuse booms are consistent on TV and phones. Solo shows drones. |
+| GAME-07 | Paint Rush, Sky Hop, and Turbo Loop | Paint coverage and the percentage bar agree. FLAP feels immediate and crashes eliminate. Turbo Loop credits the marked gates in order across the road, and starts its eight-second window at the earliest finish crossing. |
 | GAME-08 | Results and rematch | `NEXT MATCH` starts a clean rematch with the same roster. Scores, lives, and temporary effects do not leak from the prior round. |
 | GAME-09 | Results and menu | `GAME MENU` returns all devices to the menu. No phone remains stuck in the previous control layout. |
 | GAME-10 | No early exit | During a running match, verify the intentional lack of a quit action. Back/Menu input must not leave some devices in a different state. |
@@ -241,14 +241,17 @@ motion in PartyPad settings.
 
 ### Controller input, motion, haptics, and presentation
 
-- [ ] **CTRL-01 — Portrait layout:** Check all PartyPad screens on each test iPhone. Controls are fully
-  visible in portrait with no overlap, clipping, or accidental home-indicator conflict.
+- [ ] **CTRL-01 — Portrait layout:** Check default and maximum accessibility text on a compact phone.
+  Scroll from beside the controls. Verify that DASH and the touch-style switch are reachable and
+  that a stroke that starts inside a steering pad steers without scrolling.
 - [ ] **CTRL-02 — Touch edges:** Drag from the center to every edge and corner of each analog/track
   control. Values reach their intended extremes smoothly and return to neutral as designed.
 - [ ] **CTRL-03 — Multi-touch and interruption:** Add an extra finger, receive a notification, or brush
   the screen edge during play. Input must not become stuck after the interruption ends.
-- [ ] **CTRL-04 — Motion calibration:** Enable motion, hold the phone in the instructed neutral pose, and
-  calibrate. Neutral remains stable and full-range input is achievable without extreme movement.
+- [ ] **CTRL-04 — Steering source and calibration:** Choose Motion, hold the phone in the instructed
+  neutral pose, and calibrate. Neutral stays stable and full-range input is achievable without extreme
+  movement. Switch back to Touch, tilt while making a heading swipe, then tap to stop. Tilt should
+  leave the touch heading at its selected value until Motion is selected again.
 - [ ] **CTRL-05 — Motion recalibration:** Rotate posture, recalibrate, and verify the new neutral takes
   effect immediately without changing player identity or connection state.
 - [ ] **CTRL-06 — Effects enabled:** Confirm light hit, heavy life-loss, elimination error, and win

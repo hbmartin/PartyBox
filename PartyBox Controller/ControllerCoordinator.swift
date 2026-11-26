@@ -19,6 +19,11 @@ enum MotionCalibrationStatus: Equatable {
     case ready
 }
 
+enum SteeringSource: Hashable {
+    case touch
+    case motion
+}
+
 @MainActor
 protocol MotionSampling: AnyObject {
     var isAvailable: Bool { get }
@@ -171,15 +176,31 @@ final class ControllerCoordinator {
     private(set) var currentDeviceCue: DeviceCue?
     var motionControlEnabled: Bool {
         didSet {
+            guard oldValue != motionControlEnabled else { return }
             defaults.set(motionControlEnabled, forKey: "partybox.motionControlEnabled")
+            if canUseMotionSteering { resetTouchGestures() }
             updateMotionCapture()
         }
     }
+    var steeringSource: SteeringSource {
+        get { motionControlEnabled ? .motion : .touch }
+        set { motionControlEnabled = newValue == .motion }
+    }
+    var canUseMotionSteering: Bool {
+        motionSampler.isAvailable && requestedInputs.contains(.orientation)
+            && controllerScreen?.components.contains {
+                if case .axisSurface = $0 { true } else { false }
+            } == true
+    }
+    var usesMotionSteering: Bool { motionControlEnabled && canUseMotionSteering }
+    private(set) var touchGestureGeneration = 0
     /// Swipe (trackpad) touch style: arrow pads become swipe pads and drag
     /// surfaces move relatively instead of jumping to the finger.
     var swipeControlsEnabled: Bool {
         didSet {
+            guard oldValue != swipeControlsEnabled else { return }
             defaults.set(swipeControlsEnabled, forKey: "partybox.swipeControlsEnabled")
+            if !usesMotionSteering { resetTouchGestures() }
         }
     }
     var deviceEffectsEnabled: Bool {
@@ -425,7 +446,27 @@ final class ControllerCoordinator {
     }
 
     func sendGameAction(id: String, value: ControllerActionValue, gameID: String) async {
-        await send(.game(.init(gameID: gameID, action: .init(id: id, value: value))))
+        await sendGameAction(.init(id: id, value: value), gameID: gameID)
+    }
+
+    func sendGameAction(_ action: ControllerAction, gameID: String) async {
+        await send(.game(.init(gameID: gameID, action: action)))
+    }
+
+    func gamePress(id: String, gameID: String) -> ControllerAction {
+        let steering: ControllerSteering? = gameID == "bumper-brawl" && id == "bumper.dash"
+            ? .init(axisX: client.inputAxisX, axisY: client.inputAxisY) : nil
+        return .init(id: id, value: .trigger, steering: steering)
+    }
+
+    func setTouchAxes(axisX: Float, axisY: Float) {
+        guard !usesMotionSteering, isSceneActive else { return }
+        client.setAxes(axisX: axisX, axisY: axisY)
+    }
+
+    private func resetTouchGestures() {
+        touchGestureGeneration &+= 1
+        client.setAxes(axisX: 0, axisY: 0)
     }
 
     func sendSpectator(_ action: SpectatorAction) async { await send(.spectator(action)) }
@@ -508,6 +549,7 @@ final class ControllerCoordinator {
     }
 
     func scenePhaseChanged(isActive: Bool) {
+        if isSceneActive, !isActive { resetTouchGestures() }
         isSceneActive = isActive
         if isActive { client.reconnectAfterForeground() }
         updateMotionCapture()
@@ -540,6 +582,7 @@ final class ControllerCoordinator {
             case .roster(let players): roster = players
             case .layout(let value):
                 if layout != value, layout.isGame || value.isGame {
+                    touchGestureGeneration &+= 1
                     client.setInput(axisX: 0, axisY: 0, buttons: [])
                 }
                 layout = value
@@ -567,6 +610,7 @@ final class ControllerCoordinator {
 
     private func resetSessionPresentation(motionPolicy: SessionMotionResetPolicy) {
         if motionPolicy == .stop { stopMotionCapture() }
+        resetTouchGestures()
         layout = .lobby(.waiting)
         roster = []
         currentDeviceCue = nil
@@ -653,10 +697,10 @@ final class ControllerCoordinator {
     }
 
     private func updateMotionCapture() {
-        let needsGameplayMotion = requestedInputs.contains(.orientation)
-        if !needsGameplayMotion { stopPublishingMotionInput() }
+        let requestsMotion = requestedInputs.contains(.orientation)
+        if !usesMotionSteering { stopPublishingMotionInput() }
         let shouldRun = isStarted && isSceneActive && isConnected
-            && motionControlEnabled && (needsGameplayMotion || isMotionSettingsVisible)
+            && motionControlEnabled && (requestsMotion || isMotionSettingsVisible)
             && motionSampler.isAvailable
         guard shouldRun else {
             stopMotionCapture()
@@ -691,7 +735,7 @@ final class ControllerCoordinator {
                         self.motionCalibrationStatus = .ready
                     }
                 }
-                guard self.requestedInputs.contains(.orientation) else { return }
+                guard self.usesMotionSteering else { return }
                 let axes = orientation.tiltAxes(
                     horizontalNeutral: self.motionNeutralProjectionX,
                     verticalNeutral: self.motionNeutralProjectionY
@@ -988,13 +1032,14 @@ final class ControllerCoordinator {
                 ]
             )
             layout = .game(.init(gameID: "last-light", payload: (try? PartyBoxWireCodec.encode(screen)) ?? Data()))
-        case "bumper-brawl":
+        case "bumper-brawl", "bumper-brawl-swipe":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             let screen = ControllerScreen(
                 accessibilityID: "controller.layout.bumper-brawl",
                 accentColorHex: currentPlayer.colorHex,
                 requestedInputs: .orientation,
                 components: [
+                    .text(.init(id: "arcade.player", text: "\(currentPlayer.mark.glyph)  P\(currentPlayer.number) \(currentPlayer.displayName)", style: .headline, tint: .accent)),
                     .text(.init(id: "bumper.rule", text: "PUSH RIVALS OFF THE ICE • TAP DASH", style: .caption)),
                     .axisSurface(.init(id: "bumper.steer", binding: .twoDimensional, instruction: "DRAG TO PUSH", swipe: .heading)),
                     .actionButton(.init(id: "bumper.dash", label: "DASH", route: .game("bumper.dash"))),

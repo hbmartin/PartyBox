@@ -65,6 +65,28 @@ struct BumperBrawlTests {
         }
     }
 
+    @Test func dashUsesThePressSnapshotWhileMovementUsesTheLatestFrame() throws {
+        let player = PlayerID(0)
+        let rival = PlayerID(1)
+        let inputs = InputStore()
+        inputs.update(.init(token: 1, sequence: 1, clientTimeMs: 0, axisX: -1, axisY: 0), for: player)
+        let session = try #require(BumperBrawlGame().makeSession(
+            context: .init(participants: ArcadeHarness.participants(2), inputs: inputs, seed: 1, modifierID: nil),
+            onEvents: { _ in }
+        ) as? ArcadeSession<BumperBrawlRenderer>)
+        session.skipIntroForTesting()
+        session.simulationForTesting.placeForTesting(player, at: offset(0))
+        session.simulationForTesting.placeForTesting(rival, at: offset(250))
+        session.handle(action: .init(
+            id: "bumper.dash", value: .trigger, steering: .init(axisX: 1, axisY: 0)
+        ), from: player)
+        session.advance(by: frame)
+
+        let puck = try #require(session.simulationForTesting.puck(for: player))
+        #expect(puck.velocity.x > 0)
+        #expect(puck.stick.x == -1)
+    }
+
     @Test func rivalPushedOffTheEdgeLosesALifeRespawnsGhostedAndCreditsTheToucher() throws {
         let pusher = PlayerID(0)
         let victim = PlayerID(1)
@@ -261,6 +283,27 @@ struct BumperBrawlTests {
         #expect(events.contains(.eliminated(ids[1])))
         #expect(simulation.isFinished)
         #expect(simulation.ranking().map(\.playerID) == [ids[2], ids[1], ids[0]])
+    }
+
+    @Test func simultaneousRingOutsUseScoreBeforeSeatOrder() {
+        let ids = ArcadeHarness.playerIDs(2)
+        var simulation = Simulation(players: ids, seed: 7)
+        simulation.placeForTesting(ids[1], at: offset(400))
+        simulation.placeForTesting(ids[0], at: offset(300), velocity: ArcadeVector(x: 600, y: 0))
+        run(&simulation, seconds: 2) { $0.contains(.lostLife(ids[1], remaining: 2)) }
+        #expect(simulation.puck(for: ids[0])?.kos == 1)
+        run(&simulation, seconds: Simulation.respawnDelay + Simulation.ghostDuration + 0.1)
+        simulation.setLivesForTesting(1, playerID: ids[0])
+        simulation.setLivesForTesting(1, playerID: ids[1])
+        simulation.placeForTesting(ids[0], at: offset(0, -490))
+        simulation.placeForTesting(ids[1], at: offset(0, 490))
+
+        let events = simulation.step(deltaTime: frame, inputs: [:])
+
+        #expect(events.contains(.eliminated(ids[0])))
+        #expect(events.contains(.eliminated(ids[1])))
+        #expect(simulation.isFinished)
+        #expect(simulation.ranking().map(\.playerID) == ids)
     }
 
     @Test func sameSeedAndScriptedInputsReplayIdentically() {

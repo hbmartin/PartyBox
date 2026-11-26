@@ -78,19 +78,6 @@ enum SwipeGestureInterpreter {
         return min(max(current + change, -1), 1)
     }
 
-    /// Whether a controller screen needs gestures that would fight a scroll view.
-    static func hasGestureSurface(_ screen: ControllerScreen, swipeEnabled: Bool) -> Bool {
-        screen.components.contains { component in
-            switch component {
-            case .axisSurface: true
-            case .directionPad: swipeEnabled
-            case .actionButton(let button):
-                if case .game = button.route { true } else { false }
-            default: false
-            }
-        }
-    }
-
     /// Whether the in-game touch-style toggle applies to this screen.
     static func offersTouchStyle(_ screen: ControllerScreen) -> Bool {
         screen.components.contains { component in

@@ -214,12 +214,24 @@ public enum ControllerActionValue: Codable, Equatable, Sendable {
     case choice(String)
 }
 
+public struct ControllerSteering: Codable, Equatable, Sendable {
+    public let axisX: Float
+    public let axisY: Float
+
+    public init(axisX: Float, axisY: Float) {
+        self.axisX = axisX
+        self.axisY = axisY
+    }
+}
+
 public struct ControllerAction: Codable, Equatable, Sendable {
     public let id: String
     public let value: ControllerActionValue
+    public let steering: ControllerSteering?
 
-    public init(id: String, value: ControllerActionValue) {
+    public init(id: String, value: ControllerActionValue, steering: ControllerSteering? = nil) {
         self.id = id
         self.value = value
+        self.steering = steering
     }
 }

@@ -109,7 +109,7 @@ struct HotFuseSimulation: ArcadeSimulation, Equatable {
     private var opened = false
     private var blastCount = 0
     private var passCount = 0
-    private var eliminationOrder: [PlayerID] = []
+    private var eliminationOrder = ArcadeEliminations()
     /// The player who just survived a boom; the next bomb skips them if anyone else is left.
     private var sparedFromNextBomb: PlayerID?
     private let indexByID: [PlayerID: Int]
@@ -386,7 +386,7 @@ struct HotFuseSimulation: ArcadeSimulation, Equatable {
         players[index].immunityRemaining = 0
         players[index].bounce = .zero
         players[index].velocity = .zero
-        eliminationOrder.append(players[index].playerID)
+        eliminationOrder.record(players[index].playerID)
         events.append(.eliminated(players[index].playerID))
     }
 

@@ -107,8 +107,15 @@ private final class PartyBoxApplicationDelegate: NSObject, NSApplicationDelegate
     func applicationDidFinishLaunching(_ notification: Notification) {
         let contentView = ContentView(coordinator: lifecycle.coordinator)
         let hostingView = NSHostingView(rootView: contentView)
+        var contentSize = NSSize(width: 1_280, height: 720)
+#if DEBUG
+        if lifecycle.coordinator.configuration.isUITesting,
+           ProcessInfo.processInfo.arguments.contains("--compact-host-window") {
+            contentSize = NSSize(width: 960, height: 540)
+        }
+#endif
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 720),
+            contentRect: NSRect(origin: .zero, size: contentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

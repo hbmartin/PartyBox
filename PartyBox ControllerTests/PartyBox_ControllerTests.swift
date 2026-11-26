@@ -846,18 +846,77 @@ struct PartyBox_ControllerTests {
         #expect(SwipeGestureInterpreter.relativeAxis(current: 0.3, delta: 10, extent: 0) == 0.3)
     }
 
-    @Test func gestureSurfacesLockScrollingAndOfferTheTouchStyleToggle() {
+    @Test func touchStyleAppliesToDirectionPadsAndSteeringSurfaces() {
         let pad = ControllerScreen(accessibilityID: "pad", accentColorHex: "#32E6FF", components: [
             .directionPad(.init(id: "snake.direction", instruction: "TURN")),
         ])
         let flap = ControllerScreen(accessibilityID: "flap", accentColorHex: "#32E6FF", components: [
             .actionButton(.init(id: "sky.flap", label: "FLAP", route: .game("sky.flap"))),
         ])
-        #expect(!SwipeGestureInterpreter.hasGestureSurface(pad, swipeEnabled: false))
-        #expect(SwipeGestureInterpreter.hasGestureSurface(pad, swipeEnabled: true))
-        #expect(SwipeGestureInterpreter.hasGestureSurface(flap, swipeEnabled: false))
         #expect(SwipeGestureInterpreter.offersTouchStyle(pad))
         #expect(!SwipeGestureInterpreter.offersTouchStyle(flap))
+    }
+
+    @Test func gameplayPressFiresOnTouchDownAndResetsAfterCancellation() {
+        var press = GameplayPressState()
+        let firstPress = press.handle(.began)
+        let moved = press.handle(.moved)
+        let duplicate = press.handle(.began)
+        let cancelled = press.handle(.cancelled)
+        #expect(firstPress && !moved && !duplicate && !cancelled)
+        #expect(!press.isPressed)
+        let nextPress = press.handle(.began)
+        let ended = press.handle(.ended)
+        #expect(nextPress && !ended)
+        #expect(!press.isPressed)
+    }
+
+    @Test func selectingSteeringSourceClearsOutgoingAimAndPreservesTheTouchStyle() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            try await verifySteeringSourceOwnership()
+        }
+    }
+
+    private func verifySteeringSourceOwnership() async throws {
+        let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sampler = TestMotionSampler()
+        let coordinator = ControllerCoordinator(
+            defaults: defaults,
+            configuration: .init(arguments: ["PartyBox Controller", "--ui-testing", "--scenario", "bumper-brawl-swipe"]),
+            motionSampler: sampler
+        )
+        await coordinator.start()
+        #expect(coordinator.steeringSource == .touch)
+        #expect(coordinator.swipeControlsEnabled)
+        coordinator.setTouchAxes(axisX: -0.5, axisY: 1)
+        let press = coordinator.gamePress(id: "bumper.dash", gameID: "bumper-brawl")
+        #expect(press.steering == .init(axisX: -0.5, axisY: 1))
+
+        let gestureGeneration = coordinator.touchGestureGeneration
+        coordinator.steeringSource = .motion
+        #expect(coordinator.touchGestureGeneration != gestureGeneration)
+        #expect(coordinator.client.inputAxisX == 0)
+        #expect(coordinator.client.inputAxisY == 0)
+        #expect(sampler.isActive)
+        coordinator.setTouchAxes(axisX: -1, axisY: 1)
+        #expect(coordinator.client.inputAxisX == 0)
+        #expect(coordinator.client.inputAxisY == 0)
+        sampler.emit(.orientation(.identity))
+        #expect(coordinator.client.inputFlags.contains(.motionAvailable))
+
+        coordinator.steeringSource = .touch
+        #expect(!sampler.isActive)
+        #expect(coordinator.swipeControlsEnabled)
+        #expect(!coordinator.client.inputFlags.contains(.motionAvailable))
+        coordinator.setTouchAxes(axisX: 0.75, axisY: 0)
+        #expect(coordinator.client.inputAxisX == 0.75)
+        #expect(press.steering?.axisX == -0.5)
+        #expect(coordinator.gamePress(id: "sky.flap", gameID: "sky-hop").steering == nil)
+        await coordinator.stop()
     }
 
     @Test func motionRetryDelayBacksOffAndCaps() {

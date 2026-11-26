@@ -71,7 +71,7 @@ struct SnakePitSimulation: ArcadeSimulation {
     private var tickAccumulator = 0.0
     private var occupancy: [Int16]
     private var random: ArcadeRandomNumberGenerator
-    private var eliminationOrder: [PlayerID] = []
+    private var eliminationOrder = ArcadeEliminations()
     private let indexByID: [PlayerID: Int]
     private let multiplayer: Bool
     private var announcedRampStage = 0
@@ -145,7 +145,7 @@ struct SnakePitSimulation: ArcadeSimulation {
         guard !isFinished, let index = indexByID[playerID], snakes[index].alive else { return [] }
         snakes[index].lives = 0
         clearTrail(of: index)
-        eliminationOrder.append(playerID)
+        eliminationOrder.record(playerID)
         var events: [ArcadeEvent] = [.eliminated(playerID)]
         finishIfDecided(events: &events)
         return events
@@ -328,11 +328,15 @@ struct SnakePitSimulation: ArcadeSimulation {
             events.append(.cue(snakes[owner].playerID, colorHex: ArcadeOutcomeBuilder.winnerColor, haptic: .lightImpact))
         }
 
+        let firstCrashEvent = events.count
         for index in crashed.sorted() {
             crash(index, events: &events)
         }
         if pellet == nil { spawnPellet() }
-        if !crashed.isEmpty { finishIfDecided(events: &events) }
+        if !crashed.isEmpty {
+            eliminationOrder.recordBatch(events[firstCrashEvent...])
+            finishIfDecided(events: &events)
+        }
     }
 
     private mutating func crash(_ index: Int, events: inout [ArcadeEvent]) {
@@ -341,7 +345,6 @@ struct SnakePitSimulation: ArcadeSimulation {
         snakes[index].pendingTurns = []
         if snakes[index].lives <= 0 {
             snakes[index].lives = 0
-            eliminationOrder.append(snakes[index].playerID)
             events.append(.eliminated(snakes[index].playerID))
         } else {
             snakes[index].respawnRemaining = Self.respawnDelay
