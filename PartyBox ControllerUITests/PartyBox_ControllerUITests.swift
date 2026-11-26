@@ -30,7 +30,13 @@ final class PartyBox_ControllerUITests: XCTestCase {
         app.terminate()
 
         app = launch(scenario: "empty-picker", additional: ["--defaults-suite", suite])
-        XCTAssertEqual(element("controller.name.field", in: app).value as? String, "Ada Lovelace")
+        let relaunchedName = element("controller.name.field", in: app)
+        XCTAssertEqual(relaunchedName.value as? String, "Ada Lovelace")
+        replaceText(in: relaunchedName, with: "Grace Hopper")
+        relaunchedName.typeText(XCUIKeyboardKey.return.rawValue)
+        let submitted = NSPredicate(format: "value == %@", "Saved Grace Hopper")
+        expectation(for: submitted, evaluatedWith: element("controller.name.save", in: app))
+        waitForExpectations(timeout: 3)
     }
 
     @MainActor
@@ -230,12 +236,13 @@ final class PartyBox_ControllerUITests: XCTestCase {
               address != "$(PARTYFAULT_HOST)" else {
             throw XCTSkip("scripts/verify.sh supplies PARTYFAULT_HOST for the live smoke flow")
         }
-        let app = launch(additional: [
+        let suite = "PartyBoxControllerUITests.Live.\(UUID().uuidString)"
+        let arguments = [
             "--host", address,
-            "--defaults-suite", "PartyBoxControllerUITests.Live",
+            "--defaults-suite", suite,
             "--controller-id", "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF",
-            "--display-name", "Live Tester",
-        ])
+        ]
+        var app = launch(additional: arguments)
         addUIInterruptionMonitor(withDescription: "Local Network") { alert in
             for title in ["Allow", "OK"] where alert.buttons[title].exists {
                 alert.buttons[title].tap()
@@ -243,14 +250,33 @@ final class PartyBox_ControllerUITests: XCTestCase {
             }
             return false
         }
-        app.tap()
+        app.staticTexts["PARTYBOX"].tap()
+        let name = app.textFields["controller.name.field"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertEqual(name.placeholderValue, "Player")
+        name.tap()
+        name.typeText("Live Tester")
+        join(address, in: app, expectingName: "Live Tester")
+        app.terminate()
+
+        app = launch(additional: arguments)
+        let savedName = app.textFields["controller.name.field"]
+        XCTAssertTrue(savedName.waitForExistence(timeout: 5))
+        XCTAssertEqual(savedName.value as? String, "Live Tester")
+        replaceText(in: savedName, with: " ")
+        join(address, in: app, expectingName: "Player")
+    }
+
+    @MainActor
+    private func join(_ address: String, in app: XCUIApplication, expectingName name: String) {
         let host = element("controller.host.\(address)", in: app)
-        let lobby = element("controller.layout.lobby", in: app)
-        if host.waitForExistence(timeout: 3) {
-            host.tap()
-        }
+        XCTAssertTrue(host.waitForExistence(timeout: 5))
+        if !host.isHittable { app.swipeUp() }
+        host.tap()
         XCTAssertTrue(element("controller.state.connected", in: app).waitForExistence(timeout: 8))
-        XCTAssertTrue(lobby.waitForExistence(timeout: 8))
+        XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 8))
+        let player = element("controller.player.label", in: app).label
+        XCTAssertTrue(player.contains(" P") && player.hasSuffix(name), "Unexpected player label: \(player)")
     }
 
     @MainActor

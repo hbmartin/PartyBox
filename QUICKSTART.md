@@ -395,7 +395,7 @@ Launch `PartyBox` on the Apple TV or Mac. It starts advertising immediately on l
 PARTYPAD
 PARTYBOX
 
-YOUR NAME
+YOUR NAME (OPTIONAL)
 [ Player                    ]  [ SAVE ]
 
 CHOOSE A HOST                       ◌
@@ -407,8 +407,9 @@ Approve the Local Network prompt when it appears.
 
 ### Step 3 — Set a name
 
-Type a name in the field and tap **SAVE** (or hit return). It's saved to the device and reused next time.
-You can also rename mid-party while connected — the TV roster updates live.
+Type a name and tap a host to save it and join. You can also tap **SAVE** or use the keyboard’s
+**Done** key to save it early. PartyPad remembers the name on this phone. Leave the field blank to
+join as **Player**. To change your name after joining, disconnect, edit it in the picker, and rejoin.
 
 ### Step 4 — Pick the host
 
@@ -417,7 +418,7 @@ Tap it.
 
 ✅ Phone: **CONNECTING** ▸ then **YOU'RE IN** with a green check, the roster, and an **OPEN GAME MENU**
 button.
-✅ TV: slot **P1** fills in with the player's name and color, `ACTIVE SEAT`, and the status line flips to
+✅ TV: slot **P1** fills in with the player's name and color, and the status line flips to
 `<name> joined`. The footer changes to **PRESS SELECT TO CHOOSE A GAME**.
 
 ❌ Nothing appears after ~4 seconds? The phone shows a **NO HOSTS FOUND** card with **TRY AGAIN** and

@@ -105,7 +105,7 @@ Stop and file a blocker if any step fails.
 |---|---|---|
 | SMOKE-01 | Cold-launch PartyBox on the Apple TV. | The lobby appears with eight open slots and `Ready for controllers`. No layout is clipped at the television edges. |
 | SMOKE-02 | Cold-launch PartyPad on one iPhone and allow Local Network access if asked. | The Apple TV host appears within four seconds as `READY TO JOIN`. |
-| SMOKE-03 | Set a player name, save it, and join the host. | PartyPad reaches `YOU'RE IN`; TV slot P1 shows the same name and an active seat. |
+| SMOKE-03 | Enter a player name and tap the host while the keyboard is open. | PartyPad reaches `YOU'RE IN` with that name. TV slot P1 shows the same name and an active seat. |
 | SMOKE-04 | Open the game menu from the captain phone. | The TV shows eight games, Party Cup, and History & Leaderboard. The phone changes to menu controls. |
 | SMOKE-05 | Start Snake Pit and complete one round with touch controls, then repeat with the swipe touch style. | Input is responsive, score/state agree on TV and phone, and the latency badge remains green under normal LAN conditions. |
 | SMOKE-06 | Send the phone to the background for about five seconds, then return. | The TV briefly shows `RECONNECTING…`; the phone returns to the same player number, color, and layout. |
@@ -166,10 +166,10 @@ Stop and file a blocker if any step fails.
 
 - [ ] **JOIN-01 — First player:** The first phone receives P1, a unique color/mark, and the captain crown.
   The TV and every connected phone show the same roster.
-- [ ] **JOIN-02 — Rename before joining:** Save a new name in the picker and join. The TV displays the
-  saved name exactly as PartyPad displays it.
-- [ ] **JOIN-03 — Rename while connected:** Change the name while connected. The host and other phones
-  update without changing the player's number, color, or captain role.
+- [ ] **JOIN-02 — Rename before joining:** Disconnect, edit the name in the picker, then rejoin.
+  The TV and other phones display the new name.
+- [ ] **JOIN-03 — Blank name:** Clear the name in the picker and join. PartyPad and the TV show
+  `Player`.
 - [ ] **JOIN-04 — Sequential joins:** Join phones two through eight. Seat numbers follow join order, and
   colors/marks remain distinguishable.
 - [ ] **JOIN-05 — Full-room rejection:** Attempt to join a ninth phone. It receives `CAN'T JOIN` and
@@ -183,8 +183,8 @@ Stop and file a blocker if any step fails.
 - [ ] **JOIN-09 — Same-identity replacement:** Launch a second debug controller with the same explicit
   controller UUID. The newer connection replaces the old one, and the old phone sees the documented
   replacement message.
-- [ ] **JOIN-10 — Saved name:** Relaunch PartyPad after ending the session. The previously saved display
-  name remains populated.
+- [ ] **JOIN-10 — Saved name:** Save a name with **Save** or the keyboard’s **Done** key. Relaunch
+  PartyPad and verify the saved name remains populated in the picker.
 
 ### Shared navigation and ready checks
 

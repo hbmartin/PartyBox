@@ -113,12 +113,23 @@ struct PartyBox_ControllerTests {
 
             let first = ControllerCoordinator(defaults: defaults, configuration: configuration)
             let controllerID = first.client.controllerID
-            first.displayName = "  Ada    Lovelace  "
-            await first.rename()
+            #expect(first.displayNameDraft.isEmpty)
+            #expect(first.client.displayName == "Player")
+            first.displayNameDraft = "  Ada    Lovelace  "
+            await first.saveDisplayName()
+            #expect(first.displayNameDraft == "Ada Lovelace")
 
             let relaunched = ControllerCoordinator(defaults: defaults, configuration: configuration)
             #expect(relaunched.client.controllerID == controllerID)
-            #expect(relaunched.displayName == "Ada Lovelace")
+            #expect(relaunched.displayNameDraft == "Ada Lovelace")
+            #expect(relaunched.client.displayName == "Ada Lovelace")
+
+            relaunched.displayNameDraft = ""
+            await relaunched.saveDisplayName()
+            #expect(relaunched.client.displayName == "Player")
+            let cleared = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            #expect(cleared.displayNameDraft.isEmpty)
+            #expect(cleared.savedDisplayName == "Player")
         }
     }
 

@@ -151,7 +151,8 @@ final class ControllerCoordinator {
 
     let client: PartyClient
     let configuration: ControllerLaunchConfiguration
-    var displayName: String
+    private static let defaultDisplayName = "Player"
+    var displayNameDraft: String
     private(set) var savedDisplayName: String
     private(set) var discoveryHelpVisible = false
     private(set) var roster: [PlayerInfo] = []
@@ -297,10 +298,10 @@ final class ControllerCoordinator {
             defaults.set(controllerID.rawValue.uuidString, forKey: "partybox.controllerID")
         }
         let name = DisplayName.sanitized(
-            configuration.displayName ?? defaults.string(forKey: "partybox.displayName") ?? "Player",
-            fallback: "Player"
+            configuration.displayName ?? defaults.string(forKey: "partybox.displayName") ?? Self.defaultDisplayName,
+            fallback: Self.defaultDisplayName
         )
-        displayName = name
+        displayNameDraft = Self.editableName(name)
         savedDisplayName = name
         let preferredMark: PlayerMark
         if let rawMark = defaults.string(forKey: "partybox.preferredMark"),
@@ -404,16 +405,24 @@ final class ControllerCoordinator {
         discoveryHelpGeneration = nil
         discoveryHelpVisible = false
         resetSessionPresentation(motionPolicy: .stop)
+        if displayNameDraft != Self.editableName(savedDisplayName) {
+            await saveDisplayName()
+        }
         await client.connect(to: host)
         setIdleTimer(connected: isConnected)
         updateMotionCapture()
     }
 
-    func rename() async {
-        displayName = DisplayName.sanitized(displayName, fallback: "Player")
-        defaults.set(displayName, forKey: "partybox.displayName")
-        savedDisplayName = displayName
-        await client.rename(to: displayName)
+    func saveDisplayName() async {
+        let name = DisplayName.sanitized(displayNameDraft, fallback: Self.defaultDisplayName)
+        displayNameDraft = Self.editableName(name)
+        defaults.set(name, forKey: "partybox.displayName")
+        savedDisplayName = name
+        await client.rename(to: name)
+    }
+
+    private static func editableName(_ name: String) -> String {
+        name == defaultDisplayName ? "" : name
     }
 
     func returnToPicker() async {
