@@ -163,22 +163,46 @@ extension NetworkIntegrationTests {
     @Test func UDPDelayKeepsPendingWorkBoundedPerSession() async throws {
       let rig = FaultRig(profile: FaultProfile(delayMilliseconds: 60_000))
       let metadata = try await rig.start()
-      let client = PartyClient(displayName: "Bounded", inputSendInterval: .milliseconds(1))
-      await client.connect(host: metadata.host, port: metadata.tcpPort)
+      do {
+        let host = NWEndpoint.Host(metadata.host)
+        let tcpPort = try #require(NWEndpoint.Port(rawValue: metadata.tcpPort))
+        let control = ClientControlConnection(
+          to: .hostPort(host: host, port: tcpPort),
+          using: .parameters { clientControlStack() }.peerToPeerIncluded(false)
+        )
+        defer { withExtendedLifetime(control) {} }
+        try await control.send(.hello(Hello(controllerID: ControllerID(), displayName: "Bounded")))
+        guard case let .welcome(welcome) = try await control.receive().content else {
+          throw PartyClientError.unexpectedHandshake
+        }
+        let udpPort = try #require(NWEndpoint.Port(rawValue: metadata.udpPort))
+        let udp = NetworkConnection<UDP>(
+          to: .hostPort(host: host, port: udpPort),
+          using: .parameters { UDP() }.peerToPeerIncluded(false)
+        )
+        let queueLimit = NetworkFaultProxy.maximumQueuedForwardsPerToken
+        let packetCount = queueLimit + 32
+        // Pace small batches by receiver progress rather than racing two 1 ms timers.
+        for sequence in 1...packetCount {
+          try await udp.send(InputFrame(
+            token: welcome.sessionToken, sequence: UInt32(sequence),
+            clientTimeMs: 0, axisX: 0, axisY: 0
+          ).encode())
+          if sequence.isMultiple(of: 16) {
+            try await waitUntil { await rig.proxy.currentMetrics().udpReceived >= sequence }
+          }
+        }
+        try await waitUntil { await rig.proxy.currentMetrics().udpReceived >= packetCount }
 
-      for index in 0..<400 {
-        client.setAxes(axisX: index.isMultiple(of: 2) ? -1 : 1)
-        try await Task.sleep(for: .milliseconds(1))
+        #expect(await rig.proxy.pendingUDPForwardCount() <= queueLimit + 1)
+        let metrics = await rig.proxy.currentMetrics()
+        #expect(metrics.udpRejected == 0)
+        #expect(metrics.udpDropped > 0)
+        await rig.stop()
+      } catch {
+        await rig.stop()
+        throw error
       }
-      try await waitUntil { await rig.proxy.currentMetrics().udpReceived >= 300 }
-
-      #expect(
-        await rig.proxy.pendingUDPForwardCount()
-          <= NetworkFaultProxy.maximumQueuedForwardsPerToken + 1
-      )
-      #expect(await rig.proxy.currentMetrics().udpDropped > 0)
-      await client.disconnect()
-      await rig.stop()
     }
 
     @Test func cancelledUDPFailureDoesNotCountAsRejected() async throws {
