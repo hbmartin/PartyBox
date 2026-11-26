@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+unset CDPATH
 shopt -s nullglob
 
 source_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/record-goldens.sh"
@@ -7,6 +8,7 @@ test_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-record-test.XXXXXX")"
 test_root="$(cd "$test_root" && pwd)"
 real_cp="$(command -v cp)"
 real_rm="$(command -v rm)"
+real_mkdir="$(command -v mkdir)"
 cleanup_test_root() {
     local status=$?
     trap - EXIT
@@ -24,7 +26,15 @@ make_case() {
     local root="$test_root/$1"
     mkdir -p "$root/scripts" "$root/bin" "$root/tmp" \
         "$root/PartyNet/Tests/PartyGamesTests/Fixtures" "$root/PartyBoxTests/Fixtures"
-    "$real_cp" "$source_script" "$root/scripts/record-goldens.sh"
+    if [[ "$1" == double_signal_cleanup_entry ]]; then
+        # Deliver a second signal before cleanup has transitioned to restoring.
+        awk '{ print }
+             /^    local status=.*restore_failed=false$/ { print "    kill -TERM \"$$\""; injected=1 }
+             END { if (!injected) exit 1 }' \
+            "$source_script" >"$root/scripts/record-goldens.sh"
+    else
+        "$real_cp" "$source_script" "$root/scripts/record-goldens.sh"
+    fi
     printf '{"original":"games"}\n' >"$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json"
     printf '{"original":"host"}\n' >"$root/PartyBoxTests/Fixtures/unavailable-screen.json"
 
@@ -45,7 +55,8 @@ else
     if [[ "$STUB_SCENARIO" == interrupt_int ]]; then
         kill -INT "$PPID"
         exit 0
-    elif [[ "$STUB_SCENARIO" == interrupt_term || "$STUB_SCENARIO" == cleanup_term ]]; then
+    elif [[ "$STUB_SCENARIO" == interrupt_term || "$STUB_SCENARIO" == cleanup_term \
+        || "$STUB_SCENARIO" == double_signal_cleanup_entry ]]; then
         kill -TERM "$PPID"
         exit 0
     elif [[ "$STUB_SCENARIO" == interrupt_quit ]]; then
@@ -59,7 +70,8 @@ else
         exit 1
     elif [[ "$STUB_SCENARIO" == verify_fail || "$STUB_SCENARIO" == games_restore_copy_fail \
         || "$STUB_SCENARIO" == host_restore_copy_fail || "$STUB_SCENARIO" == closed_stderr \
-        || "$STUB_SCENARIO" == broken_stderr \
+        || "$STUB_SCENARIO" == broken_stderr || "$STUB_SCENARIO" == broken_stderr_log_unwritable \
+        || "$STUB_SCENARIO" == append_recovery || "$STUB_SCENARIO" == restore_hup \
         || "$STUB_SCENARIO" == stage_restore_interrupt || "$STUB_SCENARIO" == empty_backup \
         || "$STUB_SCENARIO" == cleanup_int || "$STUB_SCENARIO" == cleanup_removal_int ]]; then
         exit 1
@@ -108,9 +120,18 @@ case "$STUB_SCENARIO:$source_file" in
     cleanup_int:*/backup-games/*.json)
         kill -INT "$PPID"
         exit 74 ;;
+    restore_hup:*/backup-games/*.json)
+        kill -HUP "$PPID"
+        kill -HUP "$$" ;;
+    broken_stderr_log_unwritable:*/backup-games/*.json)
+        "$REAL_MKDIR" "${source_file%/backup-games/*}/recovery.log"
+        exit 74 ;;
+    append_recovery:*/backup-games/*.json)
+        printf 'Earlier failure context\n' >"${source_file%/backup-games/*}/recovery.log"
+        exit 74 ;;
     normal:*/games/*.json)
         case_root="$(cd "$(dirname "$0")/.." && pwd)"
-        grep -F 'Recovery backup: ' "$case_root/run.log" >/dev/null || exit 74 ;;
+        grep -F 'Temporary rollback backup: ' "$case_root/run.log" >/dev/null || exit 74 ;;
 esac
 if [[ "$STUB_SCENARIO" == backup_copy_fail && "$3" == */backup-host/ ]]; then exit 74; fi
 if [[ "$STUB_SCENARIO" == backup_checksum_fail && "$3" == */backup-host/ ]]; then
@@ -140,7 +161,13 @@ if [[ "$STUB_SCENARIO" == cleanup_removal_int && "${2:-}" == */golden-backups/pa
 fi
 exec "$REAL_RM" "$@"
 SH
-    chmod +x "$root/bin/swift" "$root/bin/xcodebuild" "$root/bin/cp" "$root/bin/rm"
+    cat >"$root/bin/mkdir" <<'SH'
+#!/bin/bash
+set -euo pipefail
+if [[ "$STUB_SCENARIO" == early_setup_fail && "${2:-}" == */partybox-goldens.*/games ]]; then exit 74; fi
+exec "$REAL_MKDIR" "$@"
+SH
+    chmod +x "$root/bin/swift" "$root/bin/xcodebuild" "$root/bin/cp" "$root/bin/rm" "$root/bin/mkdir"
 }
 
 run_script() {
@@ -148,20 +175,20 @@ run_script() {
     local -a command
     shift 2
     command=(env PATH="$root/bin:$PATH" TMPDIR="$root/tmp" STUB_SCENARIO="$scenario" \
-        REAL_CP="$real_cp" REAL_RM="$real_rm" \
+        REAL_CP="$real_cp" REAL_RM="$real_rm" REAL_MKDIR="$real_mkdir" \
         /bin/bash "$root/scripts/record-goldens.sh")
     if [[ "$scenario" == closed_stderr ]]; then
         "${command[@]}" "$@" >"$root/run.log" 2>&-
-    elif [[ "$scenario" == broken_stderr ]]; then
+    elif [[ "$scenario" == broken_stderr || "$scenario" == broken_stderr_log_unwritable ]]; then
         ( set +e; "${command[@]}" "$@" 2>&1 | :; exit "${PIPESTATUS[0]}" ) >"$root/run.log"
     else
         "${command[@]}" "$@" >"$root/run.log" 2>&1
     fi
 }
 
-sigint_catchable() {
+signal_catchable() {
     local status=0
-    /bin/bash -c 'trap "exit 42" INT; kill -INT "$$"; exit 0' >/dev/null 2>&1 || status=$?
+    /bin/bash -c 'trap "exit 42" "$1"; kill -s "$1" "$$"; exit 0' _ "$1" >/dev/null 2>&1 || status=$?
     [[ "$status" -eq 42 ]]
 }
 
@@ -253,14 +280,14 @@ assert_no_backups "$root"
 assert_no_temp "$root"
 
 for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch_lost \
-    interrupt_term interrupt_quit interrupt_hup; do
+    interrupt_term interrupt_quit interrupt_hup double_signal_cleanup_entry restore_hup; do
     make_case "$scenario"
     root="$test_root/$scenario"
     expected=1
     case "$scenario" in
-        interrupt_term) expected=143 ;;
-        interrupt_quit) expected=131 ;;
-        interrupt_hup) expected=129 ;;
+        interrupt_term|double_signal_cleanup_entry) expected=143 ;;
+        interrupt_quit) signal_catchable QUIT || continue; expected=131 ;;
+        interrupt_hup) signal_catchable HUP || continue; expected=129 ;;
     esac
     expect_status "$root" "$scenario" "$expected"
     assert_original "$root"
@@ -269,7 +296,7 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
     assert_no_staging "$root"
 done
 
-if sigint_catchable; then
+if signal_catchable INT; then
     make_case interrupt_int
     root="$test_root/interrupt_int"
     expect_status "$root" interrupt_int 130
@@ -298,6 +325,29 @@ if sigint_catchable; then
     grep -F "partially removed golden backup remains at ${backups[0]}" "$root/run.log" >/dev/null \
         || fail "Interrupted backup removal was not reported"
 fi
+
+make_case early_setup_fail
+root="$test_root/early_setup_fail"
+expect_status "$root" early_setup_fail 74
+assert_original "$root"
+assert_no_backups "$root"
+assert_no_temp "$root"
+
+make_case broken_stderr_log_unwritable
+root="$test_root/broken_stderr_log_unwritable"
+expect_status "$root" broken_stderr_log_unwritable 1
+assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+assert_no_temp "$root"
+assert_no_staging "$root"
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+[[ ${#backups[@]} -eq 1 && -d "${backups[0]}/recovery.log" ]] || fail "Expected the backup to survive the log failure"
+
+make_case append_recovery
+root="$test_root/append_recovery"
+expect_status "$root" append_recovery 1
+assert_backup "$root"
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+grep -F 'Earlier failure context' "${backups[0]}/recovery.log" >/dev/null || fail "Earlier recovery log entry was lost"
 
 make_case empty_backup
 root="$test_root/empty_backup"

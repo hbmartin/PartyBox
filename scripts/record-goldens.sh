@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+unset CDPATH
 shopt -s nullglob
 
 allow_set_change=false
@@ -16,15 +17,34 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 games_fixtures="$ROOT_DIR/PartyNet/Tests/PartyGamesTests/Fixtures"
 host_fixtures="$ROOT_DIR/PartyBoxTests/Fixtures"
-record_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-goldens.XXXXXX")"
-stage_tag="${record_root##*/}"
-games_output="$record_root/games"
-host_output="$record_root/host"
+record_root=""
+stage_tag=""
 backup_root=""
 games_backup=""
 host_backup=""
-mkdir -p "$games_output" "$host_output"
 rollback_pending=false
+cleanup_phase=recording
+signal_status=0
+cleanup_cancelled=false
+
+note_signal() {
+    if (( signal_status == 0 )); then signal_status=$1; fi
+    case "$cleanup_phase" in
+        restoring|finalizing) cleanup_cancelled=true ;;
+    esac
+}
+
+abort_if_signalled() {
+    if (( signal_status != 0 )); then exit "$signal_status"; fi
+}
+
+sync_can_continue() {
+    if [[ "$cleanup_phase" == restoring ]]; then
+        [[ "$cleanup_cancelled" == false ]]
+    else
+        (( signal_status == 0 ))
+    fi
+}
 
 report() {
     # A broken stderr pipe must only terminate the reporting subprocess.
@@ -65,6 +85,7 @@ sync_json_set() {
     source_fixtures=("$source"/*.json)
     # Bash 3.2 treats empty arrays as unset under nounset.
     for fixture in ${source_fixtures[@]+"${source_fixtures[@]}"}; do
+        sync_can_continue || return 1
         if ! staged="$(mktemp "$destination/.partybox-fixture.$stage_tag.XXXXXX")"; then
             status=1
             continue
@@ -74,6 +95,7 @@ sync_json_set() {
             status=1
             continue
         fi
+        sync_can_continue || return 1
         if ! mv -f "$staged" "$destination/${fixture##*/}"; then
             rm -f "$staged" || true
             status=1
@@ -85,6 +107,7 @@ sync_json_set() {
     fi
     matches_manifest "$source" "$expected_manifest" || return 1
     for fixture in "$destination"/*.json; do
+        sync_can_continue || return 1
         found=false
         for source_fixture in ${source_fixtures[@]+"${source_fixtures[@]}"}; do
             if [[ "${source_fixture##*/}" == "${fixture##*/}" ]]; then
@@ -103,6 +126,7 @@ sync_json_set() {
 
 cleanup_stages() {
     local staged status=0
+    [[ -n "$stage_tag" ]] || return 0
     for staged in "$games_fixtures"/.partybox-fixture."$stage_tag".* \
         "$host_fixtures"/.partybox-fixture."$stage_tag".*; do
         if ! rm -f -- "$staged"; then
@@ -116,10 +140,14 @@ print_recovery() {
     local recovery
     recovery="$(
         printf '%s\n' "$1"
-        if backup_intact; then
+        if { [[ "$cleanup_cancelled" == true && -d "$games_backup" && -d "$host_backup" ]]; } \
+            || { [[ "$cleanup_cancelled" == false ]] && backup_intact; }; then
             echo "Golden backups retained at $backup_root"
             echo "  games: $games_backup"
             echo "  host: $host_backup"
+            if [[ "$cleanup_cancelled" == true ]]; then
+                echo "Inspect the backup contents and fixture diff before restoring."
+            fi
             echo "After resolving the interruption or file error, restore the original fixture sets with:"
             printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$games_backup" "$games_fixtures"
             printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$host_backup" "$host_fixtures"
@@ -132,36 +160,18 @@ print_recovery() {
     )"
     report "$recovery"
     if [[ -d "$backup_root" ]]; then
-        printf '%s\n' "$recovery" >"$backup_root/recovery.log" || true
+        printf '%s\n' "$recovery" 2>/dev/null >>"$backup_root/recovery.log" || true
     fi
-}
-
-cleanup_interrupted() {
-    local status=$1
-    set +e
-    trap - EXIT
-    trap '' HUP INT QUIT TERM
-    if ! cleanup_stages; then
-        report "Could not remove golden fixture staging files."
-    fi
-    if [[ "$rollback_pending" == true ]]; then
-        print_recovery "Fixture restoration interrupted."
-    elif [[ -d "$backup_root" ]]; then
-        report "Cleanup interrupted. An unused or partially removed golden backup remains at $backup_root."
-    fi
-    rm -rf "$record_root" || report "Could not remove temporary golden output at $record_root"
-    exit "$status"
 }
 
 cleanup() {
     local status=$? restore_failed=false
     set +e
-    trap 'cleanup_interrupted 129' HUP
-    trap 'cleanup_interrupted 130' INT
-    trap 'cleanup_interrupted 131' QUIT
-    trap 'cleanup_interrupted 143' TERM
     trap - EXIT
     if [[ "$rollback_pending" == true ]]; then
+        # A terminal hangup must leave both the shell and restore commands running.
+        trap '' HUP
+        cleanup_phase=restoring
         report "Restoring golden fixtures after unsuccessful verification."
         if ! backup_intact; then
             restore_failed=true
@@ -169,12 +179,14 @@ cleanup() {
             if ! sync_json_set "$games_backup" "$games_fixtures" "$games_original_manifest"; then
                 restore_failed=true
             fi
-            if ! sync_json_set "$host_backup" "$host_fixtures" "$host_original_manifest"; then
+            if [[ "$cleanup_cancelled" == false ]] && ! sync_json_set "$host_backup" "$host_fixtures" "$host_original_manifest"; then
                 restore_failed=true
             fi
         fi
         if ! cleanup_stages; then restore_failed=true; fi
-        if [[ "$restore_failed" == true ]]; then
+        if [[ "$cleanup_cancelled" == true ]]; then
+            print_recovery "Fixture restoration interrupted."
+        elif [[ "$restore_failed" == true ]]; then
             print_recovery "Automatic fixture restoration was incomplete."
             if (( status == 0 )); then status=1; fi
         else
@@ -184,23 +196,40 @@ cleanup() {
         report "Could not remove golden fixture staging files."
         if (( status == 0 )); then status=1; fi
     fi
+
+    cleanup_phase=finalizing
     if [[ -n "$backup_root" && "$rollback_pending" == false ]]; then
-        if ! rm -rf "$backup_root"; then
+        if [[ "$cleanup_cancelled" == false ]] && ! rm -rf "$backup_root"; then
             report "Could not remove golden backup at $backup_root"
             if (( status == 0 )); then status=1; fi
         fi
+        if [[ "$cleanup_cancelled" == true && -d "$backup_root" ]]; then
+            report "Cleanup interrupted. An unused or partially removed golden backup remains at $backup_root."
+        fi
     fi
-    if ! rm -rf "$record_root"; then
+    if [[ -n "$record_root" ]] && ! rm -rf "$record_root"; then
         report "Could not remove temporary golden output at $record_root"
         if (( status == 0 )); then status=1; fi
     fi
+    if (( signal_status != 0 )); then status=$signal_status; fi
     exit "$status"
 }
+
+# Keep the signal handlers installed across the transition into the EXIT trap.
+# They record signals without exiting from inside cleanup.
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 131' QUIT
-trap 'exit 143' TERM
+trap 'note_signal 129' HUP
+trap 'note_signal 130' INT
+trap 'note_signal 131' QUIT
+trap 'note_signal 143' TERM
+
+record_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-goldens.XXXXXX")"
+abort_if_signalled
+stage_tag="${record_root##*/}"
+games_output="$record_root/games"
+host_output="$record_root/host"
+mkdir -p "$games_output" "$host_output"
+abort_if_signalled
 
 fixture_names() {
     local directory=$1 fixture
@@ -230,6 +259,7 @@ env PARTYBOX_GOLDEN_OUTPUT_DIR="$games_output" \
         exit 1
     }
 
+abort_if_signalled
 env TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR="$host_output" \
     xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
     -testPlan PartyBox-Normal -destination 'platform=macOS' \
@@ -239,6 +269,7 @@ env TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR="$host_output" \
         exit 1
     }
 
+abort_if_signalled
 check_candidate_set PartyGames "$games_output" "$games_fixtures"
 check_candidate_set PartyBox "$host_output" "$host_fixtures"
 games_candidate_manifest="$(fixture_manifest "$games_output")"
@@ -256,16 +287,21 @@ if ! backup_intact; then
     report "Golden backup verification failed at $backup_root."
     exit 1
 fi
-report "Recovery backup: $backup_root"
+report "Temporary rollback backup: $backup_root"
+abort_if_signalled
 rollback_pending=true
 sync_json_set "$games_output" "$games_fixtures" "$games_candidate_manifest"
+abort_if_signalled
 sync_json_set "$host_output" "$host_fixtures" "$host_candidate_manifest"
+abort_if_signalled
 
 swift test --package-path "$ROOT_DIR/PartyNet" --filter ControllerScreenGoldenTests
+abort_if_signalled
 xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
     -testPlan PartyBox-Normal -destination 'platform=macOS' \
     '-only-testing:PartyBoxTests/PartyBoxTests/oversizedNestedControllerLayoutFallsBackToASendableScreen()' \
     test
 
+abort_if_signalled
 rollback_pending=false
 echo "Golden fixtures recorded and verified. Review the fixture diff before committing."
