@@ -60,13 +60,13 @@ final class ArcadeScene: SKScene {
     }
 
     /// A glowing round player token carrying the player's mark glyph.
-    func makeToken(for playerID: PlayerID, radius: CGFloat) -> SKShapeNode {
+    func makeToken(for playerID: PlayerID, radius: CGFloat, showsMark: Bool = true) -> SKShapeNode {
         let node = SKShapeNode(circleOfRadius: radius)
         node.fillColor = color(for: playerID)
         node.strokeColor = .white
         node.lineWidth = 3
         node.glowWidth = max(4, radius * 0.35)
-        if let info = playerByID[playerID] {
+        if showsMark, let info = playerByID[playerID] {
             let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
             mark.text = info.mark.glyph
             mark.fontSize = max(14, radius * 0.75)

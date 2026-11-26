@@ -112,6 +112,7 @@ struct TurboLoopTrack: Sendable {
     let pads: [BoostPad]
     /// Gate positions in passing order: the three checkpoints, then the line.
     let gates: [Double]
+    let gatePoses: [Pose]
     private let pieceStarts: [Double]
     private let pieceStartPoses: [Pose]
 
@@ -160,7 +161,11 @@ struct TurboLoopTrack: Sendable {
                 heading: pose.heading
             )
         }
-        gates = Self.checkpointFractions.map { $0 * total } + [0]
+        let gateDistances = Self.checkpointFractions.map { $0 * total } + [0]
+        gates = gateDistances
+        gatePoses = gateDistances.map {
+            Self.pose(atDistance: $0, pieces: pieces, starts: starts, poses: poses)
+        }
     }
 
     /// Exact pose `distance` along the circuit.
@@ -266,6 +271,21 @@ struct TurboLoopTrack: Sendable {
     func sample(at distance: Double) -> Sample {
         samples[wrapIndex(Int((wrap(distance) / spacing).rounded()))]
     }
+
+    func gateCrossings(from start: ArcadeVector, to end: ArcadeVector)
+        -> [(gate: Int, fraction: Double, forward: Bool)] {
+        gatePoses.enumerated().compactMap { index, gate -> (Int, Double, Bool)? in
+            let tangent = ArcadeVector(angle: gate.heading)
+            let before = (start - gate.position).dot(tangent)
+            let after = (end - gate.position).dot(tangent)
+            guard (before < 0) != (after < 0) else { return nil }
+            let fraction = before / (before - after)
+            let crossing = start + ((end - start) * fraction)
+            let lateral = (crossing - gate.position).dot(tangent.perpendicular)
+            guard abs(lateral) <= Self.halfWidth else { return nil }
+            return (index, fraction, before < 0)
+        }.sorted { $0.1 < $1.1 }
+    }
 }
 
 // MARK: - Simulation
@@ -354,8 +374,7 @@ struct TurboLoopSimulation: ArcadeSimulation {
     private(set) var cars: [Car]
     private(set) var elapsed = 0.0
     private(set) var isFinished = false
-    /// Seconds left for the stragglers once the first car finishes.
-    private(set) var finishWindowRemaining: Double?
+    private var finishDeadline: Double?
     /// Current running order, leader first.
     private(set) var order: [PlayerID] = []
     private var announcedFinalLap = false
@@ -406,10 +425,10 @@ struct TurboLoopSimulation: ArcadeSimulation {
     // MARK: ArcadeSimulation
 
     var timeRemaining: Double? {
-        let cap = max(0, Self.raceCap - elapsed)
-        if let window = finishWindowRemaining { return max(0, min(window, cap)) }
-        return cap
+        max(0, raceDeadline - elapsed)
     }
+
+    private var raceDeadline: Double { min(Self.raceCap, finishDeadline ?? Self.raceCap) }
 
     func isActive(_ playerID: PlayerID) -> Bool {
         indexByID[playerID].map { !cars[$0].forfeited } ?? false
@@ -426,10 +445,9 @@ struct TurboLoopSimulation: ArcadeSimulation {
 
     mutating func step(deltaTime: Double, inputs: [PlayerID: ArcadeInput]) -> [ArcadeEvent] {
         guard !isFinished else { return [] }
-        let delta = min(max(deltaTime, 0), 0.05)
+        let delta = min(max(deltaTime, 0), 0.05, max(0, raceDeadline - elapsed))
         var events: [ArcadeEvent] = []
         elapsed += delta
-        if let window = finishWindowRemaining { finishWindowRemaining = window - delta }
         let starts = cars.map(\.position)
         for index in cars.indices where !cars[index].forfeited {
             let input = cars[index].isRacing ? inputs[cars[index].playerID] ?? .idle : .idle
@@ -439,11 +457,14 @@ struct TurboLoopSimulation: ArcadeSimulation {
         for index in cars.indices where !cars[index].forfeited {
             follow(index, from: starts[index], delta: delta, events: &events)
         }
-        order = rankedCars().map(\.playerID)
+        let ranking = rankedCars()
+        order = ranking.map(\.playerID)
+        if finishDeadline == nil, let first = ranking.first, let finishTime = first.finishTime {
+            finishDeadline = finishTime + Self.finishWindow
+            events.append(.banner("P\(Int(first.playerID.rawValue) + 1) FINISHES!"))
+        }
         let running = cars.filter { !$0.forfeited }
-        if running.allSatisfy(\.isFinished)
-            || elapsed >= Self.raceCap
-            || (finishWindowRemaining ?? 1) <= 0 {
+        if running.allSatisfy(\.isFinished) || elapsed >= raceDeadline {
             isFinished = true
         }
         return events
@@ -636,8 +657,7 @@ struct TurboLoopSimulation: ArcadeSimulation {
             cars[index] = car
             return
         }
-        let moved = track.gap(from: previousDistance, to: located.distance)
-        crossGates(&car, from: previousDistance, moved: moved, delta: delta, events: &events)
+        crossGates(&car, from: start, delta: delta, events: &events)
         if car.isRacing {
             touchPads(&car, events: &events)
             updateWrongWay(&car, delta: delta, events: &events)
@@ -653,27 +673,23 @@ struct TurboLoopSimulation: ArcadeSimulation {
     /// takes the lap back and driving forward again only restores it.
     private mutating func crossGates(
         _ car: inout Car,
-        from start: Double,
-        moved: Double,
+        from start: ArcadeVector,
         delta: Double,
         events: inout [ArcadeEvent]
     ) {
-        guard moved != 0 else { return }
         let finishGate = track.gates.count - 1
-        for (gate, gateDistance) in track.gates.enumerated() {
-            if moved > 0 {
-                let ahead = track.wrap(gateDistance - start)
-                guard ahead > 0, ahead <= moved, gate == car.nextGate else { continue }
+        for (gate, fraction, forward) in track.gateCrossings(from: start, to: car.position) where car.isRacing {
+            if forward {
+                guard gate == car.nextGate else { continue }
                 car.nextGate = (gate + 1) % track.gates.count
                 if gate == finishGate {
-                    let crossedAt = elapsed - (delta * ((moved - ahead) / moved))
+                    let crossedAt = elapsed - (delta * (1 - fraction))
                     car.lineTimes.append(crossedAt)
                     completeLap(&car, at: crossedAt, events: &events)
                 }
             } else {
-                let behind = track.wrap(start - gateDistance)
                 let lastPassed = (car.nextGate + track.gates.count - 1) % track.gates.count
-                guard behind < -moved, gate == lastPassed else { continue }
+                guard car.lap >= 0, gate == lastPassed else { continue }
                 car.nextGate = gate
                 if gate == finishGate, !car.lineTimes.isEmpty {
                     car.lineTimes.removeLast()
@@ -684,13 +700,8 @@ struct TurboLoopSimulation: ArcadeSimulation {
 
     private mutating func completeLap(_ car: inout Car, at time: Double, events: inout [ArcadeEvent]) {
         if car.lap >= Self.laps {
-            let first = !cars.contains { $0.finishTime != nil }
             car.finishTime = time
             car.forwardSpeed = min(car.forwardSpeed, Self.topSpeed)
-            if first {
-                finishWindowRemaining = Self.finishWindow
-                events.append(.banner("P\(Int(car.playerID.rawValue) + 1) FINISHES!"))
-            }
             events.append(.sound(.success))
             events.append(.cue(car.playerID, colorHex: ArcadeOutcomeBuilder.winnerColor, haptic: .success))
         } else if car.lap >= 1 {

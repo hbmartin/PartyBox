@@ -287,7 +287,8 @@ struct PartyGamesTests {
             onEvents: { events.append(contentsOf: $0) }
         ) as? ArcadeSession<LastLightRenderer>)
 
-        session.forfeit(playerID)
+        session.skipIntroForTesting()
+        session.advanceForTesting(seconds: LastLightSimulation.duration + 1)
 
         #expect(session.isCompletedForTesting)
         let completed = try #require(events.compactMap { event -> GameOutcome? in
@@ -318,8 +319,8 @@ struct PartyGamesTests {
             if case .completed(let outcome) = event { outcome } else { nil }
         }.first)
         #expect(completed.winner == (playerCount == 1 ? nil : PlayerID(1)))
+        #expect(completed.playerOutcomes.contains(.init(playerID: PlayerID(0), outcome: .forfeited)))
         if playerCount == 2 {
-            #expect(completed.playerOutcomes.contains(.init(playerID: PlayerID(0), outcome: .forfeited)))
             #expect(completed.standings.map(\.playerID) == [PlayerID(1), PlayerID(0)])
         }
     }

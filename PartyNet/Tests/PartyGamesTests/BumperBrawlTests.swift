@@ -285,6 +285,27 @@ struct BumperBrawlTests {
         #expect(simulation.ranking().map(\.playerID) == [ids[2], ids[1], ids[0]])
     }
 
+    @Test func simultaneousRingOutsUseScoreBeforeSeatOrder() {
+        let ids = ArcadeHarness.playerIDs(2)
+        var simulation = Simulation(players: ids, seed: 7)
+        simulation.placeForTesting(ids[1], at: offset(400))
+        simulation.placeForTesting(ids[0], at: offset(300), velocity: ArcadeVector(x: 600, y: 0))
+        run(&simulation, seconds: 2) { $0.contains(.lostLife(ids[1], remaining: 2)) }
+        #expect(simulation.puck(for: ids[0])?.kos == 1)
+        run(&simulation, seconds: Simulation.respawnDelay + Simulation.ghostDuration + 0.1)
+        simulation.setLivesForTesting(1, playerID: ids[0])
+        simulation.setLivesForTesting(1, playerID: ids[1])
+        simulation.placeForTesting(ids[0], at: offset(0, -490))
+        simulation.placeForTesting(ids[1], at: offset(0, 490))
+
+        let events = simulation.step(deltaTime: frame, inputs: [:])
+
+        #expect(events.contains(.eliminated(ids[0])))
+        #expect(events.contains(.eliminated(ids[1])))
+        #expect(simulation.isFinished)
+        #expect(simulation.ranking().map(\.playerID) == ids)
+    }
+
     @Test func sameSeedAndScriptedInputsReplayIdentically() {
         func play(players: Int) -> (Simulation, [ArcadeEvent]) {
             let ids = ArcadeHarness.playerIDs(players)

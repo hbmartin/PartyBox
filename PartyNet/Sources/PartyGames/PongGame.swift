@@ -12,7 +12,7 @@ struct PongGame: PartyGame {
         id: "big-paddles", title: "BIG PADDLES", detail: "35% longer paddles"
     )
     static let extraLife = GameModifierDescriptor(
-        id: "extra-life", title: "EXTRA LIFE", detail: "Start with four lives"
+        id: "extra-life", title: "EXTRA LIFE", detail: "Start with one extra life"
     )
 
     let descriptor = GameDescriptor(
@@ -247,7 +247,7 @@ final class PongGameSession: PartyGameSession {
                 let title: String
                 let subtitle: String
                 if solo {
-                    title = "PRACTICE COMPLETE"
+                    title = forfeited.isEmpty ? "PRACTICE COMPLETE" : "PRACTICE ENDED"
                     subtitle = "Rally: \(rally)  •  Select to rotate and play again"
                 } else if let winner,
                           let player = context.participants.first(where: { $0.player.id == winner })?.player {
@@ -258,10 +258,10 @@ final class PongGameSession: PartyGameSession {
                     subtitle = "Select for the next match"
                 }
                 let outcomes = context.participants.map { participant in
-                    let outcome: MatchParticipantOutcome = if solo {
-                        .practice
-                    } else if forfeited.contains(participant.player.id) {
+                    let outcome: MatchParticipantOutcome = if forfeited.contains(participant.player.id) {
                         .forfeited
+                    } else if solo {
+                        .practice
                     } else if participant.player.id == winner {
                         .won
                     } else {
@@ -273,6 +273,7 @@ final class PongGameSession: PartyGameSession {
                 var rankedIDs: [PlayerID] = winner.map { [$0] } ?? []
                 rankedIDs.append(contentsOf: eliminationOrder.reversed().filter { $0 != winner })
                 rankedIDs.append(contentsOf: context.participants.map(\.player.id).filter { !rankedIDs.contains($0) })
+                rankedIDs = rankedIDs.filter { !forfeited.contains($0) } + rankedIDs.filter { forfeited.contains($0) }
                 let ranked = rankedIDs.compactMap { participantsByID[$0] }.enumerated().map { index, participant in
                     GameStanding(playerID: participant.player.id, rank: index + 1, score: participant.player.id == winner ? rally : 0)
                 }

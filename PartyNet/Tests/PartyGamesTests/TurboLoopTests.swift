@@ -293,6 +293,51 @@ struct TurboLoopTests {
         #expect(ranking[1].detail == "Lap 1/\(TurboLoopSimulation.laps)")
     }
 
+    @Test func projectedProgressOutsideTheRoadCannotAdvanceGatesOrFinish() throws {
+        var simulation = TurboLoopSimulation(players: [solo], seed: 1)
+        simulation.setLapStateForTesting(solo, completedLaps: 4, nextGate: 3)
+        simulation.placeForTesting(solo, distance: -5, lateral: -145, speed: 260)
+        let events = simulation.step(deltaTime: 0.05, inputs: [solo: .init(axisX: 1)])
+        let car = try #require(simulation.car(for: solo))
+        #expect(car.position.x > TurboLoopTrack.startPosition.x)
+        #expect(car.nextGate == 3)
+        #expect(car.lapsCompleted == 4)
+        #expect(!simulation.isFinished)
+        #expect(events.isEmpty)
+    }
+
+    @Test func reversingBeforeTheFirstLapCannotUndoAnUncreditedCheckpoint() throws {
+        var simulation = TurboLoopSimulation(players: [solo], seed: 1)
+        let lastCheckpoint = simulation.track.gates[2]
+        simulation.placeForTesting(solo, distance: lastCheckpoint + 5, speed: 260, reversed: true)
+        let start = try #require(simulation.car(for: solo)).position
+        _ = simulation.step(deltaTime: 0.05, inputs: [:])
+        let car = try #require(simulation.car(for: solo))
+        #expect(simulation.track.gateCrossings(from: start, to: car.position).first?.gate == 2)
+        #expect(car.lap == -1)
+        #expect(car.nextGate == 3)
+    }
+
+    @Test func firstFinishBannerAndDeadlineUseTheEarliestCrossingInTheFrame() throws {
+        let first = PlayerID(0)
+        let second = PlayerID(1)
+        var simulation = TurboLoopSimulation(players: [first, second, PlayerID(2)], seed: 1)
+        for player in [first, second] {
+            simulation.setLapStateForTesting(player, completedLaps: 4, nextGate: 3)
+        }
+        simulation.placeForTesting(first, distance: -20, lateral: 42, speed: 610)
+        simulation.placeForTesting(second, distance: -3, lateral: -42, speed: 610)
+        let events = simulation.step(deltaTime: 0.05, inputs: [first: .init(axisX: 1), second: .init(axisX: 1)])
+        let firstTime = try #require(simulation.car(for: first)?.finishTime)
+        let secondTime = try #require(simulation.car(for: second)?.finishTime)
+        #expect(secondTime < firstTime)
+        #expect(simulation.order.prefix(2).elementsEqual([second, first]))
+        #expect(events.contains(.banner("P2 FINISHES!")))
+        #expect(!events.contains(.banner("P1 FINISHES!")))
+        let timeRemaining = try #require(simulation.timeRemaining)
+        #expect(abs(timeRemaining - (secondTime + TurboLoopSimulation.finishWindow - simulation.elapsed)) < 0.000_001)
+    }
+
     @Test func raceStopsAtTheCapAndTheTimerCountsItDown() {
         var simulation = TurboLoopSimulation(players: [PlayerID(0), PlayerID(1)], seed: 2)
         #expect(simulation.timeRemaining == TurboLoopSimulation.raceCap)

@@ -386,17 +386,19 @@ enum ArcadeOutcomeBuilder {
         for playerID in participantIDs where !seen.contains(playerID) {
             ordered.append(ArcadeRankEntry(playerID: playerID, score: 0))
         }
+        let eligible = ordered.filter { !forfeited.contains($0.playerID) }
+        ordered = eligible + ordered.filter { forfeited.contains($0.playerID) }
         let solo = participants.count == 1
-        let winnerID = solo ? nil : ordered.first(where: { !forfeited.contains($0.playerID) })?.playerID
+        let winnerID = solo ? nil : eligible.first?.playerID
         let winner = winnerID.flatMap { id in participants.first { $0.player.id == id }?.player }
         let standings = ordered.enumerated().map { index, entry in
             GameStanding(playerID: entry.playerID, rank: index + 1, score: entry.score, detail: entry.detail)
         }
         let outcomes = participants.map { participant in
-            let outcome: MatchParticipantOutcome = if solo {
-                .practice
-            } else if forfeited.contains(participant.player.id) {
+            let outcome: MatchParticipantOutcome = if forfeited.contains(participant.player.id) {
                 .forfeited
+            } else if solo {
+                .practice
             } else if participant.player.id == winnerID {
                 .won
             } else {
@@ -405,7 +407,7 @@ enum ArcadeOutcomeBuilder {
             return PlayerMatchOutcome(playerID: participant.player.id, outcome: outcome)
         }
         let headline = if solo {
-            "PRACTICE COMPLETE"
+            forfeited.isEmpty ? "PRACTICE COMPLETE" : "PRACTICE ENDED"
         } else if let winner {
             "P\(winner.number) \(winner.displayName) WINS"
         } else {
@@ -434,7 +436,26 @@ extension Duration {
     }
 }
 
-/// Helpers simulations share for building `ranking()`.
+/// Groups eliminations that were resolved in the same gameplay step.
+struct ArcadeEliminations: Equatable, Sendable {
+    private var groups: [[PlayerID]] = []
+
+    mutating func record(_ playerID: PlayerID) {
+        groups.append([playerID])
+    }
+
+    mutating func recordBatch(_ events: ArraySlice<ArcadeEvent>) {
+        let eliminated = events.compactMap { event -> PlayerID? in
+            if case .eliminated(let playerID) = event { playerID } else { nil }
+        }
+        if !eliminated.isEmpty { groups.append(eliminated) }
+    }
+
+    func order(of playerID: PlayerID) -> Int {
+        groups.firstIndex { $0.contains(playerID) } ?? -1
+    }
+}
+
 enum ArcadeRanking {
     /// Survivors first (most lives, then score), then eliminated players with
     /// the latest elimination first, ties broken by score then player id.
@@ -444,7 +465,7 @@ enum ArcadeRanking {
         alive: (Player) -> Bool,
         lives: (Player) -> Int,
         score: (Player) -> Int,
-        eliminationOrder: [PlayerID],
+        eliminationOrder: ArcadeEliminations,
         detail: (Player) -> String
     ) -> [ArcadeRankEntry] {
         let sorted = players.sorted { lhs, rhs in
@@ -454,8 +475,8 @@ enum ArcadeRanking {
             if leftAlive {
                 if lives(lhs) != lives(rhs) { return lives(lhs) > lives(rhs) }
             } else {
-                let leftOut = eliminationOrder.firstIndex(of: id(lhs)) ?? -1
-                let rightOut = eliminationOrder.firstIndex(of: id(rhs)) ?? -1
+                let leftOut = eliminationOrder.order(of: id(lhs))
+                let rightOut = eliminationOrder.order(of: id(rhs))
                 if leftOut != rightOut { return leftOut > rightOut }
             }
             if score(lhs) != score(rhs) { return score(lhs) > score(rhs) }

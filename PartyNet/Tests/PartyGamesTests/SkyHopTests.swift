@@ -62,9 +62,9 @@ struct SkyHopTests {
         #expect(bird.vy == -Sim.terminalFallSpeed)
     }
 
-    @Test func birdsStaggerAcrossTheSharedCorridor() {
+    @Test func birdsShareAFlightLineAcrossTheCorridor() {
         let sim = Sim(players: ArcadeHarness.playerIDs(8), seed: 1)
-        #expect(sim.birds.map(\.x) == (0..<8).map { Sim.birdStartX + Double($0) * Sim.birdStagger })
+        #expect(sim.birds.allSatisfy { $0.x == Sim.birdStartX })
         #expect(sim.birds.allSatisfy { $0.y == ArcadeArena.center.y && $0.vy == 0 && $0.alive })
         #expect(sim.gates.first?.x == Sim.firstGateX)
     }
@@ -149,22 +149,27 @@ struct SkyHopTests {
         #expect(sim.resultMetric == .init(id: "most-gates", label: "Most gates", value: "1"))
     }
 
-    @Test func eachStaggeredBirdScoresWhenItClearsTheGate() {
+    @Test func equallyPlacedBirdsScoreAndCrashAtTheSameTime() {
         let ids = ArcadeHarness.playerIDs(2)
         var sim = Sim(players: ids, seed: 1)
-        let frontTail = Sim.birdStartX + Sim.birdStagger - Sim.birdRadius
+        let birdTail = Sim.birdStartX - Sim.birdRadius
         sim.setGatesForTesting([
-            Sim.Gate(id: 1, x: frontTail - Sim.pillarWidth + 2, gapCenter: ArcadeArena.center.y, gapHeight: 300),
+            Sim.Gate(id: 1, x: birdTail - Sim.pillarWidth + 2, gapCenter: ArcadeArena.center.y, gapHeight: 300),
             farGate(id: 2),
         ])
 
         let first = sim.step(deltaTime: frame, inputs: [:])
-        #expect(first == [.cue(ids[1], colorHex: ArcadeOutcomeBuilder.winnerColor, haptic: .lightImpact)])
-        #expect(sim.bird(for: ids[0])?.gates == 0, "the rear bird is still beside the pillar")
-
-        let next = (0..<3).flatMap { _ in sim.step(deltaTime: frame, inputs: [:]) }
-        #expect(next == [.cue(ids[0], colorHex: ArcadeOutcomeBuilder.winnerColor, haptic: .lightImpact)])
+        #expect(first == ids.map { .cue($0, colorHex: ArcadeOutcomeBuilder.winnerColor, haptic: .lightImpact) })
         #expect(sim.birds.map(\.gates) == [1, 1])
+
+        sim.setGatesForTesting([
+            Sim.Gate(id: 2, x: Sim.birdStartX + Sim.birdRadius + 2, gapCenter: 800, gapHeight: 200),
+            farGate(id: 3),
+        ])
+        let crashes = sim.step(deltaTime: frame, inputs: [:])
+        #expect(crashes == ids.map { .eliminated($0) })
+        #expect(sim.birds[0].crashedAt == sim.birds[1].crashedAt)
+        #expect(sim.ranking().map(\.playerID) == ids)
     }
 
     // MARK: Course generation

@@ -55,7 +55,7 @@
               "title" : "BIG PADDLES"
             },
             {
-              "detail" : "Start with four lives",
+              "detail" : "Start with one extra life",
               "id" : "extra-life",
               "tally" : 0,
               "title" : "EXTRA LIFE"

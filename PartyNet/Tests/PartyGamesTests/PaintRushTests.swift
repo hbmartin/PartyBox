@@ -322,12 +322,15 @@ struct PaintRushTests {
 
     @Test func sessionForfeitKeepsTheMatchRunningUntilTheBuzzer() throws {
         var events: [GameEvent] = []
+        let context = context(2)
         let session = try #require(PaintRushGame().makeSession(
-            context: context(2),
+            context: context,
             onEvents: { events.append(contentsOf: $0) }
         ) as? ArcadeSession<PaintRushRenderer>)
         session.skipIntroForTesting()
-        session.advanceForTesting(seconds: 1)
+        context.inputs.update(.init(token: 1, sequence: 1, clientTimeMs: 0, axisX: 1, axisY: 0), for: first)
+        session.advanceForTesting(seconds: 8)
+        #expect(session.simulationForTesting.tiles(for: first) > session.simulationForTesting.tiles(for: second))
         session.forfeit(first)
 
         #expect(events.contains(.eliminated(first)))
@@ -339,6 +342,9 @@ struct PaintRushTests {
         }.first)
         #expect(outcome.winner == second)
         #expect(outcome.playerOutcomes.contains(.init(playerID: first, outcome: .forfeited)))
+        #expect(outcome.standings.map(\.playerID) == [second, first])
+        #expect(outcome.standings.map(\.rank) == [1, 2])
+        #expect(outcome.standings[1].score > outcome.standings[0].score)
     }
 
     @Test func sameSeedAndScriptedInputsReplayIdentically() {

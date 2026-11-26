@@ -60,6 +60,7 @@ final class SkyHopRenderer: ArcadeRenderer {
 
     private let pillarLayer = SKNode()
     private var birdNodes: [PlayerID: SKShapeNode] = [:]
+    private var birdMarks: [PlayerID: SKLabelNode] = [:]
     private var fallen: Set<PlayerID> = []
     private var gateSprites: [Int: GateSprites] = [:]
     private var spritePool: [SKSpriteNode] = []
@@ -79,7 +80,9 @@ final class SkyHopRenderer: ArcadeRenderer {
         scene.gameLayer.addChild(pillarLayer)
 
         for (index, bird) in simulation.birds.enumerated() {
-            let token = scene.makeToken(for: bird.playerID, radius: CGFloat(SkyHopSimulation.birdRadius))
+            let token = scene.makeToken(
+                for: bird.playerID, radius: CGFloat(SkyHopSimulation.birdRadius), showsMark: false
+            )
             let beak = SKShapeNode(path: Self.beakPath)
             beak.fillColor = SKColor(red: 1, green: 0.78, blue: 0.2, alpha: 1)
             beak.strokeColor = .white
@@ -89,6 +92,13 @@ final class SkyHopRenderer: ArcadeRenderer {
             token.zPosition = 4 + CGFloat(simulation.birds.count - index) * 0.01
             scene.gameLayer.addChild(token)
             birdNodes[bird.playerID] = token
+            let mark = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            mark.text = scene.info(for: bird.playerID)?.mark.glyph
+            mark.fontSize = 21
+            mark.verticalAlignmentMode = .center
+            mark.zPosition = 8
+            scene.gameLayer.addChild(mark)
+            birdMarks[bird.playerID] = mark
         }
     }
 
@@ -101,6 +111,7 @@ final class SkyHopRenderer: ArcadeRenderer {
             node.position = scene.point(ArcadeVector(x: bird.x, y: bird.y))
             node.zRotation = CGFloat(min(max(bird.vy * 0.000_9, -1.1), 0.5))
         }
+        positionMarks(simulation.birds, in: scene)
 
         for event in events {
             switch event {
@@ -113,6 +124,32 @@ final class SkyHopRenderer: ArcadeRenderer {
                 node.run(.sequence([.scale(to: 1.3, duration: 0.06), .scale(to: 1, duration: 0.14)]), withKey: "pass")
             default:
                 break
+            }
+        }
+    }
+
+    private func positionMarks(_ birds: [SkyHopSimulation.Bird], in scene: ArcadeScene) {
+        let diameter = SkyHopSimulation.birdRadius * 2
+        let flying = birds.filter(\.alive).sorted {
+            if $0.y != $1.y { return $0.y < $1.y }
+            return $0.playerID.rawValue < $1.playerID.rawValue
+        }
+        var groups: [[SkyHopSimulation.Bird]] = []
+        for bird in flying {
+            if let last = groups.last?.last, bird.y - last.y < diameter {
+                groups[groups.count - 1].append(bird)
+            } else {
+                groups.append([bird])
+            }
+        }
+        for bird in birds where !bird.alive { birdMarks[bird.playerID]?.isHidden = true }
+        for group in groups {
+            let overlaps = group.count > 1
+            for (slot, bird) in group.enumerated() {
+                guard let mark = birdMarks[bird.playerID] else { continue }
+                let shift = (Double(slot) - Double(group.count - 1) / 2) * 28
+                mark.position = scene.point(ArcadeVector(x: bird.x + shift, y: bird.y + (overlaps ? 30 : 0)))
+                mark.fontColor = overlaps ? scene.color(for: bird.playerID) : .black
             }
         }
     }

@@ -194,19 +194,22 @@ struct PongSimulation: Sendable {
         guard let edge = edgeByPlayerID[playerID], players[edge]?.isActive == true else { return [] }
         players[edge]?.lives = 0
         var events: [PongEvent] = [.forfeited(playerID)]
-        rotateBenchIn(at: edge, events: &events)
+        let promoted = rotateBenchIn(at: edge, events: &events)
         finishIfNeeded(events: &events)
+        if promoted, !isFinished { resetServe() }
         return events
     }
 
     /// Hands a knocked-out edge to the next benched player, if any.
-    private mutating func rotateBenchIn(at edge: PaddleEdge, events: inout [PongEvent]) {
-        guard !bench.isEmpty, let outgoing = players[edge], !outgoing.isActive else { return }
+    @discardableResult
+    private mutating func rotateBenchIn(at edge: PaddleEdge, events: inout [PongEvent]) -> Bool {
+        guard !bench.isEmpty, let outgoing = players[edge], !outgoing.isActive else { return false }
         let incoming = bench.removeFirst()
         edgeByPlayerID.removeValue(forKey: outgoing.playerID)
         edgeByPlayerID[incoming] = edge
         players[edge] = PongPlayer(playerID: incoming, edge: edge, lives: rules.initialLives)
         events.append(.rotatedIn(incoming, edge: edge))
+        return true
     }
 
     mutating func step(deltaTime rawDelta: Double) -> [PongEvent] {
@@ -324,11 +327,13 @@ struct PongSimulation: Sendable {
             rotateBenchIn(at: edge, events: &events)
         }
         finishIfNeeded(events: &events)
-        if !isFinished {
-            ballPosition = .zero
-            ballVelocity = .zero
-            respawnRemaining = 1
-        }
+        if !isFinished { resetServe() }
+    }
+
+    private mutating func resetServe() {
+        ballPosition = .zero
+        ballVelocity = .zero
+        respawnRemaining = 1
     }
 
     private mutating func finishIfNeeded(events: inout [PongEvent]) {

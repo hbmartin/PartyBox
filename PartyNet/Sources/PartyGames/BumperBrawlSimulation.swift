@@ -135,7 +135,7 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
     private(set) var elapsed = 0.0
     private(set) var isFinished = false
     private var random: ArcadeRandomNumberGenerator
-    private var eliminationOrder: [PlayerID] = []
+    private var eliminationOrder = ArcadeEliminations()
     private var announcedStage = 0
     private var soundCooldown = 0.0
     private let indexByID: [PlayerID: Int]
@@ -212,7 +212,7 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
         pucks[index].ghostRemaining = 0
         pucks[index].velocity = .zero
         pucks[index].stick = .zero
-        eliminationOrder.append(playerID)
+        eliminationOrder.record(playerID)
         var events: [ArcadeEvent] = [.eliminated(playerID)]
         finishIfDecided(events: &events)
         return events
@@ -523,12 +523,16 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
 
     private mutating func resolveFalls(events: inout [ArcadeEvent]) {
         let radius = platformRadius
+        let firstEvent = events.count
         var anyEliminated = false
         for index in pucks.indices where pucks[index].onBoard
             && pucks[index].position.distance(to: ArcadeArena.center) > radius {
             if fall(index, events: &events) { anyEliminated = true }
         }
-        if anyEliminated { finishIfDecided(events: &events) }
+        if anyEliminated {
+            eliminationOrder.recordBatch(events[firstEvent...])
+            finishIfDecided(events: &events)
+        }
     }
 
     /// Drops a puck off the ice. Returns true when that eliminated a player.
@@ -547,7 +551,6 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
             puck.lives -= 1
             if puck.lives <= 0 {
                 puck.lives = 0
-                eliminationOrder.append(playerID)
                 events.append(.eliminated(playerID))
                 eliminated = true
             } else {

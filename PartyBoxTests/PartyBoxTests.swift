@@ -14,6 +14,51 @@ struct PartyBoxTests {
     private let bottom = PlayerID(0)
     private let top = PlayerID(1)
 
+    @Test func cupForfeitsEarnZeroAndEligiblePlacementsAreCompacted() throws {
+        let participants = (0..<3).map { slot in
+            let id = PlayerID(UInt8(slot))
+            return GameParticipant(
+                player: PlayerInfo(id: id, displayName: "Player \(slot + 1)", colorHex: PlayerPalette.color(for: id)),
+                controllerID: ControllerID()
+            )
+        }
+        let ids = participants.map(\.player.id)
+        let standings = ids.enumerated().map { index, id in
+            GameStanding(playerID: id, rank: index + 1, score: 300 - index)
+        }
+        let cup = HostCupDirector()
+        cup.begin(participants: participants)
+        cup.cupPoints[participants[0].controllerID] = 5
+        cup.score(.init(
+            title: "Event complete", subtitle: "", winner: ids[1],
+            playerOutcomes: [
+                .init(playerID: ids[0], outcome: .forfeited),
+                .init(playerID: ids[1], outcome: .won),
+                .init(playerID: ids[2], outcome: .lost),
+            ],
+            metrics: [], standings: standings
+        ), participants: participants)
+        #expect(participants.map { cup.cupPoints[$0.controllerID] } == [5, 8, 6])
+        #expect(participants.map { cup.cupEventWins[$0.controllerID] } == [0, 1, 0])
+
+        cup.score(.init(
+            title: "Event complete", subtitle: "", winner: nil,
+            playerOutcomes: ids.map { .init(playerID: $0, outcome: .forfeited) },
+            metrics: [], standings: standings
+        ), participants: participants)
+        #expect(participants.map { cup.cupPoints[$0.controllerID] } == [5, 8, 6])
+        #expect(participants.map { cup.cupEventWins[$0.controllerID] } == [0, 1, 0])
+
+        let solo = try #require(participants.first)
+        cup.begin(participants: [solo])
+        cup.score(.init(
+            title: "Practice complete", subtitle: "", winner: nil,
+            playerOutcomes: [.init(playerID: solo.player.id, outcome: .practice)], metrics: []
+        ), participants: [solo])
+        #expect(cup.cupPoints[solo.controllerID] == 8)
+        #expect(cup.cupEventWins[solo.controllerID] == 1)
+    }
+
     @MainActor
     private final class CleanupGate {
         private(set) var isWaiting = false

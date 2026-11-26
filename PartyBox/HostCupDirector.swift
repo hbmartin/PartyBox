@@ -67,20 +67,25 @@ final class HostCupDirector {
     }
 
     func score(_ outcome: GameOutcome, participants: [GameParticipant]) {
-        let fallback = participants.sorted { lhs, rhs in
-            if lhs.player.id == outcome.winner { return true }
-            if rhs.player.id == outcome.winner { return false }
-            return lhs.player.id.rawValue < rhs.player.id.rawValue
-        }.enumerated().map { index, participant in
-            GameStanding(playerID: participant.player.id, rank: index + 1, score: 0)
+        let forfeits = Set(outcome.playerOutcomes.filter { $0.outcome == .forfeited }.map(\.playerID))
+        let ranks = Dictionary(outcome.standings.map { ($0.playerID, $0.rank) }, uniquingKeysWith: min)
+        let soloFinisher = participants.count == 1
+            ? outcome.playerOutcomes.first(where: { $0.outcome == .practice })?.playerID : nil
+        let winner = outcome.winner ?? soloFinisher
+        let eligible = participants.filter { !forfeits.contains($0.player.id) }.sorted { lhs, rhs in
+            let left = lhs.player.id
+            let right = rhs.player.id
+            if (left == winner) != (right == winner) { return left == winner }
+            let leftRank = ranks[left] ?? Int.max
+            let rightRank = ranks[right] ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            return left.rawValue < right.rawValue
         }
-        let standings = outcome.standings.isEmpty ? fallback : outcome.standings
         let pointsByRank = [8, 6, 5, 4, 3, 2, 1, 0]
-        for standing in standings {
-            guard let participant = participants.first(where: { $0.player.id == standing.playerID }) else { continue }
-            let points = pointsByRank[min(max(standing.rank - 1, 0), pointsByRank.count - 1)]
+        for (index, participant) in eligible.enumerated() {
+            let points = pointsByRank[min(index, pointsByRank.count - 1)]
             cupPoints[participant.controllerID, default: 0] += points
-            if standing.rank == 1 { cupEventWins[participant.controllerID, default: 0] += 1 }
+            if participant.player.id == winner { cupEventWins[participant.controllerID, default: 0] += 1 }
         }
     }
 

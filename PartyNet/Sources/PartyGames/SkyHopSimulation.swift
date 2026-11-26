@@ -9,7 +9,6 @@ struct SkyHopSimulation: ArcadeSimulation {
     static let duration = 90.0
     static let birdRadius = 22.0
     static let birdStartX = 520.0
-    static let birdStagger = 22.0
     static let gravity = 2_400.0
     static let flapVelocity = 760.0
     static let terminalFallSpeed = 900.0
@@ -51,7 +50,7 @@ struct SkyHopSimulation: ArcadeSimulation {
 
     struct Bird: Equatable, Sendable {
         let playerID: PlayerID
-        let x: Double
+        var x: Double { SkyHopSimulation.birdStartX }
         var y: Double
         var vy = 0.0
         var alive = true
@@ -74,7 +73,7 @@ struct SkyHopSimulation: ArcadeSimulation {
     private var nextGateID = 1
     private var previousGapCenter = ArcadeArena.center.y
     private var announcedStage = 0
-    private var eliminationOrder: [PlayerID] = []
+    private var eliminationOrder = ArcadeEliminations()
     private let indexByID: [PlayerID: Int]
     private let multiplayer: Bool
 
@@ -82,8 +81,8 @@ struct SkyHopSimulation: ArcadeSimulation {
         random = ArcadeRandomNumberGenerator(seed: ArcadeRandomNumberGenerator.mixed(seed, 0x5C40))
         multiplayer = players.count > 1
         indexByID = Dictionary(players.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
-        birds = players.enumerated().map { index, playerID in
-            Bird(playerID: playerID, x: Self.birdStartX + Double(index) * Self.birdStagger, y: ArcadeArena.center.y)
+        birds = players.map { playerID in
+            Bird(playerID: playerID, y: ArcadeArena.center.y)
         }
         addGate(at: Self.firstGateX)
         spawnGates()
@@ -142,6 +141,7 @@ struct SkyHopSimulation: ArcadeSimulation {
         guard !isFinished, let index = indexByID[playerID], birds[index].alive else { return [] }
         var events: [ArcadeEvent] = []
         crash(index, events: &events)
+        eliminationOrder.record(playerID)
         finishIfDecided()
         return events
     }
@@ -277,12 +277,14 @@ struct SkyHopSimulation: ArcadeSimulation {
     }
 
     private mutating func resolveCrashes(events: inout [ArcadeEvent]) {
-        var anyCrashed = false
+        let firstEvent = events.count
         for index in birds.indices where birds[index].alive && Self.collides(birds[index], with: gates) {
             crash(index, events: &events)
-            anyCrashed = true
         }
-        if anyCrashed { finishIfDecided() }
+        if events.count > firstEvent {
+            eliminationOrder.recordBatch(events[firstEvent...])
+            finishIfDecided()
+        }
     }
 
     private mutating func scoreGates(events: inout [ArcadeEvent]) {
@@ -300,7 +302,6 @@ struct SkyHopSimulation: ArcadeSimulation {
     private mutating func crash(_ index: Int, events: inout [ArcadeEvent]) {
         birds[index].alive = false
         birds[index].crashedAt = elapsed
-        eliminationOrder.append(birds[index].playerID)
         events.append(.eliminated(birds[index].playerID))
     }
 
