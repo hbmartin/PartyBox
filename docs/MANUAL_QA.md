@@ -107,7 +107,7 @@ Stop and file a blocker if any step fails.
 |---|---|---|
 | SMOKE-01 | Cold-launch PartyBox on the Apple TV. | The lobby appears with eight open slots and `Ready for controllers`. No layout is clipped at the television edges. |
 | SMOKE-02 | Cold-launch PartyPad on one iPhone and allow Local Network access if asked. | The Apple TV host appears within four seconds as `READY TO JOIN`. |
-| SMOKE-03 | Enter a player name and tap the host while the keyboard is open. | PartyPad reaches `YOU'RE IN` with that name. TV slot P1 shows the same name and an active seat. |
+| SMOKE-03 | Enter a player name and tap the host while the keyboard is open. | PartyPad reaches `YOU'RE IN` with that name. TV slot P1 shows the same name and `CAPTAIN`. |
 | SMOKE-04 | Open the game menu from the captain phone. | The TV shows eight games, Party Cup, and History & Leaderboard. The phone changes to menu controls. |
 | SMOKE-05 | Start Snake Pit and complete one round with touch controls, then repeat with the swipe touch style. | Input is responsive, score/state agree on TV and phone, and the latency badge remains green under normal LAN conditions. |
 | SMOKE-06 | Send the phone to the background for about five seconds, then return. | The TV briefly shows `RECONNECTING…`; the phone returns to the same player number, color, and layout. |
@@ -168,18 +168,20 @@ Stop and file a blocker if any step fails.
 
 - [ ] **JOIN-01 — First player:** The first phone receives P1, a unique color/mark, and the captain crown.
   The TV and every connected phone show the same roster.
-- [ ] **JOIN-02 — Rename before joining:** Disconnect, edit the name in the picker, then rejoin.
-  The TV and other phones display the new name.
+- [ ] **JOIN-02 — Rename before rejoining:** In a two-phone lobby with no bots, tap **Disconnect** on
+  the captain’s phone. Verify that its seat shows `OPEN` and the other phone becomes captain.
+  Edit the name in the picker and rejoin. The TV and both phones display the new name.
 - [ ] **JOIN-03 — Blank name:** Clear the name in the picker and join. PartyPad and the TV show
   `Player`.
 - [ ] **JOIN-04 — Sequential joins:** Join phones two through eight. Seat numbers follow join order, and
   colors/marks remain distinguishable.
 - [ ] **JOIN-05 — Full-room rejection:** Attempt to join a ninth phone. It receives `CAN'T JOIN` and
   `This PartyBox already has 8 controllers.` Existing players remain unaffected.
-- [ ] **JOIN-06 — Player leaves lobby:** Disconnect one phone long enough to exceed the 15-second grace
-  period. Its slot becomes open, and a new controller can occupy the available seat.
-- [ ] **JOIN-07 — Captain leaves:** Disconnect the captain beyond the grace period. Verify that the room
-  remains operable and captain ownership is reassigned or otherwise handled consistently.
+- [ ] **JOIN-06 — Player loses connection:** Interrupt one phone’s network connection for longer than
+  the 15-second grace period. Its slot becomes open, and a new controller can occupy it.
+- [ ] **JOIN-07 — Captain loses connection:** With another player connected, interrupt the captain’s
+  network connection beyond the grace period. Verify that the room remains operable and a remaining
+  player becomes captain.
 - [ ] **JOIN-08 — Persistent identity:** Force-quit and relaunch PartyPad, then reconnect within the host's
   grace period. It returns to the same seat and color.
 - [ ] **JOIN-09 — Same-identity replacement:** Launch a second debug controller with the same explicit
