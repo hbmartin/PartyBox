@@ -59,7 +59,7 @@ Facts worth knowing before you start:
 - **Xcode 26.3 or newer** (this repo was built with Xcode 26.3 / build 17C529, Swift 6.2.4).
   Verify: `xcodebuild -version && swift --version`
 - Network access on first build — Swift Package Manager resolves `pointfreeco/swift-dependencies` (pinned
-  to exactly `1.10.0`) plus its transitive dependencies.
+  to exactly `1.10.0`) plus its transitive dependencies and downloads the Sentry xcframework from GitHub Releases.
 - A **paid Apple Developer Program** membership. You will be installing on real hardware and, most likely,
   distributing to friends over TestFlight.
 

@@ -5,7 +5,7 @@ set -euo pipefail
 umask 077
 
 sentry_auth_token=${SENTRY_AUTH_TOKEN:-}
-unset SENTRY_AUTH_TOKEN
+unset CDPATH SENTRY_AUTH_TOKEN
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project="$root_dir/PartyBox.xcodeproj"
@@ -34,10 +34,10 @@ require_tool() {
     command -v "$1" >/dev/null || die "Required tool not found: $1"
 }
 
-run_logged() {
+run_xcodebuild() {
     local log=$1
     shift
-    "$@" 2>&1 | tee -a "$log"
+    (umask 022; xcodebuild "$@") 2>&1 | tee -a "$log"
 }
 
 plist_value() {
@@ -73,12 +73,12 @@ archive_platform() {
     mkdir -p "$archive_dir"
     printf 'Archiving %s (%s)\n' "$scheme" "$platform"
 
-    run_logged "$archive_dir/archive.log" xcodebuild \
+    run_xcodebuild "$archive_dir/archive.log" \
         -project "$project" -scheme "$scheme" -configuration Release \
         -destination "generic/platform=$destination" -archivePath "$archive_dir/app.xcarchive" \
         -onlyUsePackageVersionsFromResolvedFile -allowProvisioningUpdates \
         "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" "CURRENT_PROJECT_VERSION=$build_number" \
-        "PARTYBOX_SENTRY_DSN=$SENTRY_DSN" archive \
+        "PARTYBOX_SENTRY_DSN=$SENTRY_DSN" PARTYBOX_SENTRY_ENVIRONMENT=testflight archive \
         || die "$platform archive failed. See $archive_dir/archive.log"
 }
 
@@ -88,7 +88,7 @@ mach_uuids() {
 
 validate_archive() {
     local platform=$1 archive="$run_dir/$1/app.xcarchive"
-    local app info executable binary symbols app_uuids symbol_uuids
+    local app info executable binary symbols app_uuids symbol_uuids sentry_environment
     platform_settings "$platform"
 
     app="$archive/Products/Applications/$scheme.app"
@@ -100,6 +100,11 @@ validate_archive() {
         || die "$platform archive has the wrong build number."
     [[ "$(plist_value PartyBoxSentryDSN "$info")" == "$SENTRY_DSN" ]] \
         || die "$platform archive has a missing or different Sentry DSN."
+    if sentry_environment="$(plist_value PartyBoxSentryEnvironment "$info" 2>/dev/null)"; then
+        [[ "$sentry_environment" == testflight ]] || die "$platform archive has the wrong Sentry environment."
+    elif [[ -z "$resume_dir" ]]; then
+        die "$platform archive is missing its Sentry environment."
+    fi
 
     executable="$(plist_value CFBundleExecutable "$info")" \
         || die "$platform archive is missing CFBundleExecutable."
@@ -131,7 +136,7 @@ upload_apple() {
     attempt_dir="$(mktemp -d "$archive_dir/apple-attempt.XXXXXXXX")"
     printf 'Uploading %s build %s to App Store Connect\n' "$1" "$build_number"
     date -u > "$archive_dir/apple-upload-started"
-    run_logged "$archive_dir/apple.log" xcodebuild -exportArchive \
+    run_xcodebuild "$archive_dir/apple.log" -exportArchive \
         -archivePath "$archive_dir/app.xcarchive" \
         -exportOptionsPlist "$run_dir/ExportOptions.plist" \
         -exportPath "$attempt_dir/export" -allowProvisioningUpdates \
@@ -223,7 +228,12 @@ else
     run_dir="$(mktemp -d "$root_dir/.distribution/build-$build_number.XXXXXXXX")"
 fi
 
-mkdir "$run_dir/.lock" || die "Another run holds the release directory lock: $run_dir"
+if ! mkdir "$run_dir/.lock"; then
+    if [[ -d "$run_dir/.lock" ]]; then
+        die "Release directory is locked: $run_dir. See docs/RELEASE.md for stale lock recovery."
+    fi
+    die "Could not create the release directory lock: $run_dir"
+fi
 trap 'rmdir "$run_dir/.lock"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

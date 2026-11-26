@@ -28,11 +28,17 @@ enum CrashReporting {
         let options = Options()
         options.dsn = dsn
         guard options.parsedDsn != nil else { return }
-        options.environment = "testflight"
+        let environment = (bundle.object(forInfoDictionaryKey: "PartyBoxSentryEnvironment") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        options.environment = environment.isEmpty ? "local" : environment
         options.dist = "\(platform)-\(build)"
         options.sendDefaultPii = false
         options.sendClientReports = false
+        #if os(macOS)
+        options.enableUncaughtNSExceptionReporting = true
+        #else
         options.enableSwizzling = false
+        #endif
         options.enableAutoSessionTracking = false
         options.enableAutoBreadcrumbTracking = false
         options.enableCaptureFailedRequests = false
