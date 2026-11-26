@@ -133,6 +133,44 @@ struct PartyBox_ControllerTests {
         }
     }
 
+    @Test(arguments: [("  Ada    Lovelace  ", "Ada Lovelace"), ("", "Player")])
+    func joiningReceivesEditedNameInFirstWelcome(draft: String, expectedName: String) async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let suiteName = "PartyBoxControllerTests.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set("Original", forKey: "partybox.displayName")
+            let configuration = ControllerLaunchConfiguration(arguments: [
+                "PartyBox Controller", "--ui-testing", "--disable-effects",
+            ])
+
+            let host = PartyHost()
+            let hostName = "Name Test Host"
+            let destination: DiscoveredHost
+            do {
+                let port = try await host.start(hostName: hostName, advertise: false)
+                destination = try DiscoveredHost(host: "127.0.0.1", port: port, name: hostName)
+            } catch {
+                await host.stop()
+                throw error
+            }
+
+            let coordinator = ControllerCoordinator(defaults: defaults, configuration: configuration)
+            coordinator.displayNameDraft = draft
+            await coordinator.connect(to: destination)
+
+            #expect(coordinator.client.state == .connected(hostName))
+            // The client gets this player from the host's first Welcome.
+            #expect(coordinator.client.player?.displayName == expectedName)
+            #expect(defaults.string(forKey: "partybox.displayName") == expectedName)
+
+            await coordinator.stop()
+            await host.stop()
+        }
+    }
+
     @Test func preferredMarkPersistsAcrossLaunches() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
