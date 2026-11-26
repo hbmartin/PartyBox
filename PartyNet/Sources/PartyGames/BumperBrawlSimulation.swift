@@ -363,7 +363,7 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
             }
             let input = inputs[playerID] ?? .idle
             pucks[index].stick = input.vector.clampedLength(1)
-            if input.pressed { dash(index) }
+            if input.pressed { dash(index, steering: input.pressSteering) }
         }
     }
 
@@ -385,9 +385,9 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
         }
     }
 
-    private mutating func dash(_ index: Int) {
+    private mutating func dash(_ index: Int, steering: ArcadeVector? = nil) {
         guard pucks[index].onBoard, pucks[index].dashReady else { return }
-        let stick = pucks[index].stick
+        let stick = steering ?? pucks[index].stick
         let velocity = pucks[index].velocity
         let direction = if stick.length >= Self.stickDeadZone {
             stick.normalized()

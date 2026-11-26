@@ -252,7 +252,9 @@ final class ArcadeSession<Renderer: ArcadeRenderer>: PartyGameSession {
         guard playerIDs.contains(playerID), !completed else { return }
         switch action.value {
         case .trigger:
-            sampler.queuePress(for: playerID)
+            let steering = configuration.gameID == "bumper-brawl" && action.id == "bumper.dash"
+                ? action.steering : nil
+            sampler.queuePress(for: playerID, steering: steering)
         case .choice(let value):
             if let direction = ArcadeDirection(rawValue: value) {
                 sampler.queueTurn(direction, for: playerID)

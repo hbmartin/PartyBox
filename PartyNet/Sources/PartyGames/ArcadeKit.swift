@@ -189,6 +189,8 @@ struct ArcadeInput: Equatable, Sendable {
     var axisY: Double = 0
     /// True on the frame a tap (phone action button) or bot button press arrived.
     var pressed = false
+    /// Steering sampled by the controller at the instant of a DASH press.
+    var pressSteering: ArcadeVector?
     /// Direction-pad or swipe turns received since the previous frame, in order.
     var turns: [ArcadeDirection] = []
 
@@ -204,17 +206,29 @@ struct ArcadeInput: Equatable, Sendable {
 /// rising edge of that bit is also treated as a tap.
 @MainActor
 final class ArcadeInputSampler {
+    private struct Press {
+        let steering: ArcadeVector?
+    }
+
     private let store: InputStore
     private var heldButtons: [PlayerID: Bool] = [:]
-    private var queuedPresses: Set<PlayerID> = []
+    private var queuedPresses: [PlayerID: Press] = [:]
     private var queuedTurns: [PlayerID: [ArcadeDirection]] = [:]
 
     init(store: InputStore) {
         self.store = store
     }
 
-    func queuePress(for playerID: PlayerID) {
-        queuedPresses.insert(playerID)
+    func queuePress(for playerID: PlayerID, steering: ControllerSteering? = nil) {
+        guard queuedPresses[playerID] == nil else { return }
+        let aim = steering.flatMap { steering -> ArcadeVector? in
+            guard steering.axisX.isFinite, steering.axisY.isFinite else { return nil }
+            return ArcadeVector(
+                x: min(max(Double(steering.axisX), -1), 1),
+                y: min(max(Double(steering.axisY), -1), 1)
+            )
+        }
+        queuedPresses[playerID] = Press(steering: aim)
     }
 
     func queueTurn(_ direction: ArcadeDirection, for playerID: PlayerID) {
@@ -232,10 +246,12 @@ final class ArcadeInputSampler {
             let held = frame?.buttons.contains(.primary) ?? false
             let rising = held && !(heldButtons[playerID] ?? false)
             heldButtons[playerID] = held
+            let press = queuedPresses[playerID]
             inputs[playerID] = ArcadeInput(
                 axisX: Double(frame?.axisX ?? 0),
                 axisY: Double(frame?.axisY ?? 0),
-                pressed: rising || queuedPresses.contains(playerID),
+                pressed: rising || press != nil,
+                pressSteering: press?.steering,
                 turns: queuedTurns[playerID] ?? []
             )
         }

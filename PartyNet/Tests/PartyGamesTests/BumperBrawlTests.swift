@@ -65,6 +65,28 @@ struct BumperBrawlTests {
         }
     }
 
+    @Test func dashUsesThePressSnapshotWhileMovementUsesTheLatestFrame() throws {
+        let player = PlayerID(0)
+        let rival = PlayerID(1)
+        let inputs = InputStore()
+        inputs.update(.init(token: 1, sequence: 1, clientTimeMs: 0, axisX: -1, axisY: 0), for: player)
+        let session = try #require(BumperBrawlGame().makeSession(
+            context: .init(participants: ArcadeHarness.participants(2), inputs: inputs, seed: 1, modifierID: nil),
+            onEvents: { _ in }
+        ) as? ArcadeSession<BumperBrawlRenderer>)
+        session.skipIntroForTesting()
+        session.simulationForTesting.placeForTesting(player, at: offset(0))
+        session.simulationForTesting.placeForTesting(rival, at: offset(250))
+        session.handle(action: .init(
+            id: "bumper.dash", value: .trigger, steering: .init(axisX: 1, axisY: 0)
+        ), from: player)
+        session.advance(by: frame)
+
+        let puck = try #require(session.simulationForTesting.puck(for: player))
+        #expect(puck.velocity.x > 0)
+        #expect(puck.stick.x == -1)
+    }
+
     @Test func rivalPushedOffTheEdgeLosesALifeRespawnsGhostedAndCreditsTheToucher() throws {
         let pusher = PlayerID(0)
         let victim = PlayerID(1)
