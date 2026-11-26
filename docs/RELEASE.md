@@ -32,8 +32,12 @@ scripts/distribute.sh --build-number 43 --platform ios
 ```
 
 The default builds iPhone, Apple TV, and Mac. The script checks the platform,
-build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs on every
-new archive. It waits for Sentry to process the symbols before uploading to Apple.
+build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs when
+building or resuming. On resume, a legacy archive with a missing environment key
+produces a warning. An explicit environment must be `testflight`. The script
+also checks app bundle permissions on Mac archives awaiting upload. If that
+check fails, rebuild the archive. The script waits for Sentry to process the
+symbols before uploading to Apple.
 
 For signed archives alone, use `--archive-only`. This mode requires `APPLE_TEAM_ID`
 and `SENTRY_DSN`. Xcode can contact Apple for provisioning. The script prints the
@@ -53,9 +57,10 @@ External groups may require Beta App Review.
 
 ## Recover an upload
 
-- If resume reports a locked release directory after a forced quit or restart,
-  verify that the previous distribution script and its upload processes have
-  stopped. Remove the empty lock directory with `rmdir "<release-dir>/.lock"`
+- If a release directory is in use, wait for the previous distribution script and
+  its upload processes to stop. Leave the regular lock file in place. If resume
+  reports a legacy lock directory, verify that the previous script and its upload
+  processes have stopped, then remove the empty directory with `rmdir "<release-dir>/.lock"`
   and keep all upload receipts. Then follow the upload status checks below.
 - If archiving or archive validation failed, check `archive.log`, fix the issue,
   and run again with the same build number. The upload stages start only after
