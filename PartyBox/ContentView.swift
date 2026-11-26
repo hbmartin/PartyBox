@@ -197,35 +197,32 @@ private struct GameMenuView: View {
     var body: some View {
         VStack(spacing: 20) {
             PartyWordmark(kicker: "CHOOSE YOUR CHAOS", title: "GAME SELECT")
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                    ForEach(Array(coordinator.menuItems.enumerated()), id: \.offset) { index, item in
-                        HStack(spacing: 16) {
-                            Text(index == coordinator.menuSelection ? "▶" : "")
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(item).font(.system(size: 31, weight: .black, design: .rounded))
-                                Text(coordinator.menuDetails[index])
-                                    .font(.subheadline.monospaced())
-                                    .foregroundStyle(.white.opacity(0.6))
-                            }
-                            Spacer()
-                        }
-                        .foregroundStyle(index == coordinator.menuSelection ? PartyTheme.magenta : .white)
-                        .padding(20)
-                        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
-                        .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 20))
-                        .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.menuSelection ? PartyTheme.magenta.opacity(0.8) : .white.opacity(0.1), lineWidth: 2))
-                        .accessibilityIdentifier("host.menu.action.\(index)")
+            HostSelectionGrid(count: coordinator.menuItems.count, selection: coordinator.menuSelection, maxWidth: 1_350) { index in
+                HStack(spacing: 16) {
+                    Text(index == coordinator.menuSelection ? "▶" : "")
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(coordinator.menuItems[index]).font(.system(size: 31, weight: .black, design: .rounded))
+                        Text(coordinator.menuDetails[index])
+                            .font(.subheadline.monospaced())
+                            .foregroundStyle(.white.opacity(0.6))
                     }
+                    Spacer()
                 }
-                .frame(maxWidth: 1_350)
+                .foregroundStyle(index == coordinator.menuSelection ? PartyTheme.magenta : .white)
+                .padding(20)
+                .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+                .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 20))
+                .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.menuSelection ? PartyTheme.magenta.opacity(0.8) : .white.opacity(0.1), lineWidth: 2))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("host.menu.action.\(index)")
             }
             Text("SELECT TO PLAY  •  MENU/ESC TO RETURN")
                 .font(.headline.monospaced().weight(.bold))
                 .foregroundStyle(.white.opacity(0.72))
             PartyReadyStatus(coordinator: coordinator)
         }
-        .padding(44)
+        .padding(.horizontal, 44)
+        .padding(.vertical, 24)
     }
 }
 
@@ -237,26 +234,49 @@ private struct CupSetupView: View {
             PartyWordmark(kicker: "THREE EVENTS • ONE CHAMPION", title: "PARTY CUP")
             Text("Captain: choose three different games. Everyone else: ready up on your phone.")
                 .font(.title3.monospaced()).foregroundStyle(.white.opacity(0.72))
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                ForEach(Array(coordinator.cupSetupItems.enumerated()), id: \.offset) { index, item in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(item).font(.system(size: 30, weight: .black, design: .rounded))
-                        Text(coordinator.cupSetupDetails[index])
-                            .font(.subheadline.monospaced()).foregroundStyle(.white.opacity(0.6))
-                    }
-                    .foregroundStyle(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white)
-                    .padding(22)
-                    .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
-                    .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 20))
-                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white.opacity(0.1), lineWidth: 2))
+            HostSelectionGrid(count: coordinator.cupSetupItems.count, selection: coordinator.cupSetupSelection, maxWidth: 1_300) { index in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(coordinator.cupSetupItems[index]).font(.system(size: 30, weight: .black, design: .rounded))
+                    Text(coordinator.cupSetupDetails[index])
+                        .font(.subheadline.monospaced()).foregroundStyle(.white.opacity(0.6))
                 }
+                .foregroundStyle(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white)
+                .padding(22)
+                .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+                .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 20))
+                .overlay(RoundedRectangle(cornerRadius: 20).stroke(index == coordinator.cupSetupSelection ? PartyTheme.lime : .white.opacity(0.1), lineWidth: 2))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("host.cupSetup.action.\(index)")
             }
-            .frame(maxWidth: 1_300)
             PartyReadyStatus(coordinator: coordinator)
             Text("SELECT TO ADD/REMOVE  •  PICK START PARTY CUP WHEN 3/3 ARE READY")
                 .font(.headline.monospaced().weight(.bold)).foregroundStyle(.white.opacity(0.68))
         }
-        .padding(44)
+        .padding(.horizontal, 44)
+        .padding(.vertical, 24)
+    }
+}
+
+private struct HostSelectionGrid<Card: View>: View {
+    let count: Int
+    let selection: Int
+    let maxWidth: CGFloat
+    @ViewBuilder let card: (Int) -> Card
+
+    var body: some View {
+        ScrollViewReader { scroll in
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                    ForEach(0..<count, id: \.self) { index in
+                        card(index).id(index)
+                    }
+                }
+                .frame(maxWidth: maxWidth)
+            }
+            .onChange(of: selection, initial: true) { _, index in
+                scroll.scrollTo(index, anchor: .center)
+            }
+        }
     }
 }
 

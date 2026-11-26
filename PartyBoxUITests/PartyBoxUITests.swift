@@ -53,6 +53,28 @@ final class PartyBoxUITests: XCTestCase {
     }
 
     @MainActor
+    func testHostNavigationRevealsOffscreenMenuAndCupCards() {
+        let app = launch(scenario: "menu", freezeScenario: false, additional: ["--compact-host-window"])
+        defer { app.terminate() }
+        XCTAssertTrue(element("host.phase.menu", in: app).waitForExistence(timeout: 5))
+        for _ in 0..<9 { moveSelection(forward: true, in: app) }
+        XCTAssertTrue(element("host.menu.action.9", in: app).isHittable)
+        activateSelect(in: app)
+        XCTAssertTrue(element("host.phase.history", in: app).waitForExistence(timeout: 5))
+
+        activateExit(in: app)
+        XCTAssertTrue(element("host.phase.menu", in: app).waitForExistence(timeout: 5))
+        moveSelection(forward: false, in: app)
+        XCTAssertTrue(element("host.menu.action.8", in: app).isHittable)
+        activateSelect(in: app)
+        XCTAssertTrue(element("host.phase.cupSetup", in: app).waitForExistence(timeout: 5))
+
+        for _ in 0..<8 { moveSelection(forward: true, in: app) }
+        XCTAssertTrue(element("host.cupSetup.action.8", in: app).isHittable)
+        XCTAssertTrue(element("host.ready.status", in: app).isHittable)
+    }
+
+    @MainActor
     func testFourPlayerLobbyMenuPongNavigation() throws {
         let app = launch(additional: ["--bot-count", "4", "--host-name", "Automation PartyBox"])
         XCTAssertTrue(element("host.lobby.start", in: app).waitForExistence(timeout: 10))
@@ -92,10 +114,17 @@ final class PartyBoxUITests: XCTestCase {
 #endif
 
     @MainActor
-    private func launch(scenario: String? = nil, additional: [String] = []) -> XCUIApplication {
+    private func launch(
+        scenario: String? = nil,
+        freezeScenario: Bool = true,
+        additional: [String] = []
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-animations", "--disable-effects", "--seed", "42"]
-        if let scenario { app.launchArguments += ["--scenario", scenario, "--freeze-scenario"] }
+        if let scenario {
+            app.launchArguments += ["--scenario", scenario]
+            if freezeScenario { app.launchArguments.append("--freeze-scenario") }
+        }
         app.launchArguments += additional
         app.launch()
         return app
@@ -104,6 +133,15 @@ final class PartyBoxUITests: XCTestCase {
     @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    private func moveSelection(forward: Bool, in app: XCUIApplication) {
+#if os(tvOS)
+        XCUIRemote.shared.press(forward ? .right : .left)
+#else
+        app.typeKey(forward ? .rightArrow : .leftArrow, modifierFlags: [])
+#endif
     }
 
     @MainActor
