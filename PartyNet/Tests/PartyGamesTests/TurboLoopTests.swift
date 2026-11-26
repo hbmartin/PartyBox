@@ -153,13 +153,13 @@ struct TurboLoopTests {
         #expect(simulation.car(for: solo)?.lap == 0)
         #expect(simulation.car(for: solo)?.nextGate == 0)
 
-        // A real lap passes the checkpoints in order, then the line.
+        // Follow the centerline closely through the marked checkpoints.
         var gateSequence: [Int] = []
         run(&simulation, seconds: 30, until: { $0.car(for: solo)?.lap == 1 }) { simulation in
             let gate = simulation.car(for: solo)?.nextGate ?? -1
             if gateSequence.last != gate { gateSequence.append(gate) }
             #expect(simulation.car(for: solo)?.lap == 0)
-            return [solo: follow(simulation, solo)]
+            return halfThrottle(simulation, 100)
         }
         let car = try #require(simulation.car(for: solo))
         #expect(gateSequence == [0, 1, 2, 3])
