@@ -17,20 +17,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 games_fixtures="$ROOT_DIR/PartyNet/Tests/PartyGamesTests/Fixtures"
 host_fixtures="$ROOT_DIR/PartyBoxTests/Fixtures"
 record_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-goldens.XXXXXX")"
-cleanup_log="$record_root/cleanup.log"
 stage_tag="${record_root##*/}"
 games_output="$record_root/games"
 host_output="$record_root/host"
 backup_root=""
 games_backup=""
 host_backup=""
-games_original_manifest="$record_root/games-original.manifest"
-host_original_manifest="$record_root/host-original.manifest"
-games_candidate_manifest="$record_root/games-candidate.manifest"
-host_candidate_manifest="$record_root/host-candidate.manifest"
 mkdir -p "$games_output" "$host_output"
-: >"$cleanup_log"
 rollback_pending=false
+
+report() {
+    # A broken stderr pipe must only terminate the reporting subprocess.
+    (printf '%s\n' "$1" >&2) || true
+}
 
 fixture_manifest() {
     local directory=$1 fixture
@@ -41,12 +40,14 @@ fixture_manifest() {
     done
 }
 
+matches_manifest() {
+    local actual
+    actual="$(fixture_manifest "$1")" && [[ "$actual" == "$2" ]]
+}
+
 backup_intact() {
-    [[ -f "$games_original_manifest" && -f "$host_original_manifest" ]] || return 1
-    fixture_manifest "$games_backup" >"$record_root/games-current.manifest" || return 1
-    fixture_manifest "$host_backup" >"$record_root/host-current.manifest" || return 1
-    cmp -s "$games_original_manifest" "$record_root/games-current.manifest" \
-        && cmp -s "$host_original_manifest" "$record_root/host-current.manifest"
+    matches_manifest "$games_backup" "$games_original_manifest" \
+        && matches_manifest "$host_backup" "$host_original_manifest"
 }
 
 copy_json() {
@@ -60,15 +61,11 @@ sync_json_set() {
     local source=$1 destination=$2 expected_manifest=$3 fixture source_fixture staged found status=0
     local -a source_fixtures
     [[ -d "$source" && -d "$destination" ]] || return 1
-    fixture_manifest "$source" >"$record_root/source-current.manifest" || return 1
-    cmp -s "$expected_manifest" "$record_root/source-current.manifest" || return 1
+    matches_manifest "$source" "$expected_manifest" || return 1
     source_fixtures=("$source"/*.json)
-    for fixture in "${source_fixtures[@]}"; do
-        if ! mktemp "$destination/.partybox-fixture.$stage_tag.XXXXXX" >"$record_root/staged-path"; then
-            status=1
-            continue
-        fi
-        if ! read -r staged <"$record_root/staged-path"; then
+    # Bash 3.2 treats empty arrays as unset under nounset.
+    for fixture in ${source_fixtures[@]+"${source_fixtures[@]}"}; do
+        if ! staged="$(mktemp "$destination/.partybox-fixture.$stage_tag.XXXXXX")"; then
             status=1
             continue
         fi
@@ -86,12 +83,10 @@ sync_json_set() {
     if (( status != 0 )); then
         return 1
     fi
-    [[ -d "$source" ]] || return 1
-    fixture_manifest "$source" >"$record_root/source-current.manifest" || return 1
-    cmp -s "$expected_manifest" "$record_root/source-current.manifest" || return 1
+    matches_manifest "$source" "$expected_manifest" || return 1
     for fixture in "$destination"/*.json; do
         found=false
-        for source_fixture in "${source_fixtures[@]}"; do
+        for source_fixture in ${source_fixtures[@]+"${source_fixtures[@]}"}; do
             if [[ "${source_fixture##*/}" == "${fixture##*/}" ]]; then
                 found=true
                 break
@@ -118,59 +113,56 @@ cleanup_stages() {
 }
 
 print_recovery() {
-    if ! backup_intact; then
-        echo "Golden backup missing or incomplete at $backup_root; automatic restoration was not completed." >>"$cleanup_log"
-        echo "Inspect the fixture diff and recover originals from Git or another saved copy." >>"$cleanup_log"
-        return 1
-    fi
-    {
-        echo "Golden backups retained at $backup_root"
-        echo "  games: $games_backup"
-        echo "  host: $host_backup"
-        echo "After resolving the interruption or file error, restore the original fixture sets with:"
-        printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$games_backup" "$games_fixtures"
-        printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$host_backup" "$host_fixtures"
-        printf '  rm -f -- %q/.partybox-fixture.%s.* %q/.partybox-fixture.%s.*\n' \
-            "$games_fixtures" "$stage_tag" "$host_fixtures" "$stage_tag"
-    } >>"$cleanup_log"
-}
-
-flush_cleanup_log() {
-    cat "$cleanup_log" >&2 || true
-}
-
-retain_cleanup_log() {
-    if [[ "$rollback_pending" == true && -d "$backup_root" ]]; then
-        cat "$cleanup_log" >"$backup_root/recovery.log" || true
+    local recovery
+    recovery="$(
+        printf '%s\n' "$1"
+        if backup_intact; then
+            echo "Golden backups retained at $backup_root"
+            echo "  games: $games_backup"
+            echo "  host: $host_backup"
+            echo "After resolving the interruption or file error, restore the original fixture sets with:"
+            printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$games_backup" "$games_fixtures"
+            printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$host_backup" "$host_fixtures"
+            printf '  find %q %q -maxdepth 1 -type f -name %q -delete\n' \
+                "$games_fixtures" "$host_fixtures" ".partybox-fixture.$stage_tag.*"
+        else
+            echo "Golden backup missing or incomplete at $backup_root."
+            echo "Inspect the fixture diff and recover originals from Git or another saved copy."
+        fi
+    )"
+    report "$recovery"
+    if [[ -d "$backup_root" ]]; then
+        printf '%s\n' "$recovery" >"$backup_root/recovery.log" || true
     fi
 }
 
 cleanup_interrupted() {
     local status=$1
     set +e
-    trap - EXIT INT TERM
+    trap - EXIT
+    trap '' HUP INT QUIT TERM
     if ! cleanup_stages; then
-        echo "Could not remove golden fixture staging files." >>"$cleanup_log"
+        report "Could not remove golden fixture staging files."
     fi
     if [[ "$rollback_pending" == true ]]; then
-        echo "Fixture restoration interrupted." >>"$cleanup_log"
-        print_recovery
+        print_recovery "Fixture restoration interrupted."
+    elif [[ -d "$backup_root" ]]; then
+        report "Cleanup interrupted. An unused or partially removed golden backup remains at $backup_root."
     fi
-    retain_cleanup_log
-    flush_cleanup_log
-    rm -rf "$record_root"
+    rm -rf "$record_root" || report "Could not remove temporary golden output at $record_root"
     exit "$status"
 }
 
 cleanup() {
     local status=$? restore_failed=false
     set +e
+    trap 'cleanup_interrupted 129' HUP
     trap 'cleanup_interrupted 130' INT
+    trap 'cleanup_interrupted 131' QUIT
     trap 'cleanup_interrupted 143' TERM
     trap - EXIT
     if [[ "$rollback_pending" == true ]]; then
-        echo "Restoring golden fixtures after unsuccessful verification." >>"$cleanup_log"
-        echo "Recovery backup: $backup_root" >>"$cleanup_log"
+        report "Restoring golden fixtures after unsuccessful verification."
         if ! backup_intact; then
             restore_failed=true
         else
@@ -183,31 +175,31 @@ cleanup() {
         fi
         if ! cleanup_stages; then restore_failed=true; fi
         if [[ "$restore_failed" == true ]]; then
-            print_recovery
+            print_recovery "Automatic fixture restoration was incomplete."
             if (( status == 0 )); then status=1; fi
         else
             rollback_pending=false
         fi
     elif ! cleanup_stages; then
-        echo "Could not remove golden fixture staging files." >>"$cleanup_log"
+        report "Could not remove golden fixture staging files."
         if (( status == 0 )); then status=1; fi
     fi
     if [[ -n "$backup_root" && "$rollback_pending" == false ]]; then
         if ! rm -rf "$backup_root"; then
-            echo "Could not remove golden backup at $backup_root" >>"$cleanup_log"
+            report "Could not remove golden backup at $backup_root"
             if (( status == 0 )); then status=1; fi
         fi
     fi
-    retain_cleanup_log
-    flush_cleanup_log
     if ! rm -rf "$record_root"; then
-        echo "Could not remove temporary golden output at $record_root" >&2
+        report "Could not remove temporary golden output at $record_root"
         if (( status == 0 )); then status=1; fi
     fi
     exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
+trap 'exit 131' QUIT
 trap 'exit 143' TERM
 
 fixture_names() {
@@ -249,10 +241,10 @@ env TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR="$host_output" \
 
 check_candidate_set PartyGames "$games_output" "$games_fixtures"
 check_candidate_set PartyBox "$host_output" "$host_fixtures"
-fixture_manifest "$games_output" >"$games_candidate_manifest"
-fixture_manifest "$host_output" >"$host_candidate_manifest"
-fixture_manifest "$games_fixtures" >"$games_original_manifest"
-fixture_manifest "$host_fixtures" >"$host_original_manifest"
+games_candidate_manifest="$(fixture_manifest "$games_output")"
+host_candidate_manifest="$(fixture_manifest "$host_output")"
+games_original_manifest="$(fixture_manifest "$games_fixtures")"
+host_original_manifest="$(fixture_manifest "$host_fixtures")"
 mkdir -p "$ROOT_DIR/.verification/golden-backups"
 backup_root="$(mktemp -d "$ROOT_DIR/.verification/golden-backups/partybox-goldens.XXXXXX")"
 games_backup="$backup_root/backup-games"
@@ -260,7 +252,11 @@ host_backup="$backup_root/backup-host"
 mkdir -p "$games_backup" "$host_backup"
 copy_json "$games_fixtures" "$games_backup"
 copy_json "$host_fixtures" "$host_backup"
-backup_intact
+if ! backup_intact; then
+    report "Golden backup verification failed at $backup_root."
+    exit 1
+fi
+report "Recovery backup: $backup_root"
 rollback_pending=true
 sync_json_set "$games_output" "$games_fixtures" "$games_candidate_manifest"
 sync_json_set "$host_output" "$host_fixtures" "$host_candidate_manifest"

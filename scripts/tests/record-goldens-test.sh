@@ -34,7 +34,8 @@ set -euo pipefail
 if [[ -n "${PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     if [[ "$STUB_SCENARIO" == empty_output ]]; then
         exit 0
-    elif [[ "$STUB_SCENARIO" == set_change ]]; then
+    elif [[ "$STUB_SCENARIO" == set_change || "$STUB_SCENARIO" == backup_disappears \
+        || "$STUB_SCENARIO" == backup_incomplete ]]; then
         printf '{"candidate":"new-game"}\n' >"$PARTYBOX_GOLDEN_OUTPUT_DIR/new-game.json"
     else
         printf '{"candidate":"game"}\n' >"$PARTYBOX_GOLDEN_OUTPUT_DIR/game.json"
@@ -47,10 +48,20 @@ else
     elif [[ "$STUB_SCENARIO" == interrupt_term || "$STUB_SCENARIO" == cleanup_term ]]; then
         kill -TERM "$PPID"
         exit 0
+    elif [[ "$STUB_SCENARIO" == interrupt_quit ]]; then
+        kill -QUIT "$PPID"
+        exit 0
+    elif [[ "$STUB_SCENARIO" == interrupt_hup ]]; then
+        kill -HUP "$PPID"
+        exit 0
+    elif [[ "$STUB_SCENARIO" == scratch_lost ]]; then
+        "$REAL_RM" -rf "$TMPDIR"/partybox-goldens.*
+        exit 1
     elif [[ "$STUB_SCENARIO" == verify_fail || "$STUB_SCENARIO" == games_restore_copy_fail \
         || "$STUB_SCENARIO" == host_restore_copy_fail || "$STUB_SCENARIO" == closed_stderr \
         || "$STUB_SCENARIO" == broken_stderr \
-        || "$STUB_SCENARIO" == stage_restore_interrupt ]]; then
+        || "$STUB_SCENARIO" == stage_restore_interrupt || "$STUB_SCENARIO" == empty_backup \
+        || "$STUB_SCENARIO" == cleanup_int || "$STUB_SCENARIO" == cleanup_removal_int ]]; then
         exit 1
     elif [[ "$STUB_SCENARIO" == backup_disappears || "$STUB_SCENARIO" == backup_incomplete ]]; then
         case_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -94,8 +105,19 @@ case "$STUB_SCENARIO:$source_file" in
     cleanup_term:*/backup-games/*.json)
         kill -TERM "$PPID"
         exit 74 ;;
+    cleanup_int:*/backup-games/*.json)
+        kill -INT "$PPID"
+        exit 74 ;;
+    normal:*/games/*.json)
+        case_root="$(cd "$(dirname "$0")/.." && pwd)"
+        grep -F 'Recovery backup: ' "$case_root/run.log" >/dev/null || exit 74 ;;
 esac
 if [[ "$STUB_SCENARIO" == backup_copy_fail && "$3" == */backup-host/ ]]; then exit 74; fi
+if [[ "$STUB_SCENARIO" == backup_checksum_fail && "$3" == */backup-host/ ]]; then
+    "$REAL_CP" "$@"
+    printf '{"corrupted":true}\n' >"$3${source_file##*/}"
+    exit 0
+fi
 if [[ "$STUB_SCENARIO" == candidate_disappears && "$3" == */backup-host/ ]]; then
     for fixture in "$TMPDIR"/partybox-goldens.*/games/game.json; do
         mv "$fixture" "$fixture.missing"
@@ -110,6 +132,11 @@ if [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
     for target in "$@"; do
         if [[ "$target" == */PartyBoxTests/Fixtures/new-host.json ]]; then exit 74; fi
     done
+fi
+if [[ "$STUB_SCENARIO" == cleanup_removal_int && "${2:-}" == */golden-backups/partybox-goldens.* ]]; then
+    "$REAL_RM" -rf "$2/backup-games"
+    kill -INT "$PPID"
+    exit 74
 fi
 exec "$REAL_RM" "$@"
 SH
@@ -189,7 +216,7 @@ assert_backup() {
     grep -F "games: $backup_path/backup-games" "$root/run.log" >/dev/null || fail "Games backup not reported"
     grep -F "host: $backup_path/backup-host" "$root/run.log" >/dev/null || fail "Host backup not reported"
     grep -F 'rsync -a --delete ' "$root/run.log" >/dev/null || fail "Recovery commands not reported"
-    grep -F 'rm -f -- ' "$root/run.log" >/dev/null || fail "Staging cleanup command not reported"
+    grep -F ' -maxdepth 1 -type f -name ' "$root/run.log" >/dev/null || fail "Staging cleanup command not reported"
     grep -F 'Golden backups retained at ' "$backup_path/recovery.log" >/dev/null || fail "Recovery log not retained with backup"
 }
 
@@ -209,6 +236,14 @@ assert_original "$root"
 assert_no_backups "$root"
 assert_no_temp "$root"
 
+make_case backup_checksum_fail
+root="$test_root/backup_checksum_fail"
+expect_status "$root" backup_checksum_fail 1
+assert_original "$root"
+assert_no_backups "$root"
+assert_no_temp "$root"
+grep -F 'Golden backup verification failed' "$root/run.log" >/dev/null || fail "Backup verification failure was not reported"
+
 root="$test_root/set_change"
 expect_status "$root" set_change 0 --allow-set-change
 assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/new-game.json" '{"candidate":"new-game"}'
@@ -217,11 +252,16 @@ assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candida
 assert_no_backups "$root"
 assert_no_temp "$root"
 
-for scenario in verify_fail host_verify_fail closed_stderr broken_stderr interrupt_term; do
+for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch_lost \
+    interrupt_term interrupt_quit interrupt_hup; do
     make_case "$scenario"
     root="$test_root/$scenario"
     expected=1
-    if [[ "$scenario" == interrupt_term ]]; then expected=143; fi
+    case "$scenario" in
+        interrupt_term) expected=143 ;;
+        interrupt_quit) expected=131 ;;
+        interrupt_hup) expected=129 ;;
+    esac
     expect_status "$root" "$scenario" "$expected"
     assert_original "$root"
     assert_no_backups "$root"
@@ -237,7 +277,38 @@ if sigint_catchable; then
     assert_no_backups "$root"
     assert_no_temp "$root"
     assert_no_staging "$root"
+
+    make_case cleanup_int
+    root="$test_root/cleanup_int"
+    expect_status "$root" cleanup_int 130
+    assert_backup "$root"
+    assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+    assert_no_temp "$root"
+    assert_no_staging "$root"
+    grep -F 'Fixture restoration interrupted.' "$root/run.log" >/dev/null || fail "SIGINT during restoration was not reported"
+
+    make_case cleanup_removal_int
+    root="$test_root/cleanup_removal_int"
+    expect_status "$root" cleanup_removal_int 130
+    assert_original "$root"
+    assert_no_temp "$root"
+    assert_no_staging "$root"
+    backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+    [[ ${#backups[@]} -eq 1 && ! -e "${backups[0]}/backup-games" ]] || fail "Expected a partially removed backup"
+    grep -F "partially removed golden backup remains at ${backups[0]}" "$root/run.log" >/dev/null \
+        || fail "Interrupted backup removal was not reported"
 fi
+
+make_case empty_backup
+root="$test_root/empty_backup"
+"$real_rm" "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json"
+expect_status "$root" empty_backup 1 --allow-set-change
+remaining_fixtures=("$root/PartyNet/Tests/PartyGamesTests/Fixtures"/*.json)
+[[ ${#remaining_fixtures[@]} -eq 0 ]] || fail "Expected the original empty fixture set"
+assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"original":"host"}'
+assert_no_backups "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
 
 for scenario in games_install_copy_fail host_install_copy_fail; do
     make_case "$scenario"
@@ -260,11 +331,11 @@ assert_no_staging "$root"
 for scenario in backup_disappears backup_incomplete; do
     make_case "$scenario"
     root="$test_root/$scenario"
-    expect_status "$root" "$scenario" 1
-    assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+    expect_status "$root" "$scenario" 1 --allow-set-change
+    assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/new-game.json" '{"candidate":"new-game"}'
+    [[ ! -e "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" ]] || fail "Restore changed fixtures without an intact backup"
     assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candidate":"host"}'
     grep -F 'Golden backup missing or incomplete' "$root/run.log" >/dev/null || fail "Missing backup was not reported"
-    [[ ! -e "$root/PartyNet/Tests/PartyGamesTests/Fixtures/new-game.json" ]] || fail "Unexpected game fixture deletion"
     assert_no_temp "$root"
     assert_no_staging "$root"
 done
@@ -277,6 +348,11 @@ assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"cand
 assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"original":"host"}'
 assert_no_temp "$root"
 assert_no_staging "$root"
+if command -v zsh >/dev/null; then
+    cleanup_command="$(sed -n 's/^  \(find .*\)$/\1/p' "$root/run.log")"
+    [[ -n "$cleanup_command" ]] || fail "Staging cleanup command not reported"
+    zsh -f -c "$cleanup_command" || fail "Recovery staging cleanup failed in zsh without matches"
+fi
 
 make_case host_restore_copy_fail
 root="$test_root/host_restore_copy_fail"
