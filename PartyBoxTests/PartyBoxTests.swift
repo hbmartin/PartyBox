@@ -913,6 +913,42 @@ struct PartyBoxTests {
         }
     }
 
+    @Test func loneCaptainRegainsControlAfterReconnect() async throws {
+        try await withDependencies {
+            $0.continuousClock = ContinuousClock()
+        } operation: {
+            let coordinator = isolatedHostCoordinator()
+            let client = PartyClient(displayName: "Captain")
+
+            try await withHostCleanup(coordinator, clients: [client]) {
+                await coordinator.start()
+                let port = try #require(coordinator.host.port)
+                await client.connect(host: "127.0.0.1", port: port)
+                let playerID = try #require(client.player?.id)
+                try await waitUntil { coordinator.captainID == playerID }
+
+                await client.interruptForTesting()
+                try await waitUntil {
+                    coordinator.captainID == nil && coordinator.host.players.contains {
+                        $0.id == playerID && !$0.isConnected
+                    }
+                }
+
+                client.reconnectAfterForeground()
+                try await waitUntil(timeout: .seconds(5)) {
+                    guard case .connected = client.state else { return false }
+                    return coordinator.statusMessage == "\(client.displayName) reconnected"
+                }
+                #expect(client.player?.id == playerID)
+                #expect(coordinator.captainID == playerID)
+
+                let command = try PartyBoxWireCodec.encode(ControllerCommand.menu(.select))
+                #expect(await client.sendApplication(command))
+                try await waitUntil { coordinator.phase == .gameMenu }
+            }
+        }
+    }
+
     @Test func captainTransfersOnInterruptionAndPromotionSurvivesReconnect() async throws {
         try await withDependencies {
             $0.continuousClock = ContinuousClock()
@@ -942,8 +978,8 @@ struct PartyBoxTests {
             #expect(coordinator.readyPlayerIDs.isEmpty)
             first.reconnectAfterForeground()
             try await waitUntil(timeout: .seconds(5)) {
-                if case .connected = first.state { return true }
-                return false
+                guard case .connected = first.state else { return false }
+                return coordinator.statusMessage == "\(first.displayName) reconnected"
             }
             #expect(coordinator.captainID == secondID)
 

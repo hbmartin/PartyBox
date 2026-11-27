@@ -581,6 +581,7 @@ final class HostCoordinator {
                 : "\(player.displayName) joined"
             requestLayoutBroadcast()
         case .playerReconnected(let player):
+            if captainID == nil, player.kind == .human { promoteCaptain() }
             statusMessage = "\(player.displayName) reconnected"
             requestLayoutBroadcast()
             if case .cupComplete(let record) = phase,

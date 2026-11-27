@@ -148,23 +148,28 @@ struct PartyBox_ControllerTests {
 
             let host = PartyHost()
             let hostName = "Name Test Host"
-            let destination: DiscoveredHost
+            let coordinator = ControllerCoordinator(defaults: defaults, configuration: configuration)
             do {
                 let port = try await host.start(hostName: hostName, advertise: false)
-                destination = try DiscoveredHost(host: "127.0.0.1", port: port, name: hostName)
+                let destination = try DiscoveredHost(host: "127.0.0.1", port: port, name: hostName)
+                coordinator.displayNameDraft = draft
+                await coordinator.connect(to: destination)
+
+                #expect(coordinator.client.state == .connected(hostName))
+                // The client gets this player from the host's first Welcome.
+                let player = try #require(coordinator.client.player)
+                #expect(player.displayName == expectedName)
+                #expect(defaults.string(forKey: "partybox.displayName") == expectedName)
+                try await waitUntil {
+                    host.players.contains {
+                        $0.id == player.id && $0.isConnected && $0.displayName == expectedName
+                    }
+                }
             } catch {
+                await coordinator.stop()
                 await host.stop()
                 throw error
             }
-
-            let coordinator = ControllerCoordinator(defaults: defaults, configuration: configuration)
-            coordinator.displayNameDraft = draft
-            await coordinator.connect(to: destination)
-
-            #expect(coordinator.client.state == .connected(hostName))
-            // The client gets this player from the host's first Welcome.
-            #expect(coordinator.client.player?.displayName == expectedName)
-            #expect(defaults.string(forKey: "partybox.displayName") == expectedName)
 
             await coordinator.stop()
             await host.stop()
