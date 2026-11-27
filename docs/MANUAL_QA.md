@@ -168,20 +168,20 @@ Stop and file a blocker if any step fails.
 
 - [ ] **JOIN-01 — First player:** The first phone receives P1, a unique color/mark, and the captain crown.
   The TV and every connected phone show the same roster.
-- [ ] **JOIN-02 — Rename before rejoining:** In a two-phone lobby with no bots, tap **Disconnect** on
-  the captain’s phone. Verify that its seat shows `OPEN` and the other phone becomes captain.
-  Edit the name in the picker and rejoin. The TV and both phones display the new name.
+- [ ] **JOIN-02 — Rename before rejoining:** In a two-phone lobby with no bots, tap **×** in the
+  top-right corner of the captain’s screen. Verify that its seat shows `OPEN` and the other phone
+  becomes captain. Edit the name in the picker and rejoin. The TV and both phones display the new name.
 - [ ] **JOIN-03 — Blank name:** Clear the name in the picker and join. PartyPad and the TV show
   `Player`.
-- [ ] **JOIN-04 — Sequential joins:** Join phones two through eight. Seat numbers follow join order, and
-  colors/marks remain distinguishable.
+- [ ] **JOIN-04 — Sequential joins:** Start a fresh lobby with one phone connected and no bots.
+  Join phones two through eight. Seat numbers follow join order, and colors/marks remain distinguishable.
 - [ ] **JOIN-05 — Full-room rejection:** Attempt to join a ninth phone. It receives `CAN'T JOIN` and
   `This PartyBox already has 8 controllers.` Existing players remain unaffected.
-- [ ] **JOIN-06 — Player loses connection:** Interrupt one phone’s network connection for longer than
-  the 15-second grace period. Its slot becomes open, and a new controller can occupy it.
-- [ ] **JOIN-07 — Captain loses connection:** With another player connected, interrupt the captain’s
-  network connection beyond the grace period. Verify that the room remains operable and a remaining
-  player becomes captain.
+- [ ] **JOIN-06 — Player loses connection:** Interrupt one phone’s network connection. Keep that phone
+  offline until its seat shows `OPEN` after the 15-second grace period and another controller takes it.
+- [ ] **JOIN-07 — Captain loses connection:** With another player connected in the lobby, interrupt the
+  captain’s network connection. Keep that phone offline until the other player becomes captain and opens
+  the game menu.
 - [ ] **JOIN-08 — Persistent identity:** Force-quit and relaunch PartyPad, then reconnect within the host's
   grace period. It returns to the same seat and color.
 - [ ] **JOIN-09 — Same-identity replacement:** Launch a second debug controller with the same explicit

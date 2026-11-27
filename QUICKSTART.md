@@ -411,9 +411,9 @@ Type a name and tap a host to save it and join. You can also tap **SAVE** or use
 **Done** key to save it early. PartyPad remembers the name on this phone. Leave the field blank to
 join as **Player**.
 
-Change your name in the picker between sessions. Tapping **Disconnect** releases your seat immediately
-and can forfeit a match in progress. Your player number, color, or captain role may change when you
-rejoin.
+Change your name in the picker between sessions. Tap **×** in the top-right corner to disconnect.
+This releases your seat immediately and can forfeit a match in progress. Your player number, color,
+or captain role may change when you rejoin.
 
 ### Step 4 — Pick the host
 
