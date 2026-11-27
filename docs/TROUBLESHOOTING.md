@@ -171,3 +171,15 @@ secret**. Any device on the LAN running the controller app can join your party a
 fine on your home network; don't do it on a shared or public one.
 
 ---
+
+## Match history after installing an older build
+
+History supports upgrades. Hosts and controllers running different protocol v5 builds can still
+play together. An older PartyPad skips personal history for the entire match when players draw.
+
+A build from before draw support may move an archive containing a draw to a
+`.corrupt-<timestamp>.json` file and show empty history. Keep that copy. To recover it, reinstall
+a current build and quit the app. In the app's Application Support directory, back up any active
+history file before copying the saved archive to its original filename. The host uses
+`PartyBox/history-v1.json`, and PartyPad uses `PartyBox Controller/history-<controller-id>-v1.json`.
+If you recorded new matches after the downgrade, keep both files so you can preserve those records.

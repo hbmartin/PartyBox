@@ -136,36 +136,44 @@ cleanup_stages() {
     return "$status"
 }
 
-print_recovery() {
-    local recovery
-    recovery="$(
-        printf '%s\n' "$1"
-        if { [[ "$cleanup_cancelled" == true && -d "$games_backup" && -d "$host_backup" ]]; } \
-            || { [[ "$cleanup_cancelled" == false ]] && backup_intact; }; then
-            echo "Golden backups retained at $backup_root"
-            echo "  games: $games_backup"
-            echo "  host: $host_backup"
-            if [[ "$cleanup_cancelled" == true ]]; then
-                echo "Inspect the backup contents and fixture diff before restoring."
-            fi
-            echo "After resolving the interruption or file error, restore the original fixture sets with:"
-            printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$games_backup" "$games_fixtures"
-            printf "  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n" "$host_backup" "$host_fixtures"
-            printf '  find %q %q -maxdepth 1 -type f -name %q -delete\n' \
-                "$games_fixtures" "$host_fixtures" ".partybox-fixture.$stage_tag.*"
-        else
-            echo "Golden backup missing or incomplete at $backup_root."
-            echo "Inspect the fixture diff and recover originals from Git or another saved copy."
-        fi
-    )"
-    report "$recovery"
+write_recovery() {
+    # Persist recovery information before attempting to report it on stderr.
     if [[ -d "$backup_root" ]]; then
-        printf '%s\n' "$recovery" 2>/dev/null >>"$backup_root/recovery.log" || true
+        printf '%s\n' "$1" 2>/dev/null >>"$backup_root/recovery.log" || true
+    fi
+    (trap '' INT TERM QUIT; printf '%s\n' "$1" >&2) || true
+}
+
+print_recovery() {
+    local summary=$1 backup_state=$2 recovery commands
+    if [[ "$backup_state" != verified ]]; then
+        if [[ "$backup_state" == incomplete ]]; then
+            printf -v recovery '%s\nGolden backup missing or incomplete at %s.' "$summary" "$backup_root"
+        else
+            printf -v recovery '%s\nGolden backup verification was interrupted at %s.' "$summary" "$backup_root"
+        fi
+        write_recovery "$recovery"$'\n'"Inspect the fixture diff and recover originals from Git or another saved copy."
+        return
+    fi
+
+    printf -v recovery '%s\nGolden backups retained at %s\n  games: %s\n  host: %s\nInspect the backup contents and fixture diff before restoring.' \
+        "$summary" "$backup_root" "$games_backup" "$host_backup"
+    write_recovery "$recovery"
+
+    # A cancelled or failed check leaves the operator with only safe guidance.
+    if [[ "$cleanup_cancelled" == false ]] && backup_intact && [[ "$cleanup_cancelled" == false ]]; then
+        printf -v commands "After resolving the interruption or file error, restore the original fixture sets with:\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  find %q %q -maxdepth 1 -type f -name %q -delete" \
+            "$games_backup" "$games_fixtures" "$host_backup" "$host_fixtures" \
+            "$games_fixtures" "$host_fixtures" ".partybox-fixture.$stage_tag.*"
+        write_recovery "$commands"
+    else
+        write_recovery "Backup integrity was not confirmed for manual restoration. Recover originals from Git or another verified copy."
     fi
 }
 
 cleanup() {
     local status=$? restore_failed=false
+    local backup_state=unchecked stages_failed=false keep_backup=false
     set +e
     trap - EXIT
     if [[ "$rollback_pending" == true ]]; then
@@ -173,24 +181,32 @@ cleanup() {
         trap '' HUP
         cleanup_phase=restoring
         report "Restoring golden fixtures after unsuccessful verification."
-        if ! backup_intact; then
-            restore_failed=true
-        else
+        if [[ "$cleanup_cancelled" == false ]] && backup_intact; then
+            backup_state=verified
             if ! sync_json_set "$games_backup" "$games_fixtures" "$games_original_manifest"; then
                 restore_failed=true
             fi
-            if [[ "$cleanup_cancelled" == false ]] && ! sync_json_set "$host_backup" "$host_fixtures" "$host_original_manifest"; then
+            if [[ "$cleanup_cancelled" == true ]] || ! sync_json_set "$host_backup" "$host_fixtures" "$host_original_manifest"; then
                 restore_failed=true
             fi
-        fi
-        if ! cleanup_stages; then restore_failed=true; fi
-        if [[ "$cleanup_cancelled" == true ]]; then
-            print_recovery "Fixture restoration interrupted."
-        elif [[ "$restore_failed" == true ]]; then
-            print_recovery "Automatic fixture restoration was incomplete."
-            if (( status == 0 )); then status=1; fi
         else
-            rollback_pending=false
+            restore_failed=true
+            if [[ "$cleanup_cancelled" == false ]]; then backup_state=incomplete; fi
+        fi
+        if [[ "$restore_failed" == false ]]; then rollback_pending=false; fi
+        if ! cleanup_stages; then stages_failed=true; fi
+
+        if [[ "$rollback_pending" == true ]]; then
+            if [[ "$cleanup_cancelled" == true ]]; then
+                print_recovery "Fixture restoration interrupted." "$backup_state"
+            else
+                print_recovery "Automatic fixture restoration was incomplete." "$backup_state"
+            fi
+            if (( status == 0 )); then status=1; fi
+        elif [[ "$stages_failed" == true || "$cleanup_cancelled" == true ]]; then
+            keep_backup=true
+            write_recovery "Original golden fixtures restored. Staging cleanup failed or was interrupted. Backup retained at $backup_root."
+            if (( status == 0 )); then status=1; fi
         fi
     elif ! cleanup_stages; then
         report "Could not remove golden fixture staging files."
@@ -198,7 +214,7 @@ cleanup() {
     fi
 
     cleanup_phase=finalizing
-    if [[ -n "$backup_root" && "$rollback_pending" == false ]]; then
+    if [[ -n "$backup_root" && "$rollback_pending" == false && "$keep_backup" == false ]]; then
         if [[ "$cleanup_cancelled" == false ]] && ! rm -rf "$backup_root"; then
             report "Could not remove golden backup at $backup_root"
             if (( status == 0 )); then status=1; fi
@@ -304,4 +320,4 @@ xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
 
 abort_if_signalled
 rollback_pending=false
-echo "Golden fixtures recorded and verified. Review the fixture diff before committing."
+(printf '%s\n' "Golden fixtures recorded and verified. Review the fixture diff before committing.") || true

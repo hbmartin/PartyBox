@@ -285,6 +285,21 @@ struct BumperBrawlTests {
         #expect(simulation.ranking().map(\.playerID) == [ids[2], ids[1], ids[0]])
     }
 
+    @Test func equalSurvivorsShareFirstAtTheTimeCap() throws {
+        let ids = ArcadeHarness.playerIDs(2)
+        var simulation = Simulation(players: ids, seed: 7)
+        simulation.placeForTesting(ids[0], at: offset(-90))
+        simulation.placeForTesting(ids[1], at: offset(90))
+        simulation.setElapsedForTesting(Simulation.duration - (frame / 2))
+
+        _ = simulation.step(deltaTime: frame, inputs: [:])
+
+        #expect(ids.allSatisfy { simulation.isActive($0) })
+        let outcome = try #require(ArcadeHarness.finishedDuel(simulation))
+        #expect(outcome.winner == nil)
+        #expect(outcome.standings.map(\.rank) == [1, 1])
+    }
+
     @Test func simultaneousRingOutsWithTheSameScoreEndInADraw() throws {
         let ids = ArcadeHarness.playerIDs(2)
         var simulation = Simulation(players: ids, seed: 7)

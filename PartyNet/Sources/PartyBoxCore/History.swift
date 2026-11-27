@@ -198,6 +198,8 @@ public struct CupRecord: Codable, Equatable, Identifiable, Sendable {
         self.matchRecordIDs = matchRecordIDs
         self.standings = standings.sorted { $0.rank < $1.rank }
     }
+
+    public var champions: [CupStandingRecord] { standings.filter { $0.rank == 1 } }
 }
 
 public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
@@ -209,6 +211,7 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
     public let eventWins: Int
     public let participantCount: Int
     public let isChampion: Bool
+    public let isCoChampion: Bool?
 
     public init?(record: CupRecord, controllerID: ControllerID) {
         guard let own = record.standings.first(where: { $0.controllerID == controllerID }) else {
@@ -222,6 +225,7 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
         points = own.points
         eventWins = own.eventWins
         isChampion = own.rank == 1
+        isCoChampion = isChampion && record.champions.count > 1 ? true : nil
     }
 }
 

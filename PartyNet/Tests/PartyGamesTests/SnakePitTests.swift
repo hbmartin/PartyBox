@@ -62,6 +62,22 @@ struct SnakePitTests {
         #expect(game.snake(for: second)?.crashCredits == 0)
     }
 
+    @Test func simultaneousLastLifeCrashesShareFirst() throws {
+        var game = duel()
+        game.setLivesForTesting(1, playerID: first)
+        game.setLivesForTesting(1, playerID: second)
+        game.placeForTesting(first, at: Cell(column: 10, row: 10), direction: .right)
+        game.placeForTesting(second, at: Cell(column: 12, row: 10), direction: .left)
+
+        let events = game.tickForTesting()
+
+        #expect(events.contains(.eliminated(first)))
+        #expect(events.contains(.eliminated(second)))
+        let outcome = try #require(ArcadeHarness.finishedDuel(game))
+        #expect(outcome.winner == nil)
+        #expect(outcome.standings.map(\.rank) == [1, 1])
+    }
+
     @Test func swappingHeadsIsAlsoACrash() {
         var game = duel()
         game.placeForTesting(first, at: Cell(column: 10, row: 10), direction: .right)

@@ -23,9 +23,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Run gameplay and protocol regressions
-        # Run the full timing-sensitive network suite with scripts/verify.sh on a development Mac.
-        run: >-
-          swift test --package-path PartyNet --no-parallel
-          --filter 'PartyGamesTests|drawHistoryUsesAnAdditivePresentationCase|UDPDelayKeepsPendingWorkBoundedPerSession'
+        # Run the timing-sensitive transport integration suite with scripts/verify.sh on a development Mac.
+        run: swift test --package-path PartyNet --no-parallel --skip NetworkIntegrationTests

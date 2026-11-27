@@ -302,11 +302,20 @@ private struct CupCompleteView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Text("PARTY CUP CHAMPION")
-                .font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
-            Text(record.standings.first?.displayName.uppercased() ?? "CHAMPION")
-                .font(.system(size: 76, weight: .black, design: .rounded))
-                .shadow(color: .yellow, radius: 24)
+            let champions = record.champions
+            if champions.isEmpty {
+                Text("PARTY CUP COMPLETE")
+                    .font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
+            } else {
+                Text(champions.count == 1 ? "PARTY CUP CHAMPION" : "PARTY CUP CO-CHAMPIONS")
+                    .font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
+                Text(champions.map(\.displayName).joined(separator: ", ").uppercased())
+                    .font(.system(size: 76, weight: .black, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.35)
+                    .shadow(color: .yellow, radius: 24)
+            }
             CupStandingsList(standings: record.standings)
             Text("SELECT TO RETURN TO THE GAME LIBRARY")
                 .font(.headline.monospaced().weight(.bold)).foregroundStyle(PartyTheme.lime)
@@ -320,7 +329,7 @@ private struct CupStandingsList: View {
 
     var body: some View {
         VStack(spacing: 9) {
-            ForEach(Array(standings.enumerated()), id: \.element.controllerID) { index, standing in
+            ForEach(standings, id: \.controllerID) { standing in
                 HStack(spacing: 18) {
                     Text("#\(standing.rank)").font(.title2.monospaced().weight(.black)).frame(width: 54)
                     Circle().fill(Color.partyHex(standing.colorHex)).frame(width: 18, height: 18)
@@ -328,7 +337,7 @@ private struct CupStandingsList: View {
                     if standing.kind == .bot { Text("BOT").font(.caption.monospaced().weight(.black)) }
                     Spacer()
                     Text("\(standing.eventWins) WINS").font(.headline.monospaced()).foregroundStyle(.white.opacity(0.55))
-                    Text("\(standing.points) PTS").font(.title2.monospaced().weight(.black)).foregroundStyle(index == 0 ? .yellow : PartyTheme.cyan)
+                    Text("\(standing.points) PTS").font(.title2.monospaced().weight(.black)).foregroundStyle(standing.rank == 1 ? .yellow : PartyTheme.cyan)
                 }
                 .padding(.horizontal, 24).padding(.vertical, 12)
                 .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 16))
@@ -524,9 +533,9 @@ private struct HistoryView: View {
                         ForEach(coordinator.cupRecords) { record in
                             HStack {
                                 Image(systemName: "trophy.fill").foregroundStyle(.yellow)
-                                Text(record.standings.first?.displayName ?? "Champion").font(.headline.weight(.black))
+                                Text(record.champions.map(\.displayName).joined(separator: ", ")).font(.headline.weight(.black))
                                 Spacer()
-                                Text(record.standings.first.map { "\($0.points) PTS" } ?? "")
+                                Text(record.champions.first.map { "\($0.points) PTS" } ?? "")
                                     .font(.subheadline.monospaced().weight(.black)).foregroundStyle(PartyTheme.cyan)
                                 Text(record.endedAt.formatted(date: .abbreviated, time: .omitted))
                                     .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.5))

@@ -158,6 +158,7 @@ struct LastLightSimulation: ArcadeSimulation {
             lives: { _ in 0 },
             score: \.score,
             eliminationOrder: eliminationOrder,
+            shareTiedPlacements: true,
             detail: { "\($0.lives) lives • \(Int($0.lightTime))s in the light" }
         )
     }

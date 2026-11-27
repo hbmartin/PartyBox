@@ -9,6 +9,7 @@ test_root="$(cd "$test_root" && pwd)"
 real_cp="$(command -v cp)"
 real_rm="$(command -v rm)"
 real_mkdir="$(command -v mkdir)"
+real_cksum="$(command -v cksum)"
 cleanup_test_root() {
     local status=$?
     trap - EXIT
@@ -52,7 +53,19 @@ if [[ -n "${PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     fi
     if [[ "$STUB_SCENARIO" == recording_fail ]]; then exit 1; fi
 else
-    if [[ "$STUB_SCENARIO" == interrupt_int ]]; then
+    if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
+        case_root="$(cd "$(dirname "$0")/.." && pwd)"
+        for scratch in "$TMPDIR"/partybox-goldens.*; do
+            touch "$case_root/PartyNet/Tests/PartyGamesTests/Fixtures/.partybox-fixture.${scratch##*/}.probe"
+        done
+        if [[ "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
+            "$REAL_RM" "$case_root"/.verification/golden-backups/partybox-goldens.*/backup-games/game.json
+        fi
+        exit 1
+    elif [[ "$STUB_SCENARIO" == recovery_checksum_signal ]]; then
+        printf '%s\n' "$PPID" >"$TMPDIR/recorder-pid"
+        exit 1
+    elif [[ "$STUB_SCENARIO" == interrupt_int ]]; then
         kill -INT "$PPID"
         exit 0
     elif [[ "$STUB_SCENARIO" == interrupt_term || "$STUB_SCENARIO" == cleanup_term \
@@ -109,7 +122,7 @@ source_file=$2
 case "$STUB_SCENARIO:$source_file" in
     games_install_copy_fail:*/games/*.json|host_install_copy_fail:*/host/*.json)
         exit 74 ;;
-    games_restore_copy_fail:*/backup-games/*.json|host_restore_copy_fail:*/backup-host/*.json)
+    games_restore_copy_fail:*/backup-games/*.json|host_restore_copy_fail:*/backup-host/*.json|recovery_checksum_signal:*/backup-games/*.json)
         exit 74 ;;
     stage_install_interrupt:*/games/*.json|stage_restore_interrupt:*/backup-games/*.json)
         kill -TERM "$PPID"
@@ -149,6 +162,9 @@ SH
     cat >"$root/bin/rm" <<'SH'
 #!/bin/bash
 set -euo pipefail
+if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
+    if [[ "${3:-}" == *.probe ]]; then kill -TERM "$PPID"; fi
+fi
 if [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
     for target in "$@"; do
         if [[ "$target" == */PartyBoxTests/Fixtures/new-host.json ]]; then exit 74; fi
@@ -167,7 +183,22 @@ set -euo pipefail
 if [[ "$STUB_SCENARIO" == early_setup_fail && "${2:-}" == */partybox-goldens.*/games ]]; then exit 74; fi
 exec "$REAL_MKDIR" "$@"
 SH
-    chmod +x "$root/bin/swift" "$root/bin/xcodebuild" "$root/bin/cp" "$root/bin/rm" "$root/bin/mkdir"
+    cat >"$root/bin/cksum" <<'SH'
+#!/bin/bash
+set -euo pipefail
+shopt -s nullglob
+if [[ "$STUB_SCENARIO" == recovery_checksum_signal && -f "$TMPDIR/recorder-pid" ]]; then
+    case_root="$(cd "$(dirname "$0")/.." && pwd)"
+    logs=("$case_root"/.verification/golden-backups/partybox-goldens.*/recovery.log)
+    if [[ ${#logs[@]} -gt 0 ]]; then
+        read -r recorder <"$TMPDIR/recorder-pid"
+        kill -TERM "$recorder"
+        kill -TERM "$$"
+    fi
+fi
+exec "$REAL_CKSUM" "$@"
+SH
+    chmod +x "$root/bin/"*
 }
 
 run_script() {
@@ -175,10 +206,12 @@ run_script() {
     local -a command
     shift 2
     command=(env PATH="$root/bin:$PATH" TMPDIR="$root/tmp" STUB_SCENARIO="$scenario" \
-        REAL_CP="$real_cp" REAL_RM="$real_rm" REAL_MKDIR="$real_mkdir" \
+        REAL_CP="$real_cp" REAL_RM="$real_rm" REAL_MKDIR="$real_mkdir" REAL_CKSUM="$real_cksum" \
         /bin/bash "$root/scripts/record-goldens.sh")
     if [[ "$scenario" == closed_stderr ]]; then
         "${command[@]}" "$@" >"$root/run.log" 2>&-
+    elif [[ "$scenario" == broken_stdout ]]; then
+        ( set +e; "${command[@]}" "$@" 2>"$root/run.log" | :; exit "${PIPESTATUS[0]}" )
     elif [[ "$scenario" == broken_stderr || "$scenario" == broken_stderr_log_unwritable ]]; then
         ( set +e; "${command[@]}" "$@" 2>&1 | :; exit "${PIPESTATUS[0]}" ) >"$root/run.log"
     else
@@ -233,7 +266,7 @@ assert_no_staging() {
 }
 
 assert_backup() {
-    local root=$1 backup_path
+    local root=$1 commands=${2:-verified} backup_path
     local -a backups=("$root/.verification/golden-backups"/partybox-goldens.*)
     [[ ${#backups[@]} -eq 1 ]] || fail "Expected one retained backup in $root"
     backup_path=${backups[0]}
@@ -242,9 +275,22 @@ assert_backup() {
     grep -F "Golden backups retained at $backup_path" "$root/run.log" >/dev/null || fail "Backup path not reported: $(cat "$root/run.log")"
     grep -F "games: $backup_path/backup-games" "$root/run.log" >/dev/null || fail "Games backup not reported"
     grep -F "host: $backup_path/backup-host" "$root/run.log" >/dev/null || fail "Host backup not reported"
-    grep -F 'rsync -a --delete ' "$root/run.log" >/dev/null || fail "Recovery commands not reported"
-    grep -F ' -maxdepth 1 -type f -name ' "$root/run.log" >/dev/null || fail "Staging cleanup command not reported"
+    if [[ "$commands" == verified ]]; then
+        grep -F 'rsync -a --delete ' "$root/run.log" >/dev/null || fail "Recovery commands not reported"
+        grep -F ' -maxdepth 1 -type f -name ' "$root/run.log" >/dev/null || fail "Staging cleanup command not reported"
+    else
+        assert_no_restore_commands "$root"
+    fi
     grep -F 'Golden backups retained at ' "$backup_path/recovery.log" >/dev/null || fail "Recovery log not retained with backup"
+}
+
+assert_no_restore_commands() {
+    local root=$1 log
+    for log in "$root/run.log" "$root/.verification/golden-backups"/partybox-goldens.*/recovery.log; do
+        if [[ -f "$log" ]] && grep -Fq 'rsync -a --delete ' "$log"; then
+            fail "Delete-capable restore commands appeared in $log"
+        fi
+    done
 }
 
 for scenario in recording_fail empty_output set_change; do
@@ -286,8 +332,12 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
     expected=1
     case "$scenario" in
         interrupt_term|double_signal_cleanup_entry) expected=143 ;;
-        interrupt_quit) signal_catchable QUIT || continue; expected=131 ;;
-        interrupt_hup) signal_catchable HUP || continue; expected=129 ;;
+        interrupt_quit)
+            if ! signal_catchable QUIT; then printf 'Skipping SIGQUIT test because QUIT is ignored.\n'; continue; fi
+            expected=131 ;;
+        interrupt_hup)
+            if ! signal_catchable HUP; then printf 'Skipping SIGHUP test because HUP is ignored.\n'; continue; fi
+            expected=129 ;;
     esac
     expect_status "$root" "$scenario" "$expected"
     assert_original "$root"
@@ -308,7 +358,7 @@ if signal_catchable INT; then
     make_case cleanup_int
     root="$test_root/cleanup_int"
     expect_status "$root" cleanup_int 130
-    assert_backup "$root"
+    assert_backup "$root" safe
     assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
     assert_no_temp "$root"
     assert_no_staging "$root"
@@ -324,6 +374,8 @@ if signal_catchable INT; then
     [[ ${#backups[@]} -eq 1 && ! -e "${backups[0]}/backup-games" ]] || fail "Expected a partially removed backup"
     grep -F "partially removed golden backup remains at ${backups[0]}" "$root/run.log" >/dev/null \
         || fail "Interrupted backup removal was not reported"
+else
+    printf 'Skipping SIGINT tests because INT is ignored.\n'
 fi
 
 make_case early_setup_fail
@@ -434,7 +486,7 @@ assert_no_staging "$root"
 make_case stage_restore_interrupt
 root="$test_root/stage_restore_interrupt"
 expect_status "$root" stage_restore_interrupt 143
-assert_backup "$root"
+assert_backup "$root" safe
 assert_no_temp "$root"
 assert_no_staging "$root"
 grep -F 'Fixture restoration interrupted.' "$root/run.log" >/dev/null || fail "Interrupted restoration was not reported"
@@ -442,10 +494,46 @@ grep -F 'Fixture restoration interrupted.' "$root/run.log" >/dev/null || fail "I
 make_case cleanup_term
 root="$test_root/cleanup_term"
 expect_status "$root" cleanup_term 143
-assert_backup "$root"
+assert_backup "$root" safe
 assert_no_temp "$root"
 assert_no_staging "$root"
 grep -F 'Fixture restoration interrupted.' "$root/run.log" >/dev/null || fail "Cleanup interrupt handler did not run"
+
+make_case incomplete_backup_signal
+root="$test_root/incomplete_backup_signal"
+expect_status "$root" incomplete_backup_signal 143
+assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+grep -Fq 'Golden backup missing or incomplete' "$root/run.log" || fail "Incomplete backup was not reported"
+assert_no_restore_commands "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
+
+make_case recovery_checksum_signal
+root="$test_root/recovery_checksum_signal"
+expect_status "$root" recovery_checksum_signal 143
+assert_backup "$root" safe
+grep -Fq 'Automatic fixture restoration was incomplete.' "$root/run.log" || fail "Recovery summary was lost"
+assert_no_temp "$root"
+assert_no_staging "$root"
+
+make_case late_restore_signal
+root="$test_root/late_restore_signal"
+expect_status "$root" late_restore_signal 143
+assert_original "$root"
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+[[ ${#backups[@]} -eq 1 ]] || fail "Expected the backup to be retained after a staging interrupt"
+grep -Fq 'Original golden fixtures restored.' "${backups[0]}/recovery.log" || fail "Successful restoration was not reported"
+assert_no_restore_commands "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
+
+make_case broken_stdout
+root="$test_root/broken_stdout"
+expect_status "$root" broken_stdout 0
+assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+assert_no_backups "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
 
 make_case normal
 root="$test_root/normal"

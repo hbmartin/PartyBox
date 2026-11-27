@@ -44,6 +44,26 @@ struct LastLightTests {
         #expect(game.player(for: first)?.lives == 2)
     }
 
+    @Test func simultaneousLastLifeHitsShareFirst() throws {
+        var game = LastLightSimulation(players: [first, second], seed: 1)
+        for id in [first, second] {
+            game.setLivesForTesting(1, playerID: id)
+            game.placeForTesting(id, at: ArcadeArena.center)
+        }
+        game.setHazardsForTesting([Hazard(
+            id: 900, kind: .rowSweeper, position: ArcadeArena.center,
+            velocity: .zero, gapCenter: ArcadeArena.minX + 40, armRemaining: 0
+        )])
+
+        let events = game.step(deltaTime: 0.01, inputs: [:])
+
+        #expect(events.contains(.eliminated(first)))
+        #expect(events.contains(.eliminated(second)))
+        let outcome = try #require(ArcadeHarness.finishedDuel(game))
+        #expect(outcome.winner == nil)
+        #expect(outcome.playerOutcomes.map(\.outcome) == [.draw, .draw])
+    }
+
     @Test func sweeperGapsAreSafeAndTelegraphedHazardsAreHarmless() {
         let bar = Hazard(id: 1, kind: .rowSweeper, position: ArcadeVector(x: 960, y: 500), velocity: .zero, gapCenter: 700, armRemaining: 0)
         #expect(LastLightSimulation.hits(bar, at: ArcadeVector(x: 700, y: 500), radius: 24) == false)
