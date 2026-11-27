@@ -1,10 +1,10 @@
 import Dependencies
 import DependenciesTestSupport
 import Foundation
-import PartyNetTestSupport
 import Testing
 
 @testable import PartyNet
+@testable import PartyNetTestSupport
 
 @Suite("Transport policies", .dependency(\.continuousClock, ContinuousClock()))
 struct TransportPolicyTests {
@@ -39,7 +39,7 @@ struct TransportPolicyTests {
     #expect(watchdog.outstandingNonces == [4])
   }
 
-  @Test func profileValidationAndSeededLossAreDeterministic() async throws {
+  @Test func profileValidationNormalizesBounds() async throws {
     #expect(FaultProfile(udpDropPolicy: .rate(-1)).udpDropPolicy == .rate(0))
     #expect(FaultProfile(udpDropPolicy: .rate(2)).udpDropPolicy == .rate(1))
     #expect(
@@ -86,5 +86,24 @@ struct TransportPolicyTests {
           jitterMilliseconds: 0,
           reorderWindow: 1
         ))
+  }
+
+  @Test func seededPacketLossIsReproducible() async {
+    func dropDecisions(seed: UInt64) async -> [Bool] {
+      let proxy = NetworkFaultProxy(profile: FaultProfile(seed: seed, udpDropPolicy: .rate(0.5)))
+      var decisions: [Bool] = []
+      for ordinal in 1...64 {
+        decisions.append(await proxy.shouldDrop(packetOrdinal: ordinal))
+      }
+      return decisions
+    }
+
+    let original = await dropDecisions(seed: 42)
+    let replay = await dropDecisions(seed: 42)
+    let differentSeed = await dropDecisions(seed: 43)
+    #expect(original.contains(true))
+    #expect(original.contains(false))
+    #expect(original == replay)
+    #expect(original != differentSeed)
   }
 }
