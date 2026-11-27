@@ -1,6 +1,25 @@
 import Foundation
 import PartyNet
 
+/// A live session owns its individual sequence or consumes the proxy's shared sequence.
+package struct UDPSessionDecisions: Sendable {
+    private var individual: UDPDecisionStream?
+
+    package init(profile: FaultProfile, controllerID: ControllerID) {
+        if profile.lossScope == .perController {
+            individual = UDPDecisionStream(profile: profile, controllerID: controllerID)
+        }
+    }
+
+    package mutating func consumeDropDecision(shared: inout UDPDecisionStream) -> Bool {
+        individual?.consumeDropDecision() ?? shared.consumeDropDecision()
+    }
+
+    package mutating func nextDelayMilliseconds(shared: inout UDPDecisionStream) -> Int {
+        individual?.nextDelayMilliseconds() ?? shared.nextDelayMilliseconds()
+    }
+}
+
 /// Replay state for accepted datagrams in one loss scope.
 package struct UDPDecisionStream: Sendable {
     private let profile: FaultProfile

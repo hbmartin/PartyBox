@@ -19,12 +19,14 @@ private func faultClientStack() -> FaultClientProtocol {
 }
 
 private extension NetworkFaultProxy {
-    func updateUDP(dropRate: Double, delay: Int, jitter: Int, reorderWindow: Int, lossScope: UDPLossScope?) {
+    func updateUDP(dropRate: Double, delay: Int, jitter: Int, reorderWindow: Int, lossScope: UDPLossScope?) -> FaultProfile {
         let current = currentProfile()
-        setProfile(FaultProfile(
+        let applied = FaultProfile(
             seed: current.seed, udpDropPolicy: .rate(dropRate), lossScope: lossScope ?? current.lossScope,
             delayMilliseconds: delay, jitterMilliseconds: jitter, reorderWindow: reorderWindow
-        ))
+        )
+        setProfile(applied)
+        return applied
     }
 }
 
@@ -118,13 +120,14 @@ private actor FaultControlServer {
     private func execute(_ request: FaultControlRequest) async -> FaultControlResponse {
         do {
             let message: String
+            var appliedProfile: FaultProfile?
             switch request {
             case .reset:
                 await rig.proxy.reset()
                 message = "fault profile and counters reset"
             case let .udp(dropRate, delay, jitter, reorderWindow, lossScope):
-                await rig.proxy.updateUDP(dropRate: dropRate, delay: delay, jitter: jitter,
-                                          reorderWindow: reorderWindow, lossScope: lossScope)
+                appliedProfile = await rig.proxy.updateUDP(dropRate: dropRate, delay: delay, jitter: jitter,
+                                                          reorderWindow: reorderWindow, lossScope: lossScope)
                 message = "UDP fault profile updated"
             case .cutTCP:
                 await rig.proxy.cutTCP()
@@ -143,11 +146,12 @@ private actor FaultControlServer {
             case .metrics:
                 message = "current metrics"
             }
+            let profile = if let appliedProfile { appliedProfile } else { await rig.proxy.currentProfile() }
             return FaultControlResponse(
                 succeeded: true,
                 message: message,
                 metadata: metadata,
-                profile: await rig.proxy.currentProfile(),
+                profile: profile,
                 metrics: await rig.proxy.currentMetrics(),
                 hostInputActivity: await rig.hostInputActivity()
             )
@@ -285,7 +289,9 @@ enum PartyFaultCommand {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         print(String(decoding: try encoder.encode(response), as: UTF8.self))
-        guard response.succeeded else { throw PartyFaultError.commandFailed(response.message) }
+        if let failure = response.failureMessage(for: request) {
+            throw PartyFaultError.commandFailed(failure)
+        }
     }
 
     private static func option(_ name: String, in arguments: [String]) -> String? {

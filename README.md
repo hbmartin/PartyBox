@@ -81,7 +81,11 @@ For repeatable UDP loss in the PartyNet fault rig, set the seed with `partybox-f
 alongside the required `--ready-file` option. By default, all controllers share one packet counter
 and loss sequence. To give each controller an independent sequence, run
 `partybox-fault control --address HOST:PORT udp --drop 0.5 --loss-scope per-controller`.
-Use `--loss-scope shared` to switch back. Omitting the option keeps the current scope.
+To switch back at the same loss rate, run
+`partybox-fault control --address HOST:PORT udp --drop 0.5 --loss-scope shared`.
+Omitting `--loss-scope` keeps the current scope. On every `udp` command, omitted drop, delay,
+and jitter values default to zero and the reorder window defaults to one. Repeat any numeric
+settings you want to keep.
 Reapplying a profile restarts its sequences and preserves cumulative metrics. In per-controller mode,
 reconnecting the same controller restarts only its sequence. Loss and jitter now use independent
 random draws, so changing jitter preserves which packets drop. Earlier recordings that enabled jitter

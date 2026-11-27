@@ -100,6 +100,20 @@ struct TransportPolicyTests {
     #expect(try decoder.decode(FaultControlRequest.self, from: JSONEncoder().encode(request)) == request)
   }
 
+  @Test(arguments: [UDPLossScope.shared, .perController])
+  func everyOtherPacketUsesTheSelectedLossScope(scope: UDPLossScope) {
+    let profile = FaultProfile(udpDropPolicy: .every(2), lossScope: scope)
+    var shared = UDPDecisionStream(profile: profile)
+    var first = UDPSessionDecisions(profile: profile, controllerID: ControllerID())
+    var second = UDPSessionDecisions(profile: profile, controllerID: ControllerID())
+    var drops: [Bool] = []
+    for _ in 0..<2 {
+      drops.append(first.consumeDropDecision(shared: &shared))
+      drops.append(second.consumeDropDecision(shared: &shared))
+    }
+    #expect(drops == (scope == .shared ? [false, true, false, true] : [false, false, true, true]))
+  }
+
   @Test func seededPacketLossIsReproducible() {
     func dropDecisions(seed: UInt64, jitter: Int = 0) -> [Bool] {
       var stream = UDPDecisionStream(profile: FaultProfile(seed: seed, udpDropPolicy: .rate(0.5), jitterMilliseconds: jitter))

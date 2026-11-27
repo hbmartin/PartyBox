@@ -22,6 +22,18 @@ typealias ClientControlSender = @Sendable (
   _ message: ClientMessage
 ) async throws -> Void
 
+typealias ClientBrowserRunner = @Sendable (
+  _ publish: @escaping @Sendable ([Bonjour.Endpoint]) async -> Void
+) async throws -> Void
+
+private func runBonjourBrowser(publish: @escaping @Sendable ([Bonjour.Endpoint]) async -> Void) async throws {
+  let parameters = NWParameters.tcp
+  parameters.includePeerToPeer = false
+  let browser = NetworkBrowser(
+    for: .bonjour(PartyNetConstants.serviceType, includeTxtRecord: true), using: parameters)
+  try await browser.run { endpoints in await publish(endpoints) }
+}
+
 public enum PartyClientError: Error, LocalizedError, Sendable {
   case invalidAddress
   case incompatibleHost
@@ -123,7 +135,7 @@ actor ClientTransport {
   private let controlSender: ClientControlSender
   private let inputSendInterval: Duration
   private let handshakeResponseHook: (@Sendable (HostMessage) async -> Void)?
-  private var browser: NetworkBrowser<Bonjour>?
+  private let runBrowser: ClientBrowserRunner
   private var browserTask: Task<Void, Never>?
   private(set) var browserGeneration: UUID?
   private var receiveTasks: [UUID: Task<Void, Never>] = [:]
@@ -134,6 +146,7 @@ actor ClientTransport {
   init(
     inputSendInterval: Duration = .milliseconds(16),
     handshakeResponseHook: (@Sendable (HostMessage) async -> Void)? = nil,
+    runBrowser: @escaping ClientBrowserRunner = runBonjourBrowser,
     controlSender: @escaping ClientControlSender = { connection, message in
       try await connection.send(message)
     }
@@ -142,6 +155,7 @@ actor ClientTransport {
     clock = AnyClock(continuousClock)
     self.inputSendInterval = max(inputSendInterval, .milliseconds(1))
     self.handshakeResponseHook = handshakeResponseHook
+    self.runBrowser = runBrowser
     self.controlSender = controlSender
   }
 
@@ -156,18 +170,14 @@ actor ClientTransport {
     }
   }
 
-  func startBrowsing() {
-    guard browserTask == nil else { return }
-    let parameters = NWParameters.tcp
-    parameters.includePeerToPeer = false
-    let browser = NetworkBrowser(
-      for: .bonjour(PartyNetConstants.serviceType, includeTxtRecord: true), using: parameters)
-    self.browser = browser
+  @discardableResult
+  func startBrowsing() -> Task<Void, Never> {
+    if let browserTask { return browserTask }
     let generation = UUID()
     browserGeneration = generation
-    browserTask = Task { [browser, weak self] in
+    let task = Task { [runBrowser, weak self] in
       do {
-        try await browser.run { [weak self] endpoints in
+        try await runBrowser { [weak self] endpoints in
           await self?.publish(endpoints, generation: generation)
         }
       } catch is CancellationError {
@@ -177,6 +187,8 @@ actor ClientTransport {
       }
       await self?.browserDidFinish(generation: generation)
     }
+    browserTask = task
+    return task
   }
 
   func restartBrowsing() {
@@ -395,7 +407,7 @@ actor ClientTransport {
     eventHub.yield(.hosts(hosts))
   }
 
-  func publishDiscoveryFailure(_ error: any Error, generation: UUID) {
+  private func publishDiscoveryFailure(_ error: any Error, generation: UUID) {
     guard browserGeneration == generation else { return }
     eventHub.yield(.discoveryFailed("Discovery failed: \(error.localizedDescription)"))
   }
@@ -404,7 +416,6 @@ actor ClientTransport {
     guard browserGeneration == generation else { return }
     browserTask = nil
     browserGeneration = nil
-    browser = nil
   }
 
   private func disconnectAllSessions() {
@@ -429,7 +440,6 @@ actor ClientTransport {
     browserTask?.cancel()
     browserTask = nil
     browserGeneration = nil
-    browser = nil
   }
 
   private func receiveMessage(_ message: HostMessage, connectionID: UUID) {
