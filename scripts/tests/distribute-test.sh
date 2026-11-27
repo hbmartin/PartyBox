@@ -92,6 +92,7 @@ case "$tool" in
             printf 'PartyBoxSentryEnvironment=%s\n' "${STUB_SENTRY_ENVIRONMENT:-$sentry_environment}" >> "$plist_dir/Info.plist"
         fi
         printf 'A8230261-A8C4-4484-B75C-7C06E61236D8\n' > "$binary_dir/$scheme"
+        chmod "${STUB_BINARY_MODE:-755}" "$binary_dir/$scheme"
         dwarf_dir="$archive/dSYMs/$scheme.app.dSYM/Contents/Resources/DWARF"
         if [[ "$platform" != "${STUB_MISSING_SYMBOLS:-}" ]]; then
             mkdir -p "$dwarf_dir"
@@ -180,6 +181,13 @@ expect_calls "archive ios"
 STUB_SENTRY_ENVIRONMENT=local run_failure "wrong Sentry environment" --build-number 123 --platform ios
 expect_calls "archive ios"
 
+for mode in 0644 0744; do
+    STUB_BINARY_MODE=$mode run_failure "macOS app binary must be executable" --build-number 123 --platform macos
+    expect_calls "archive macos"
+    failed_run="$(sed -n 's/^Release artifacts: //p' "$output")"
+    [[ -d "$failed_run" && ! -e "$failed_run/archives-ready" ]] || fail "Invalid Mac executable marked ready"
+done
+
 STUB_FAIL_SENTRY=tvos run_failure "tvos symbol upload failed" --build-number 123
 expect_calls "archive ios" "archive tvos" "archive macos" "sentry ios" "sentry tvos"
 
@@ -202,6 +210,13 @@ mv "$tmp_dir/legacy-info" "$ios_plist"
 chmod 644 "$ios_plist"
 
 mac_app="$run_dir/macos/app.xcarchive/Products/Applications/PartyBox.app"
+mac_binary="$mac_app/Contents/MacOS/PartyBox"
+for mode in 0644 0744; do
+    chmod "$mode" "$mac_binary"
+    run_failure "macOS app binary must be executable" --resume "$run_dir"
+    expect_calls
+done
+chmod 755 "$mac_binary"
 mac_plist="$mac_app/Contents/Info.plist"
 grep -v '^PartyBoxSentryEnvironment=' "$mac_plist" > "$tmp_dir/legacy-mac-info"
 mv "$tmp_dir/legacy-mac-info" "$mac_plist"
@@ -243,12 +258,27 @@ expect_calls
 rmdir "$run_dir/.lock"
 [[ -f "$run_dir/ios/apple-uploaded" && -f "$run_dir/tvos/apple-upload-started" ]] || fail "Lock recovery lost upload state"
 
-run_failure "unconfirmed Apple upload" --resume "$run_dir"
+STUB_FAIL_APPLE=macos run_failure "macos Apple upload did not confirm delivery" --resume "$run_dir" --platform macos
+expect_calls "sentry macos" "apple macos"
+chmod 0744 "$mac_binary"
+mv "$ios_plist" "$tmp_dir/confirmed-ios-plist"
+run_failure "tvos has an unconfirmed Apple upload" --resume "$run_dir"
 expect_calls
+run_failure "ios archive is missing its application Info.plist" --resume "$run_dir" --platform ios
+expect_calls
+mv "$tmp_dir/confirmed-ios-plist" "$ios_plist"
+run_failure "macos has an unconfirmed Apple upload" --resume "$run_dir" --platform macos
+expect_calls
+run_failure "macOS app binary must be executable" --resume "$run_dir" --platform macos --retry-apple-upload
+expect_calls
+[[ -f "$run_dir/macos/apple-upload-started" && ! -f "$run_dir/macos/apple-uploaded" ]] \
+    || fail "Invalid Mac retry changed its upload state"
 run_ok --resume "$run_dir" --platform tvos --retry-apple-upload
 expect_calls "sentry tvos" "apple tvos"
-run_ok --resume "$run_dir"
+chmod 0755 "$mac_binary"
+run_ok --resume "$run_dir" --platform macos --retry-apple-upload
 expect_calls "sentry macos" "apple macos"
+chmod 0644 "$mac_binary"
 run_ok --resume "$run_dir"
 expect_calls
 if grep -Fq 'legacy archive is missing its Sentry environment' "$output"; then

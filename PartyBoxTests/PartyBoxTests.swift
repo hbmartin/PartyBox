@@ -211,14 +211,14 @@ struct PartyBoxTests {
     }
 
     #if os(macOS)
-    @Test func applicationLifecycleStopsTheHostFromAnUncancelledTask() async throws {
-        try await withDependencies {
+    @Test func applicationLifecycleStopsTheHostFromAnUncancelledTask() async {
+        await withDependencies {
             $0.continuousClock = ContinuousClock()
         } operation: {
             let coordinator = isolatedHostCoordinator()
             let lifecycle = PartyBoxApplicationLifecycle(coordinator: coordinator)
-            lifecycle.start()
-            try await waitUntil { coordinator.host.port != nil }
+            await lifecycle.start().value
+            #expect(coordinator.host.port != nil)
 
             await lifecycle.stop()
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-unset CDPATH
+unset CDPATH PARTYBOX_GOLDEN_OUTPUT_DIR TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR
 shopt -s nullglob
 
 allow_set_change=false
@@ -151,6 +151,7 @@ write_recovery() {
 
 print_recovery() {
     local summary=$1 backup_state=$2 recovery commands
+    local restore="rsync -a --delete --ignore-times --exclude='.*' --exclude='*/' --include='*.json' --exclude='*'"
     if [[ "$backup_state" != verified ]]; then
         if [[ "$backup_state" == incomplete ]]; then
             printf -v recovery '%s\nGolden backup missing or incomplete at %s.' "$summary" "$backup_root"
@@ -167,8 +168,8 @@ print_recovery() {
 
     # A cancelled or failed check leaves the operator with only safe guidance.
     if [[ "$cleanup_cancelled" == false ]] && backup_intact && [[ "$cleanup_cancelled" == false ]]; then
-        printf -v commands "After resolving the interruption or file error, restore the original fixture sets with:\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  %s" \
-            "$games_backup" "$games_fixtures" "$host_backup" "$host_fixtures" \
+        printf -v commands "After resolving the interruption or file error, restore the original fixture sets with:\n  %s %q/ %q/\n  %s %q/ %q/\n  %s" \
+            "$restore" "$games_backup" "$games_fixtures" "$restore" "$host_backup" "$host_fixtures" \
             "$(staging_cleanup_command)"
         write_recovery "$commands"
     else
@@ -242,7 +243,7 @@ verify_fixtures() {
     shift 2
     report "Verifying $suite golden fixtures."
     abort_if_signalled
-    "$@" >"$log" 2>&1 || {
+    "$@" 9>&- >"$log" 2>&1 || {
         status=$?
         report "$suite golden verification failed (exit $status)."
         (tail -80 "$log" >&2) || true
@@ -257,6 +258,25 @@ trap 'note_signal 129' HUP
 trap 'note_signal 130' INT
 trap 'note_signal 131' QUIT
 trap 'note_signal 143' TERM
+
+# Keep the same inode across runs. The OS releases the lock when this shell exits,
+# after its EXIT trap has finished with the backups and both fixture directories.
+mkdir -p "$ROOT_DIR/.verification"
+exec 9>>"$ROOT_DIR/.verification/record-goldens.lock"
+lock_status=0
+case "$OSTYPE" in
+    darwin*) lockf -s -t 0 9 || lock_status=$? ;;
+    linux*) flock -n -E 75 9 || lock_status=$? ;;
+    *) report "Golden fixture recording requires macOS or Linux file locking."; exit 1 ;;
+esac
+if (( lock_status == 75 )); then
+    report "Another golden fixture recording is in progress in $ROOT_DIR."
+    exit "$lock_status"
+elif (( lock_status != 0 )); then
+    report "Could not lock golden fixture recording in $ROOT_DIR."
+    exit "$lock_status"
+fi
+abort_if_signalled
 
 record_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-goldens.XXXXXX")"
 abort_if_signalled
@@ -289,7 +309,7 @@ check_candidate_set() {
 
 env PARTYBOX_GOLDEN_OUTPUT_DIR="$games_output" \
     swift test --package-path "$ROOT_DIR/PartyNet" --filter ControllerScreenGoldenTests \
-    >"$record_root/games.log" 2>&1 || {
+    9>&- >"$record_root/games.log" 2>&1 || {
         tail -80 "$record_root/games.log" >&2
         exit 1
     }
@@ -299,7 +319,7 @@ env TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR="$host_output" \
     xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
     -testPlan PartyBox-Normal -destination 'platform=macOS' \
     '-only-testing:PartyBoxTests/PartyBoxTests/oversizedNestedControllerLayoutFallsBackToASendableScreen()' \
-    ENABLE_APP_SANDBOX=NO test >"$record_root/host.log" 2>&1 || {
+    ENABLE_APP_SANDBOX=NO test 9>&- >"$record_root/host.log" 2>&1 || {
         tail -80 "$record_root/host.log" >&2
         exit 1
     }

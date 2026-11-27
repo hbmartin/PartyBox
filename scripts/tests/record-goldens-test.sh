@@ -44,6 +44,8 @@ make_case() {
     cat >"$root/bin/swift" <<'SH'
 #!/bin/bash
 set -euo pipefail
+if [[ "$STUB_SCENARIO" == lock_checks ]]; then probe-lock "swift${PARTYBOX_GOLDEN_OUTPUT_DIR:+-record}"; fi
+if [[ "$STUB_SCENARIO" == lock_contender ]]; then touch "$TMPDIR/contender-started"; fi
 if [[ -n "${PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     if [[ "$STUB_SCENARIO" == empty_output ]]; then
         exit 0
@@ -113,6 +115,7 @@ SH
     cat >"$root/bin/xcodebuild" <<'SH'
 #!/bin/bash
 set -euo pipefail
+if [[ "$STUB_SCENARIO" == lock_checks ]]; then probe-lock "xcode${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:+-record}"; fi
 if [[ -n "${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     if [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
         printf '{"candidate":"new-host"}\n' >"$TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR/new-host.json"
@@ -122,9 +125,32 @@ if [[ -n "${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
 elif [[ "$STUB_SCENARIO" == broken_stdout || "$STUB_SCENARIO" == host_verify_fail ]]; then
     printf 'Xcode verification stdout\n'
     if [[ "$STUB_SCENARIO" == host_verify_fail ]]; then exit 77; fi
-elif [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
+elif [[ "$STUB_SCENARIO" == lock_checks || "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
     exit 1
 fi
+SH
+    cat >"$root/bin/probe-lock" <<'SH'
+#!/bin/bash
+set -euo pipefail
+case_root="$(cd "$(dirname "$0")/.." && pwd)"
+# Swift and Xcode can launch helpers that survive the recorder.
+if [[ "$1" != rollback && -e /dev/fd/9 ]]; then exit 81; fi
+status=0
+STUB_SCENARIO=lock_contender /bin/bash "$case_root/scripts/record-goldens.sh" >"$TMPDIR/contender.log" 2>&1 &
+contender=$!
+for ((poll=0; poll<100; poll++)); do
+    kill -0 "$contender" 2>/dev/null || break
+    sleep 0.05
+done
+if kill -0 "$contender" 2>/dev/null; then
+    kill -KILL "$contender" 2>/dev/null || true
+    wait "$contender" || true
+    exit 82
+fi
+wait "$contender" || status=$?
+[[ "$status" == 75 && ! -e "$TMPDIR/contender-started" ]]
+grep -Fq 'Another golden fixture recording is in progress' "$TMPDIR/contender.log"
+echo "$1" >>"$TMPDIR/lock-checks"
 SH
     cat >"$root/bin/cp" <<'SH'
 #!/bin/bash
@@ -132,6 +158,7 @@ set -euo pipefail
 shopt -s nullglob
 source_file=$2
 case "$STUB_SCENARIO:$source_file" in
+    lock_checks:*/backup-host/*.json) probe-lock rollback ;;
     games_install_copy_fail:*/games/*.json|host_install_copy_fail:*/host/*.json)
         exit 74 ;;
     games_restore_copy_fail:*/backup-games/*.json|host_restore_copy_fail:*/backup-host/*.json|recovery_checksum_signal:*/backup-games/*.json)
@@ -354,7 +381,15 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
             if ! signal_catchable HUP; then printf 'Skipping SIGHUP test because HUP is ignored.\n'; continue; fi
             expected=129 ;;
     esac
-    expect_status "$root" "$scenario" "$expected"
+    if [[ "$scenario" == verify_fail || "$scenario" == host_verify_fail ]]; then
+        mkdir "$root/caller-output"
+        PARTYBOX_GOLDEN_OUTPUT_DIR="$root/caller-output" TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR="$root/caller-output" \
+            expect_status "$root" "$scenario" "$expected"
+        caller_files=("$root/caller-output"/*.json)
+        [[ ${#caller_files[@]} -eq 0 ]] || fail "Verification wrote to the caller's recording directory"
+    else
+        expect_status "$root" "$scenario" "$expected"
+    fi
     case "$scenario" in
         verify_fail) grep -Fq 'Swift verification stdout' "$root/run.log" || fail "Missing Swift log tail" ;;
         host_verify_fail) grep -Fq 'Xcode verification stdout' "$root/run.log" || fail "Missing Xcode log tail" ;;
@@ -363,6 +398,7 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
     assert_no_backups "$root"
     assert_no_temp "$root"
     assert_no_staging "$root"
+    if [[ "$scenario" == interrupt_term ]]; then expect_status "$root" normal 0; fi
 done
 
 if signal_catchable INT; then
@@ -474,6 +510,32 @@ if command -v zsh >/dev/null; then
     [[ -n "$cleanup_command" ]] || fail "Staging cleanup command not reported"
     zsh -f -c "$cleanup_command" || fail "Recovery staging cleanup failed in zsh without matches"
 fi
+
+# A quick-check by size and mtime would accept both of these different files.
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+games="$root/PartyNet/Tests/PartyGamesTests/Fixtures"
+host="$root/PartyBoxTests/Fixtures"
+printf '{"original":"other"}\n' >"$games/game.json"
+touch -r "${backups[0]}/backup-games/game.json" "$games/game.json"
+printf '{"original":"xxxx"}\n' >"$host/unavailable-screen.json"
+touch -r "${backups[0]}/backup-host/unavailable-screen.json" "$host/unavailable-screen.json"
+for directory in "$games" "$host"; do
+    printf 'untracked\n' >"$directory/.private.json"
+    printf 'notes\n' >"$directory/notes.txt"
+    mkdir "$directory/nested.json"
+    printf 'nested\n' >"$directory/nested.json/data.json"
+    touch "$directory/candidate-only.json"
+done
+restore_commands="$(sed -n 's/^  \(rsync .*\)$/\1/p' "${backups[0]}/recovery.log")"
+[[ -n "$restore_commands" ]] || fail "Missing manual restore commands"
+/bin/bash -e -c "$restore_commands"
+assert_original "$root"
+for directory in "$games" "$host"; do
+    assert_content "$directory/.private.json" 'untracked'
+    assert_content "$directory/notes.txt" 'notes'
+    assert_content "$directory/nested.json/data.json" 'nested'
+    [[ ! -e "$directory/candidate-only.json" ]] || fail "Manual restoration kept an extra fixture"
+done
 
 make_case host_restore_copy_fail
 root="$test_root/host_restore_copy_fail"
@@ -601,5 +663,15 @@ assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candida
 assert_no_backups "$root"
 assert_no_temp "$root"
 assert_no_staging "$root"
+
+make_case lock_checks
+root="$test_root/lock_checks"
+expect_status "$root" lock_checks 1
+assert_content "$root/tmp/lock-checks" $'swift-record\nxcode-record\nswift\nxcode\nrollback'
+assert_original "$root"
+assert_no_backups "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
+expect_status "$root" normal 0
 
 echo "Golden recording safety cases passed."

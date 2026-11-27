@@ -13,43 +13,108 @@ final class PartyBoxUITests: XCTestCase {
     }
 
     @MainActor
-    func testFixturePhasesAndScreenshots() throws {
-        for (scenario, identifier) in [
-            ("empty-lobby", "host.phase.lobby"),
-            ("four-player-lobby", "host.phase.lobby"),
-            ("menu", "host.phase.menu"),
-            ("four-way-match", "host.phase.playing"),
-            ("snake-pit-match", "host.phase.playing"),
-            ("last-light-match", "host.phase.playing"),
-            ("bumper-brawl-match", "host.phase.playing"),
-            ("paint-rush-match", "host.phase.playing"),
-            ("sky-hop-match", "host.phase.playing"),
-            ("hot-fuse-match", "host.phase.playing"),
-            ("turbo-loop-match", "host.phase.playing"),
-            ("cup-setup", "host.phase.cupSetup"),
-            ("cup-standings", "host.phase.cupStandings"),
-            ("cup-complete", "host.phase.cupComplete"),
-            ("game-over", "host.phase.gameOver"),
-            ("history", "host.phase.history"),
-        ] {
-            let app = launch(scenario: scenario)
-            XCTAssertTrue(element(identifier, in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
-            if scenario == "four-player-lobby" {
-                XCTAssertTrue(element("host.lobby.captain", in: app).exists)
-                XCTAssertTrue(element("host.lobby.botStatus", in: app).exists)
-                XCTAssertTrue(element("host.lobby.botDifficulty", in: app).exists)
-            } else if scenario == "menu" {
-                XCTAssertTrue(element("host.ready.status", in: app).exists)
-            } else if scenario == "game-over" {
-                XCTAssertTrue(element("host.gameOver.botDifficulty", in: app).exists)
-                XCTAssertTrue(element("host.ready.status", in: app).exists)
-            }
-            let attachment = XCTAttachment(screenshot: app.screenshot())
-            attachment.name = "Host-\(scenario)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            app.terminate()
+    func testEmptyLobbyScreenshot() {
+        assertFixture("empty-lobby", phase: "lobby")
+    }
+
+    @MainActor
+    func testFourPlayerLobbyScreenshot() {
+        assertFixture(
+            "four-player-lobby", phase: "lobby",
+            elements: ["host.lobby.captain", "host.lobby.botStatus", "host.lobby.botDifficulty"]
+        )
+    }
+
+    @MainActor
+    func testGameMenuScreenshot() {
+        assertFixture("menu", phase: "menu", elements: ["host.ready.status"])
+    }
+
+    @MainActor
+    func testFourWayPongScreenshot() {
+        assertFixture("four-way-match", phase: "playing")
+    }
+
+    @MainActor
+    func testSnakePitScreenshot() {
+        assertFixture("snake-pit-match", phase: "playing")
+    }
+
+    @MainActor
+    func testLastLightScreenshot() {
+        assertFixture("last-light-match", phase: "playing")
+    }
+
+    @MainActor
+    func testBumperBrawlScreenshot() {
+        assertFixture("bumper-brawl-match", phase: "playing")
+    }
+
+    @MainActor
+    func testPaintRushScreenshot() {
+        assertFixture("paint-rush-match", phase: "playing")
+    }
+
+    @MainActor
+    func testSkyHopScreenshot() {
+        assertFixture("sky-hop-match", phase: "playing")
+    }
+
+    @MainActor
+    func testHotFuseScreenshot() {
+        assertFixture("hot-fuse-match", phase: "playing")
+    }
+
+    @MainActor
+    func testTurboLoopScreenshot() {
+        assertFixture("turbo-loop-match", phase: "playing")
+    }
+
+    @MainActor
+    func testCupSetupScreenshot() {
+        assertFixture("cup-setup", phase: "cupSetup")
+    }
+
+    @MainActor
+    func testCupStandingsScreenshot() {
+        assertFixture("cup-standings", phase: "cupStandings")
+    }
+
+    @MainActor
+    func testCupCompleteScreenshot() {
+        assertFixture("cup-complete", phase: "cupComplete")
+    }
+
+    @MainActor
+    func testGameOverScreenshot() {
+        assertFixture(
+            "game-over", phase: "gameOver",
+            elements: ["host.gameOver.botDifficulty", "host.ready.status"]
+        )
+    }
+
+    @MainActor
+    func testHistoryScreenshot() {
+        assertFixture("history", phase: "history")
+    }
+
+    @MainActor
+    private func assertFixture(_ scenario: String, phase: String, elements: [String] = []) {
+        let app = launch(scenario: scenario)
+        defer { app.terminate() }
+        XCTAssertTrue(element("host.phase.\(phase)", in: app).waitForExistence(timeout: 5), "Missing fixture \(scenario)")
+        for identifier in elements {
+            XCTAssertTrue(element(identifier, in: app).exists, "Missing \(identifier) in \(scenario)")
         }
+#if os(macOS)
+        let screenshot = app.windows.firstMatch.screenshot()
+#else
+        let screenshot = app.screenshot()
+#endif
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "Host-\(scenario)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor
@@ -60,7 +125,11 @@ final class PartyBoxUITests: XCTestCase {
     }
 
     @MainActor
-    func testHostNavigationRevealsOffscreenMenuAndCupCards() {
+    func testHostNavigationRevealsOffscreenMenuCards() {
+#if os(macOS)
+        // Each step sends a real key and synchronizes the window before and after delivery.
+        executionTimeAllowance = 180
+#endif
         let app = launch(scenario: "menu", freezeScenario: false, additional: ["--compact-host-window"])
         defer { app.terminate() }
         XCTAssertTrue(element("host.phase.menu", in: app).waitForExistence(timeout: 5))
@@ -75,8 +144,15 @@ final class PartyBoxUITests: XCTestCase {
         XCTAssertTrue(element("host.menu.action.8", in: app).isHittable)
         activateSelect(in: app)
         XCTAssertTrue(element("host.phase.cupSetup", in: app).waitForExistence(timeout: 5))
+    }
 
-        for _ in 0..<8 { moveSelection(forward: true, in: app) }
+    @MainActor
+    func testHostNavigationRevealsOffscreenCupCards() {
+        let app = launch(scenario: "cup-setup", freezeScenario: false, additional: ["--compact-host-window"])
+        defer { app.terminate() }
+        XCTAssertTrue(element("host.phase.cupSetup", in: app).waitForExistence(timeout: 5))
+        // The fixture opens on the third game. Navigate to the start card at index eight.
+        for _ in 2..<8 { moveSelection(forward: true, in: app) }
         XCTAssertTrue(element("host.cupSetup.action.8", in: app).isHittable)
         XCTAssertTrue(element("host.ready.status", in: app).isHittable)
     }
@@ -147,7 +223,7 @@ final class PartyBoxUITests: XCTestCase {
 #if os(tvOS)
         XCUIRemote.shared.press(forward ? .right : .left)
 #else
-        app.typeKey(forward ? .rightArrow : .leftArrow, modifierFlags: [])
+        app.windows.firstMatch.typeKey(forward ? .rightArrow : .leftArrow, modifierFlags: [])
 #endif
     }
 
@@ -156,7 +232,7 @@ final class PartyBoxUITests: XCTestCase {
 #if os(tvOS)
         XCUIRemote.shared.press(.select)
 #else
-        app.typeKey(.return, modifierFlags: [])
+        app.windows.firstMatch.typeKey(.return, modifierFlags: [])
 #endif
     }
 
@@ -165,7 +241,7 @@ final class PartyBoxUITests: XCTestCase {
 #if os(tvOS)
         XCUIRemote.shared.press(.menu)
 #else
-        app.typeKey(.escape, modifierFlags: [])
+        app.windows.firstMatch.typeKey(.escape, modifierFlags: [])
 #endif
     }
 }

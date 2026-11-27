@@ -52,9 +52,12 @@ scripts/verify.sh      Automated build, test, sanitizer and soak suite
 
 ## Verification automation
 
-GitHub Actions runs portable static checks on pull requests and pushes to `main`: Bash syntax,
-ShellCheck, and JSON validation for test plans and Codex hook configuration. It deliberately does not
-claim to build or test the Apple targets because this project does not use paid GitHub macOS runners.
+GitHub Actions runs Bash syntax checks, ShellCheck, the golden recording and distribution script tests,
+and JSON validation on Linux for pull requests and pushes to `main`. Changes under `PartyNet/` or to
+`.github/workflows/party-net-tests.yml` also run the Swift package tests on a hosted macOS runner,
+including gameplay, protocol policies, and the UDP queue limit. The hosted selection skips the
+`NetworkIntegrationTests` suite. The full transport suite and Apple app and simulator tests run on
+a development Mac through `scripts/verify.sh normal`.
 
 On a development Mac, `scripts/verify.sh normal` is enforced by the project-local Codex `Stop` hook
 after relevant source, test, project, configuration, asset, or verification-harness edits. A
@@ -75,22 +78,24 @@ The normal gate also runs the local package's `PartyGamesTests` on tvOS through 
 `PartyNet-Package` scheme because the app test-plan picker does not expose that package test target.
 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
-It generates candidates in a temporary directory, installs them only after both recording tests
-pass, and reruns ordinary comparisons. If a comparison fails, the script prints the end of its
-verification log and validates both backups before restoring the previous fixtures. The script
-prints the temporary rollback backup path before installing candidates. A missing or incomplete
-backup stops automatic restoration without deleting fixtures.
+Each checkout allows one recorder at a time, including during rollback. A second invocation exits
+immediately. The recorder generates candidates in a temporary directory, installs them only after
+both recording tests pass, and reruns ordinary comparisons. If a comparison fails, the script prints
+the end of its verification log and validates both backups before restoring the previous fixtures.
+The script prints the temporary rollback backup path before installing candidates. A missing or
+incomplete backup stops automatic restoration without deleting fixtures.
 If restoration fails or is interrupted, the script reports the backup location and appends recovery
 information to `recovery.log` when it can write there. It prints exact restore commands only after a
 fresh integrity check of both backup folders. Use the printed commands after inspecting the backup
 and fixture diff. If the check failed or was interrupted, recover the originals from Git or another
 verified copy. Remove the retained backup only after confirming recovery.
 
-The printed restore commands limit copying and deletion to JSON fixtures. If both fixture sets are
-restored and staging cleanup fails, use the printed cleanup command to remove temporary files from
-that recording run. `.verification/` is ignored by Git but can be removed by `git clean -fdx`,
-so move a retained backup elsewhere before cleaning
-the checkout. Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
+The printed restore commands recopy the visible top-level JSON fixtures even when their size and
+timestamp match, and remove extra visible top-level JSON fixtures. Hidden files and subdirectories
+are preserved. If both fixture sets are restored and staging cleanup fails, use the printed cleanup
+command to remove temporary files from that recording run. Move any retained backup before cleaning
+the checkout with `git clean -fdx`, which removes the ignored `.verification/` directory.
+Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
 fixture files; without that flag, only existing fixture values can change. The recording command
 temporarily disables the macOS host app sandbox for its Xcode test invocation; normal builds and
 tests retain their configured sandbox. Review the fixture diff before committing. The old

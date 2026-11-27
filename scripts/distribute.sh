@@ -109,7 +109,10 @@ lock_release_directory() {
 }
 
 validate_macos_permissions() {
-    local app=$1 invalid
+    local app=$1 binary=$2 executable invalid
+    executable="$(find -H "$binary" -prune -type f -perm -111 -print 9>&-)" \
+        || die "Could not check macOS executable permissions at $binary. Rebuild the archive."
+    [[ -n "$executable" ]] || die "macOS app binary must be executable by owner, group, and others. Rebuild the archive. Affected path: $binary"
     invalid="$(find "$app" \( -type f ! -perm -444 -o -type d ! -perm -111 \) -print 9>&-)" \
         || die "Could not check macOS archive permissions at $app. Rebuild the archive."
     [[ -z "$invalid" ]] || die "macOS archive has unreadable files or untraversable directories. Rebuild the archive. First affected path: ${invalid%%$'\n'*}"
@@ -152,7 +155,7 @@ validate_archive() {
     [[ -n "$app_uuids" && "$app_uuids" == "$symbol_uuids" ]] \
         || die "$platform app and dSYM UUIDs do not match."
     if [[ "$platform" == macos && ! -f "$run_dir/macos/apple-uploaded" ]]; then
-        validate_macos_permissions "$app"
+        validate_macos_permissions "$app" "$binary"
     fi
 }
 
@@ -277,6 +280,20 @@ if [[ -z "$resume_dir" ]]; then
         archive_platform "$platform"
     done
 fi
+
+# Check every selected platform's delivery state before suggesting an archive rebuild.
+pending_platforms=()
+for platform in "${platforms[@]}"; do
+    if [[ -f "$run_dir/$platform/apple-uploaded" ]]; then
+        printf '%s build %s already has an Apple upload receipt.\n' "$platform" "$build_number"
+        continue
+    fi
+    if [[ -f "$run_dir/$platform/apple-upload-started" && "$retry_apple" == false ]]; then
+        die "$platform has an unconfirmed Apple upload. Check App Store Connect before retrying; see docs/RELEASE.md."
+    fi
+    pending_platforms+=("$platform")
+done
+
 for platform in "${platforms[@]}"; do
     validate_archive "$platform"
 done
@@ -289,17 +306,6 @@ if [[ "$archive_only" == true ]]; then
     exit 0
 fi
 
-pending_platforms=()
-for platform in "${platforms[@]}"; do
-    if [[ -f "$run_dir/$platform/apple-uploaded" ]]; then
-        printf '%s build %s already has an Apple upload receipt.\n' "$platform" "$build_number"
-        continue
-    fi
-    if [[ -f "$run_dir/$platform/apple-upload-started" && "$retry_apple" == false ]]; then
-        die "$platform has an unconfirmed Apple upload. Check App Store Connect before retrying; see docs/RELEASE.md."
-    fi
-    pending_platforms+=("$platform")
-done
 [[ "${#pending_platforms[@]}" -gt 0 ]] || exit 0
 
 for platform in "${pending_platforms[@]}"; do

@@ -34,10 +34,11 @@ scripts/distribute.sh --build-number 43 --platform ios
 The default builds iPhone, Apple TV, and Mac. The script checks the platform,
 build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs when
 building or resuming. On resume, a legacy archive with a missing environment key
-produces a warning. An explicit environment must be `testflight`. The script
-also checks app bundle permissions on Mac archives awaiting upload. If that
-check fails, rebuild the archive. The script waits for Sentry to process the
-symbols before uploading to Apple.
+produces a warning for a pending upload. An explicit environment must be `testflight`.
+Mac archives awaiting upload must grant the owner, group, and other users read
+access to regular files, traversal access to directories, and execute access
+to the main app binary. The script waits for Sentry to process the symbols
+before uploading to Apple.
 
 For signed archives alone, use `--archive-only`. This mode requires `APPLE_TEAM_ID`
 and `SENTRY_DSN`. Xcode can contact Apple for provisioning. The script prints the
@@ -69,9 +70,14 @@ External groups may require Beta App Review.
 - If a pending Mac archive fails the permission check on resume and the release
   directory has `archives-ready`, resume the valid iOS and tvOS archives separately
   with `--resume <release-dir> --platform ios` and `--resume <release-dir> --platform tvos`.
-  Rebuild only the Mac archive with
-  `scripts/distribute.sh --build-number N --platform macos`, using the original
-  build number and keeping the receipts in the original release directory.
+  Before starting a fresh Mac run, inspect `macos/apple-uploaded` and
+  `macos/apple-upload-started` in the original release directory and check
+  **Build Uploads** in App Store Connect for the Mac version and build number.
+  A fresh run creates a separate directory with its own receipts. If the original
+  delivery is unconfirmed, resolve its status first. If Apple received the build,
+  keep the original release directory and use a new number for a replacement.
+  Once you have confirmed that the original number is available, rebuild just the Mac archive with
+  `scripts/distribute.sh --build-number N --platform macos`.
 - If symbol upload failed, check `sentry.log`, fix the error, and resume from the
   printed release directory. Sentry skips debug files it already has.
 - If an Apple upload failed or was interrupted, check `apple.log` and the

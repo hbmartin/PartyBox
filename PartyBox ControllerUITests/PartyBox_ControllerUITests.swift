@@ -159,8 +159,9 @@ final class PartyBox_ControllerUITests: XCTestCase {
     }
 
     @MainActor
-    func testCaptainMemberBotAndMarkControls() throws {
-        var app = launch(scenario: "lobby")
+    func testCaptainLobbyBotAndMarkControls() {
+        let app = launch(scenario: "lobby")
+        defer { app.terminate() }
         XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 5))
         for mark in ["circle", "square", "triangle", "diamond", "star", "hexagon", "plus", "ring"] {
             XCTAssertTrue(element("controller.mark.\(mark)", in: app).exists, "Missing mark \(mark)")
@@ -171,32 +172,44 @@ final class PartyBox_ControllerUITests: XCTestCase {
         XCTAssertTrue(element("controller.lobby.bots.increase", in: app).isEnabled)
         XCTAssertEqual(element("controller.lobby.botDifficulty", in: app).label, "DIFFICULTY  HARD")
         XCTAssertTrue(element("controller.lobby.openMenu", in: app).exists)
-        app.terminate()
+    }
 
-        app = launch(scenario: "lobby-member")
+    @MainActor
+    func testMemberLobbyRestrictsBotControls() {
+        let app = launch(scenario: "lobby-member")
+        defer { app.terminate() }
         XCTAssertTrue(element("controller.layout.lobby", in: app).waitForExistence(timeout: 5))
         app.swipeUp()
         XCTAssertTrue(element("controller.lobby.bots.decrease", in: app).waitForExistence(timeout: 3))
         XCTAssertFalse(element("controller.lobby.bots.decrease", in: app).isEnabled)
         XCTAssertFalse(element("controller.lobby.bots.increase", in: app).isEnabled)
         XCTAssertFalse(element("controller.lobby.openMenu", in: app).exists)
-        app.terminate()
+    }
 
-        app = launch(scenario: "menu")
+    @MainActor
+    func testCaptainMenuControls() {
+        let app = launch(scenario: "menu")
+        defer { app.terminate() }
         XCTAssertTrue(element("controller.menu.select", in: app).waitForExistence(timeout: 5))
         XCTAssertTrue(element("controller.menu.back", in: app).exists)
         XCTAssertFalse(element("controller.menu.ready", in: app).exists)
-        app.terminate()
+    }
 
-        app = launch(scenario: "menu-member")
+    @MainActor
+    func testMemberMenuReadyControl() {
+        let app = launch(scenario: "menu-member")
+        defer { app.terminate() }
         let ready = element("controller.menu.ready", in: app)
         XCTAssertTrue(ready.waitForExistence(timeout: 5))
         XCTAssertEqual(ready.label, "CANCEL READY")
         XCTAssertFalse(element("controller.menu.select", in: app).exists)
         XCTAssertFalse(element("controller.menu.back", in: app).exists)
-        app.terminate()
+    }
 
-        app = launch(scenario: "game-over-member")
+    @MainActor
+    func testMemberGameOverControls() {
+        let app = launch(scenario: "game-over-member")
+        defer { app.terminate() }
         let next = element("controller.gameOver.next", in: app)
         XCTAssertTrue(next.waitForExistence(timeout: 5))
         XCTAssertEqual(next.label, "CANCEL READY")
@@ -215,13 +228,17 @@ final class PartyBox_ControllerUITests: XCTestCase {
 
     @MainActor
     func testDiagnosticsExportFailureShowsLocalizedReason() throws {
+        // A cold simulator can spend a minute each attaching accessibility and acknowledging a tap.
+        executionTimeAllowance = 180
         let app = launch(scenario: "history", additional: ["--fail-diagnostics-export"])
         defer { app.terminate() }
-        let prepare = element("controller.history.diagnostics.prepare", in: app)
+        let prepareID = "controller.history.diagnostics.prepare"
+        let prepare = app.buttons[prepareID]
+        let history = app.scrollViews.containing(.button, identifier: prepareID).firstMatch
         XCTAssertTrue(prepare.waitForExistence(timeout: 5))
         for _ in 0..<5 {
             if prepare.isHittable { break }
-            app.swipeUp()
+            history.swipeUp()
         }
         XCTAssertTrue(prepare.isHittable)
         prepare.tap()

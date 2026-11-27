@@ -28,20 +28,21 @@ for tool in jq plutil swift xcodebuild xcrun; do
     }
 done
 
+delete_owned_simulator() {
+    [[ -n "$1" ]] || return 0
+    # Xcode can shut the device down itself after the test session.
+    xcrun simctl shutdown "$1" >/dev/null 2>&1 || true
+    xcrun simctl delete "$1"
+}
+
 cleanup() {
     local status=$?
     if [[ -n "$FAULT_PID" ]] && kill -0 "$FAULT_PID" 2>/dev/null; then
         kill "$FAULT_PID" 2>/dev/null || true
         wait "$FAULT_PID" 2>/dev/null || true
     fi
-    if [[ -n "$IOS_UDID" ]]; then
-        xcrun simctl shutdown "$IOS_UDID" >/dev/null 2>&1 || true
-        xcrun simctl delete "$IOS_UDID" >/dev/null 2>&1 || true
-    fi
-    if [[ -n "$TVOS_UDID" ]]; then
-        xcrun simctl shutdown "$TVOS_UDID" >/dev/null 2>&1 || true
-        xcrun simctl delete "$TVOS_UDID" >/dev/null 2>&1 || true
-    fi
+    delete_owned_simulator "$IOS_UDID" >/dev/null 2>&1 || true
+    delete_owned_simulator "$TVOS_UDID" >/dev/null 2>&1 || true
     exit "$status"
 }
 trap cleanup EXIT INT TERM
@@ -155,13 +156,11 @@ normal() {
     run_logged golden-recording-safety /bin/bash "$ROOT_DIR/scripts/tests/record-goldens-test.sh"
     run_logged partynet-tests swift test --package-path "$ROOT_DIR/PartyNet"
     run_logged partyfault-tests swift test --package-path "$ROOT_DIR/PartyFault"
-    ensure_ios_destination
-    ensure_tvos_destination
-    start_fault_rig
 
     run_xcode macos-normal -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-Normal \
         -destination "${PARTYBOX_MACOS_DESTINATION:-platform=macOS}" \
         -resultBundlePath "$ARTIFACT_DIR/macos-normal.xcresult" test
+    ensure_tvos_destination
     run_xcode tvos-normal -project "$PROJECT" -scheme PartyBox -testPlan PartyBox-Normal \
         -destination "$TVOS_DESTINATION" \
         -resultBundlePath "$ARTIFACT_DIR/tvos-normal.xcresult" test
@@ -174,6 +173,11 @@ normal() {
             -only-testing:PartyGamesTests \
             -resultBundlePath "$ARTIFACT_DIR/tvos-partygames.xcresult" test
     )
+    delete_owned_simulator "$TVOS_UDID"
+    TVOS_UDID=""
+    TVOS_DESTINATION=""
+    ensure_ios_destination
+    start_fault_rig
     run_xcode ios-normal -project "$PROJECT" \
         -scheme "PartyBox Controller" -testPlan PartyBoxController-Normal \
         -destination "$IOS_DESTINATION" \

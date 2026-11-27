@@ -14,31 +14,31 @@ import AppKit
 @MainActor
 final class PartyBoxApplicationLifecycle {
     let coordinator: HostCoordinator
-    private var runTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
 
     init(coordinator: HostCoordinator) {
         self.coordinator = coordinator
     }
 
-    func start() {
-        guard runTask == nil else { return }
-        runTask = Task { @MainActor [coordinator] in
+    @discardableResult
+    func start() -> Task<Void, Never> {
+        if let startupTask { return startupTask }
+        let task = Task { @MainActor [coordinator] in
             await coordinator.start()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(3_600)) } catch { break }
-            }
         }
+        startupTask = task
+        return task
     }
 
     func cancel() {
-        runTask?.cancel()
+        startupTask?.cancel()
     }
 
     func stop() async {
-        let activeRunTask = runTask
-        runTask = nil
-        activeRunTask?.cancel()
-        await activeRunTask?.value
+        let activeStartup = startupTask
+        startupTask = nil
+        activeStartup?.cancel()
+        await activeStartup?.value
         await coordinator.stop()
     }
 }
