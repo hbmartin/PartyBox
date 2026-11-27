@@ -359,7 +359,6 @@ final class ArcadeSession<Renderer: ArcadeRenderer>: PartyGameSession {
         if !translated.isEmpty { onEvents(translated) }
     }
 
-#if DEBUG
     var simulationForTesting: Simulation {
         get { simulation }
         set { simulation = newValue }
@@ -380,5 +379,4 @@ final class ArcadeSession<Renderer: ArcadeRenderer>: PartyGameSession {
             remaining -= delta
         }
     }
-#endif
 }

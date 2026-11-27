@@ -289,9 +289,7 @@ final class SkyHopRenderer: ArcadeRenderer {
         }
     }
 
-#if DEBUG
     /// Pillar and lip sprites ever created, visible or pooled.
     var pillarSpriteCountForTesting: Int { pillarLayer.children.count }
     var visiblePillarSpriteCountForTesting: Int { pillarLayer.children.count { !$0.isHidden } }
-#endif
 }

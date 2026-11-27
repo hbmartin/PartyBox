@@ -76,7 +76,6 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
         subscription.onOverflow()
     }
 
-#if DEBUG
     func simulateOverflowForTesting() {
         lock.lock()
         let current = Array(subscriptions)
@@ -85,7 +84,6 @@ final class EventHub<Event: Sendable>: @unchecked Sendable {
             finishOverflowedSubscription(id: id, subscription: subscription)
         }
     }
-#endif
 }
 
 package typealias HostControlProtocol = Coder<HostMessage, ClientMessage, NetworkJSONCoder>

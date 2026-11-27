@@ -315,11 +315,9 @@ final class PaintRushRenderer: ArcadeRenderer {
         }
     }
 
-#if DEBUG
     var tileSpriteCountForTesting: Int { tileSprites.count }
     var shownOwnersForTesting: [Int8] { shownOwners }
     var barWidthsForTesting: [CGFloat] { barSegments.map(\.size.width) }
 
     func tileColorForTesting(_ tile: Int) -> SKColor { tileSprites[tile].color }
-#endif
 }

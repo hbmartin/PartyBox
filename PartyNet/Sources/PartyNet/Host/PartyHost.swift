@@ -392,10 +392,14 @@ public final class PartyHost {
     }
 
     public func simulateTransportEventStreamOverflowForTesting() async {
+        await simulateTransportOverflowForTesting()
+    }
+#endif
+
+    func simulateTransportOverflowForTesting() async {
         guard let transport else { return }
         await transport.simulateEventOverflowForTesting()
     }
-#endif
 
     private func handle(_ event: HostTransportEvent, generation: UInt64) async {
         guard lifecycleGeneration == generation else { return }

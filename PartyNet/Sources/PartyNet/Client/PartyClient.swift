@@ -53,13 +53,6 @@ public final class PartyClient {
 
     private nonisolated let eventHub = EventHub<ClientEvent>()
     private let transport: ClientTransport
-#if DEBUG
-    @ObservationIgnored private(set) var inputEnqueueCountForTesting: UInt64 = 0
-
-    func waitForInputFlushForTesting() async {
-        await inputFlushTask?.value
-    }
-#endif
     private var transportTask: Task<Void, Never>?
     private var transportEventGeneration: UUID?
     private var transportRecovery: (id: UUID, task: Task<Void, Never>)?
@@ -77,7 +70,6 @@ public final class PartyClient {
     private var isExplicitlyDisconnected = false
     private var isStopped = false
 #if DEBUG
-    private var skipsReconnectNetworkingForTesting = false
     private var injectedHosts: [DiscoveredHost] = []
 #endif
 
@@ -222,9 +214,6 @@ public final class PartyClient {
 
     private func enqueueCurrentInput() {
         guard let connectionID else { return }
-#if DEBUG
-        inputEnqueueCountForTesting &+= 1
-#endif
         pendingInput = PendingInput(
             connectionID: connectionID,
             axisX: inputAxisX,
@@ -306,6 +295,17 @@ public final class PartyClient {
     }
 
     public func interruptForTesting() async {
+        await interruptConnectionForTesting()
+    }
+#endif
+
+    var hasPendingInputForTesting: Bool { pendingInput != nil }
+
+    func waitForInputFlushForTesting() async {
+        await inputFlushTask?.value
+    }
+
+    func interruptConnectionForTesting() async {
         guard let connectionID else { return }
         await transport.disconnect(connectionID: connectionID, sendLeave: false)
         self.connectionID = nil
@@ -313,21 +313,23 @@ public final class PartyClient {
     }
 
     func beginReconnectForTesting(host: String, port: UInt16) throws {
-        selectedHost = try DiscoveredHost(host: host, port: port)
-        expectedInstanceID = UUID()
+        // No discovered host matches this instance, so the real retry window can expire.
+        let absentInstance = UUID()
+        selectedHost = try DiscoveredHost(host: host, port: port, instanceID: absentInstance)
+        expectedInstanceID = absentInstance
         isExplicitlyDisconnected = false
-        skipsReconnectNetworkingForTesting = true
         beginReconnect(reason: "Simulated connection interruption")
     }
 
-    func simulateTransportEventStreamOverflowForTesting() async {
+    func simulateTransportEventStreamOverflowForTesting(state: PartyClientState, player: PlayerInfo) async {
+        self.state = state
+        self.player = player
         isStopped = false
         ensureEventTask()
         await transport.simulateEventOverflowForTesting()
         while transportRecovery == nil { await Task.yield() }
         await waitForTransportRecovery()
     }
-#endif
 
     private func connectSelectedHost(reconnecting: Bool, attemptID: UUID) async {
         guard connectionAttemptID == attemptID, let host = selectedHost else { return }
@@ -561,12 +563,6 @@ public final class PartyClient {
             let deadline = clock.now.advanced(by: PartyNetConstants.clientReconnectWindow)
             while !Task.isCancelled, clock.now < deadline {
                 guard self.reconnectAttemptID == reconnectID, !self.isExplicitlyDisconnected else { return }
-#if DEBUG
-                if self.skipsReconnectNetworkingForTesting {
-                    do { try await clock.sleep(for: .seconds(1)) } catch { return }
-                    continue
-                }
-#endif
                 await self.transport.startBrowsing()
                 if let candidate = self.reconnectCandidate() {
                     self.selectedHost = candidate

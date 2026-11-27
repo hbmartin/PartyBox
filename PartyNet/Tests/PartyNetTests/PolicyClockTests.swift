@@ -72,7 +72,7 @@ extension NetworkIntegrationTests {
         let client = PartyClient(displayName: "Grace Clock")
         await client.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.isConnected == true }
-        await client.interruptForTesting()
+        await client.interruptConnectionForTesting()
         try await waitUntil { host.players.first?.isConnected == false }
 
         let deadline = clock.now.advanced(by: .seconds(15))
@@ -100,7 +100,7 @@ extension NetworkIntegrationTests {
         let first = PartyClient(controllerID: controllerID, displayName: "Grace")
         await first.connect(host: "127.0.0.1", port: port)
         try await waitUntil { host.players.first?.isConnected == true }
-        await first.interruptForTesting()
+        await first.interruptConnectionForTesting()
         try await waitUntil { host.players.first?.isConnected == false }
 
         let deadline = clock.now.advanced(by: .seconds(15))
@@ -137,7 +137,7 @@ extension NetworkIntegrationTests {
         client.reconnectAfterForeground()
         try await waitUntil { client.rttSampleCount > pingCount }
         #expect(host.players.first?.displayName == "Before Interruption")
-        await client.interruptForTesting()
+        await client.interruptConnectionForTesting()
         try await waitUntil { host.players.first?.isConnected == false }
 
         await client.rename(to: "Reconnect Hello")
@@ -233,22 +233,22 @@ extension NetworkIntegrationTests {
         try await ticks.advance(to: .milliseconds(16))
         try await waitUntil { client.inputFramesSent == 1 }
         let baselineSendCount = client.inputFramesSent
-        let baselineEnqueueCount = client.inputEnqueueCountForTesting
+        #expect(!client.hasPendingInputForTesting)
 
         client.setOrientation(.identity, available: false)
-        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount)
+        #expect(!client.hasPendingInputForTesting)
         try await ticks.advance(to: .milliseconds(32))
         #expect(client.inputFramesSent == baselineSendCount)
 
         let orientation = OrientationQuaternion(x: 0, y: 0, z: 1, w: 0)
         client.setOrientation(orientation)
-        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount + 1)
+        #expect(client.hasPendingInputForTesting)
         await client.waitForInputFlushForTesting()
         try await ticks.advance(to: .milliseconds(48))
         try await waitUntil { client.inputFramesSent == baselineSendCount + 1 }
 
         client.setOrientation(orientation)
-        #expect(client.inputEnqueueCountForTesting == baselineEnqueueCount + 1)
+        #expect(!client.hasPendingInputForTesting)
         try await ticks.advance(to: .milliseconds(64))
         #expect(client.inputFramesSent == baselineSendCount + 1)
       }

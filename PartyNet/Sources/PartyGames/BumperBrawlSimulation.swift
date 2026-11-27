@@ -618,7 +618,6 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
         if alive == 0 || (multiplayer && alive <= 1) { isFinished = true }
     }
 
-#if DEBUG
     /// Moves a player's puck onto the ice at `position`, clearing ghost and fall
     /// state but leaving its dash cooldown alone.
     mutating func placeForTesting(_ playerID: PlayerID, at position: ArcadeVector, velocity: ArcadeVector = .zero) {
@@ -647,5 +646,4 @@ struct BumperBrawlSimulation: ArcadeSimulation, Equatable {
     mutating func setElapsedForTesting(_ elapsed: Double) {
         self.elapsed = elapsed
     }
-#endif
 }

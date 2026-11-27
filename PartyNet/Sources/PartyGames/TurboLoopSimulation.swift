@@ -821,7 +821,6 @@ struct TurboLoopSimulation: ArcadeSimulation {
         return Self.turnRate / curvature * 1.2
     }
 
-#if DEBUG
     /// Puts a car on the centerline `distance` along the loop (plus `lateral`),
     /// facing along the track (or backwards), without crossing any gate.
     mutating func placeForTesting(
@@ -865,5 +864,4 @@ struct TurboLoopSimulation: ArcadeSimulation {
         cars[index].finishTime = time
         order = rankedCars().map(\.playerID)
     }
-#endif
 }
