@@ -70,6 +70,16 @@ final class PartyBox_ControllerUITests: XCTestCase {
         let app = launch(scenario: "cup-history")
         defer { app.terminate() }
         XCTAssertTrue(app.staticTexts["PARTY CUP CO-CHAMPION"].waitForExistence(timeout: 5))
+        XCTAssertTrue(element("controller.history.cup.award", in: app).exists)
+    }
+
+    @MainActor
+    func testCupHistoryShowsValidatedResultsWithoutAwards() {
+        let app = launch(scenario: "cup-results")
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["PARTY CUP — RESULT UNAVAILABLE"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["PARTY CUP — #4"].exists)
+        XCTAssertFalse(element("controller.history.cup.award", in: app).exists)
     }
 
     @MainActor

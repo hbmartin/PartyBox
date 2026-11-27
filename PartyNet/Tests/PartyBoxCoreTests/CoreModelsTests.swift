@@ -255,7 +255,18 @@ struct CoreModelsTests {
         #expect(olderRecord.isRankOneChampion)
         #expect(olderRecord.isCoChampion == nil)
         #expect(olderRecord.finishPosition == nil)
+        #expect(olderRecord.validatedFinishPosition == 1)
         #expect(HistoryAggregation.cups([olderRecord]) == .init(played: 1, won: 1, podiums: 1))
+
+        object["rank"] = 3
+        object["isChampion"] = false
+        object["participantCount"] = 4
+        let olderPodium = try JSONDecoder().decode(
+            PersonalCupRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(olderPodium.validatedFinishPosition == 3)
+        #expect(olderPodium.isPodiumFinish)
     }
 
     @Test func cupPodiumsCountPlayersAheadOfEachTie() throws {
@@ -273,6 +284,8 @@ struct CoreModelsTests {
 
             #expect(personal.map(\.rank) == ranks)
             #expect(personal.map(\.finishPosition) == positions.map(Optional.some))
+            #expect(personal.map(\.validatedFinishPosition) == positions.map(Optional.some))
+            #expect(personal.map(\.isPodiumFinish) == positions.map { $0 <= 3 })
             #expect(personal.map { HistoryAggregation.cups([$0]).podiums } == positions.map { $0 <= 3 ? 1 : 0 })
         }
     }
@@ -305,6 +318,7 @@ struct CoreModelsTests {
             from: JSONSerialization.data(withJSONObject: object)
         )
 
+        #expect(malformed.validatedFinishPosition == nil)
         #expect(HistoryAggregation.cups([malformed]) == .init(played: 1, won: 0, podiums: 0))
 
         object["rank"] = 1
@@ -314,6 +328,7 @@ struct CoreModelsTests {
             PersonalCupRecord.self,
             from: JSONSerialization.data(withJSONObject: object)
         )
+        #expect(invalidPosition.validatedFinishPosition == nil)
         #expect(!invalidPosition.isRankOneChampion)
         #expect(HistoryAggregation.cups([invalidPosition]) == .init(played: 1, won: 0, podiums: 0))
 

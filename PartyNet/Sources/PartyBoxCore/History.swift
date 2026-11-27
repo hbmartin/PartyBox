@@ -231,15 +231,22 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
         isCoChampion = isChampion && record.champions.count > 1 ? true : nil
     }
 
-    public var isRankOneChampion: Bool {
-        participantCount > 0 && rank == 1 && isChampion && (finishPosition == nil || finishPosition == 1)
+    /// The recorded competition position, or the displayed rank for older records.
+    /// A contradictory or out-of-range placement has no validated position.
+    public var validatedFinishPosition: Int? {
+        let position = finishPosition ?? rank
+        guard rank >= 1, position >= rank, position <= participantCount,
+              rank != 1 || position == 1 else { return nil }
+        return position
     }
 
-    fileprivate var isPodiumFinish: Bool {
-        // Earlier records only carry the displayed rank.
-        let position = finishPosition ?? rank
-        return rank >= 1 && position >= rank && position <= min(3, participantCount)
-            && (rank != 1 || position == 1)
+    public var isRankOneChampion: Bool {
+        isChampion && validatedFinishPosition == 1
+    }
+
+    public var isPodiumFinish: Bool {
+        guard let position = validatedFinishPosition else { return false }
+        return position <= 3
     }
 }
 

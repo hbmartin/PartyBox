@@ -1125,7 +1125,7 @@ final class ControllerCoordinator {
                 control: memberControl,
                 botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
             ))
-        case "history", "cup-history":
+        case "history", "cup-history", "cup-results":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .historyNavigation
             if scenario == "cup-history" {
@@ -1138,6 +1138,21 @@ final class ControllerCoordinator {
                 }
                 let cup = CupRecord(endedAt: Date(), gameIDs: [], matchRecordIDs: [], standings: standings)
                 if let record = PersonalCupRecord(record: cup, controllerID: id) { personalCupHistory = [record] }
+            } else if scenario == "cup-results" {
+                let standings = zip(players, [1, 1, 2, 3]).map { player, rank in
+                    CupStandingRecord(
+                        controllerID: ControllerID(), displayName: player.displayName, colorHex: player.colorHex,
+                        kind: player.kind, rank: rank, points: 24 - rank * 3, eventWins: 0
+                    )
+                }
+                let cup = CupRecord(endedAt: Date(), gameIDs: [], matchRecordIDs: [], standings: standings)
+                let fourthPlace = standings.last.flatMap { PersonalCupRecord(record: cup, controllerID: $0.controllerID) }
+                let malformedJSON = #"""
+                    {"id":"00000000-0000-0000-0000-000000000001","endedAt":0,"gameIDs":[],
+                    "rank":1,"points":22,"eventWins":1,"participantCount":4,"isChampion":true,"finishPosition":2}
+                    """#
+                let malformed = try? JSONDecoder().decode(PersonalCupRecord.self, from: Data(malformedJSON.utf8))
+                personalCupHistory = [malformed, fourthPlace].compactMap { $0 }
             }
         case "reconnecting": client.configureFixture(state: .reconnecting("Connection interrupted"), player: currentPlayer)
         case "full-rejection": client.configureFixture(state: .rejected(RejectReason.full.message))
