@@ -18,8 +18,14 @@ must be allowed to sign and upload builds for the Apple Developer team.
    [Install sentry-cli](https://docs.sentry.io/cli/installation/)
    · [Configure Sentry’s data scrubbing](https://docs.sentry.io/platforms/apple/data-management/sensitive-data/)
 3. Set `APPLE_TEAM_ID`, `SENTRY_DSN`, `SENTRY_ORG`, and `SENTRY_PROJECT` in the release shell.
-   Load `SENTRY_AUTH_TOKEN` from your secret manager into the environment.
+   On macOS, save the token as a Keychain password with service name
+   `com.partybox.sentry-dsym` and account name equal to `SENTRY_ORG`. For CI or
+   another secret manager, export `SENTRY_AUTH_TOKEN` to override Keychain lookup.
    The apps embed the public DSN. The token goes to sentry-cli only.
+
+Run `scripts/distribute.sh --check-sentry` to verify access to the configured
+Sentry project. This check uses `SENTRY_ORG` and `SENTRY_PROJECT` and performs a
+read-only request.
 
 ## Build and upload
 
@@ -31,9 +37,10 @@ scripts/distribute.sh --build-number 42
 scripts/distribute.sh --build-number 43 --platform ios
 ```
 
-The default builds iPhone, Apple TV, and Mac. The script checks the platform,
-build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs when
-building or resuming. On resume, a legacy archive with a missing environment key
+The default builds iPhone, Apple TV, and Mac. The script verifies Sentry access
+before archiving for upload and before resuming a pending upload. It checks the
+platform, build number, embedded DSN, Sentry environment, and binary-to-dSYM UUIDs
+when building or resuming. On resume, a legacy archive with a missing environment key
 produces a warning for a pending upload. An explicit environment must be `testflight`.
 Mac archives awaiting upload must grant the owner, group, and other users read
 access to regular files, traversal access to directories, and execute access
