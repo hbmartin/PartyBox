@@ -65,6 +65,9 @@ struct UDPQueueBoundTests {
       #expect(metrics.udpRejected == 0)
       #expect(metrics.udpForwarded == 0)
       #expect(metrics.udpDropped > 0)
+      // The worker can hold one delayed packet in addition to the full queue.
+      let retained = metrics.udpReceived - metrics.udpDropped
+      #expect((queueLimit...(queueLimit + 1)).contains(retained))
       await rig.stop()
     } catch {
       await rig.stop()

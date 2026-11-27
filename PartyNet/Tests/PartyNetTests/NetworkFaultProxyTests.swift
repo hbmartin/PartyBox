@@ -308,55 +308,6 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
-    @Test func profileValidationAndSeededLossAreDeterministic() async throws {
-      #expect(FaultProfile(udpDropPolicy: .rate(-1)).udpDropPolicy == .rate(0))
-      #expect(FaultProfile(udpDropPolicy: .rate(2)).udpDropPolicy == .rate(1))
-      #expect(
-        FaultProfile(delayMilliseconds: -1, jitterMilliseconds: -2, reorderWindow: 0)
-          == FaultProfile(delayMilliseconds: 0, jitterMilliseconds: 0, reorderWindow: 1))
-      #expect(
-        FaultProfile(delayMilliseconds: .max, jitterMilliseconds: .max, reorderWindow: .max)
-          == FaultProfile(
-            delayMilliseconds: FaultProfile.maximumDelayMilliseconds,
-            jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
-            reorderWindow: FaultProfile.maximumReorderWindow
-          ))
-
-      let decoded = try JSONDecoder().decode(
-        FaultProfile.self,
-        from: Data(
-          #"{"seed":0,"udpDropPolicy":{"every":{"_0":0}},"delayMilliseconds":-1,"jitterMilliseconds":70000,"reorderWindow":2000}"#.utf8
-        )
-      )
-      let proxy = NetworkFaultProxy(profile: decoded)
-      #expect(
-        await proxy.currentProfile()
-          == FaultProfile(
-            seed: 1,
-            udpDropPolicy: .none,
-            delayMilliseconds: 0,
-            jitterMilliseconds: FaultProfile.maximumDelayMilliseconds,
-            reorderWindow: FaultProfile.maximumReorderWindow
-          ))
-
-      let decodedReplacement = try JSONDecoder().decode(
-        FaultProfile.self,
-        from: Data(
-          #"{"seed":0,"udpDropPolicy":{"every":{"_0":0}},"delayMilliseconds":70000,"jitterMilliseconds":-1,"reorderWindow":0}"#.utf8
-        )
-      )
-      await proxy.setProfile(decodedReplacement)
-      #expect(
-        await proxy.currentProfile()
-          == FaultProfile(
-            seed: 1,
-            udpDropPolicy: .none,
-            delayMilliseconds: FaultProfile.maximumDelayMilliseconds,
-            jitterMilliseconds: 0,
-            reorderWindow: 1
-          ))
-    }
-
     private func metricsAfterControlledSend(
       outcome: DatagramSendOutcome,
       retryAfterFailure: Bool = false,

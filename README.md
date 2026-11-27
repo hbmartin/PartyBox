@@ -52,9 +52,12 @@ scripts/verify.sh      Automated build, test, sanitizer and soak suite
 
 ## Verification automation
 
-GitHub Actions runs portable static checks on pull requests and pushes to `main`: Bash syntax,
-ShellCheck, and JSON validation for test plans and Codex hook configuration. It deliberately does not
-claim to build or test the Apple targets because this project does not use paid GitHub macOS runners.
+GitHub Actions runs Bash syntax checks, ShellCheck, the golden recording and distribution script tests,
+and JSON validation on Linux for pull requests and pushes to `main`. Changes under `PartyNet/` or to
+`.github/workflows/party-net-tests.yml` also run the Swift package tests on a hosted macOS runner,
+including gameplay, protocol policies, and the UDP queue limit. The hosted selection skips the
+`NetworkIntegrationTests` suite. The full transport suite and Apple app and simulator tests run on
+a development Mac through `scripts/verify.sh normal`.
 
 On a development Mac, `scripts/verify.sh normal` is enforced by the project-local Codex `Stop` hook
 after relevant source, test, project, configuration, asset, or verification-harness edits. A

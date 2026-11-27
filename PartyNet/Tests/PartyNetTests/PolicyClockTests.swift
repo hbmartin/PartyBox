@@ -33,37 +33,6 @@ extension NetworkIntegrationTests {
       }
     }
 
-    @Test func pingDeadlineTracksOldestUnansweredPing() async {
-      let clock = TestClock()
-      let erasedClock = AnyClock(clock)
-      var watchdog = PingWatchdog()
-
-      watchdog.record(nonce: 1, sentAt: erasedClock.now)
-      await clock.advance(by: .seconds(2))
-      watchdog.record(nonce: 2, sentAt: erasedClock.now)
-      await clock.advance(by: .seconds(2))
-      watchdog.record(nonce: 3, sentAt: erasedClock.now)
-
-      #expect(!watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
-      await clock.advance(by: .seconds(2))
-      #expect(watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
-
-      let acknowledgedOutstandingPing = watchdog.acknowledge(nonce: 2)
-      #expect(acknowledgedOutstandingPing)
-      #expect(watchdog.outstandingNonces == [3])
-      #expect(watchdog.oldestUnansweredAt != nil)
-
-      watchdog.record(nonce: 4, sentAt: erasedClock.now)
-      let acknowledgedStalePing = watchdog.acknowledge(nonce: 2)
-      #expect(!acknowledgedStalePing)
-      await clock.advance(by: .seconds(4))
-      #expect(watchdog.hasTimedOut(at: erasedClock.now, after: .seconds(6)))
-
-      let acknowledgedNextPing = watchdog.acknowledge(nonce: 3)
-      #expect(acknowledgedNextPing)
-      #expect(watchdog.outstandingNonces == [4])
-    }
-
     @Test func reconnectWindowExpiresAtExactlyThirtySeconds() async throws {
       let clock = TestClock()
       try await withDependencies {

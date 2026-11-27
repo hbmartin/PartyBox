@@ -43,5 +43,5 @@ jobs:
 
       - name: Explain platform coverage
         run: >-
-          echo "These Linux checks validate portable repository inputs only;
-          Apple builds and tests run through scripts/verify.sh on a trusted Mac."
+          echo "Changes to PartyNet or its test workflow also run Swift package tests on hosted macOS.
+          The full transport suite and Apple app and simulator tests run through scripts/verify.sh normal on a development Mac."
