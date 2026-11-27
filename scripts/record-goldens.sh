@@ -14,7 +14,7 @@ if (( $# > 1 )); then
     exit 2
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 games_fixtures="$ROOT_DIR/PartyNet/Tests/PartyGamesTests/Fixtures"
 host_fixtures="$ROOT_DIR/PartyBoxTests/Fixtures"
 record_root=""
@@ -52,7 +52,7 @@ report() {
 }
 
 fixture_manifest() {
-    local directory=$1 fixture
+    local directory=$1 fixture LC_ALL=C
     [[ -d "$directory" ]] || return 1
     for fixture in "$directory"/*.json; do
         printf '%s ' "${fixture##*/}"
@@ -251,6 +251,13 @@ verify_fixtures() {
     }
 }
 
+checkout_git_directory() (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+    checkout_root="$(git -C "$ROOT_DIR" rev-parse --show-toplevel)" || return 1
+    [[ "$checkout_root" -ef "$ROOT_DIR" ]] || return 1
+    git -C "$ROOT_DIR" rev-parse --absolute-git-dir
+)
+
 # Keep the signal handlers installed across the transition into the EXIT trap.
 # They record signals without exiting from inside cleanup.
 trap cleanup EXIT
@@ -261,8 +268,15 @@ trap 'note_signal 143' TERM
 
 # Keep the same inode across runs. The OS releases the lock when this shell exits,
 # after its EXIT trap has finished with the backups and both fixture directories.
-mkdir -p "$ROOT_DIR/.verification"
-exec 9>>"$ROOT_DIR/.verification/record-goldens.lock"
+if ! git_dir="$(checkout_git_directory 2>/dev/null)"; then
+    report "Golden fixture recording requires a Git checkout at $ROOT_DIR."
+    exit 1
+fi
+state_dir="$git_dir/partybox-goldens"
+backup_parent="$state_dir/golden-backups"
+legacy_backup_parent="$ROOT_DIR/.verification/golden-backups"
+mkdir -p "$state_dir"
+exec 9>>"$state_dir/record-goldens.lock"
 lock_status=0
 case "$OSTYPE" in
     darwin*) lockf -s -t 0 9 || lock_status=$? ;;
@@ -275,6 +289,25 @@ if (( lock_status == 75 )); then
 elif (( lock_status != 0 )); then
     report "Could not lock golden fixture recording in $ROOT_DIR."
     exit "$lock_status"
+fi
+abort_if_signalled
+
+recovery_pending=false
+for directory in "$backup_parent" "$legacy_backup_parent"; do
+    if [[ -e "$directory" || -L "$directory" ]]; then
+        if [[ ! -d "$directory" || ! -r "$directory" || ! -x "$directory" ]]; then
+            report "Could not check for retained golden backups at $directory."
+            exit 1
+        fi
+        for retained in "$directory"/partybox-goldens.*; do
+            report "Retained golden backup needs review: $retained"
+            recovery_pending=true
+        done
+    fi
+done
+if [[ "$recovery_pending" == true ]]; then
+    report "Inspect the fixture diff and recover both sets before moving the backup. See README.md for recovery instructions."
+    exit 1
 fi
 abort_if_signalled
 
@@ -331,8 +364,8 @@ games_candidate_manifest="$(fixture_manifest "$games_output")"
 host_candidate_manifest="$(fixture_manifest "$host_output")"
 games_original_manifest="$(fixture_manifest "$games_fixtures")"
 host_original_manifest="$(fixture_manifest "$host_fixtures")"
-mkdir -p "$ROOT_DIR/.verification/golden-backups"
-backup_root="$(mktemp -d "$ROOT_DIR/.verification/golden-backups/partybox-goldens.XXXXXX")"
+mkdir -p "$backup_parent"
+backup_root="$(mktemp -d "$backup_parent/partybox-goldens.XXXXXX")"
 games_backup="$backup_root/backup-games"
 host_backup="$backup_root/backup-host"
 mkdir -p "$games_backup" "$host_backup"
@@ -342,6 +375,9 @@ if ! backup_intact; then
     report "Golden backup verification failed at $backup_root."
     exit 1
 fi
+printf '%s\n' "$games_original_manifest" >"$backup_root/games.manifest"
+printf '%s\n' "$host_original_manifest" >"$backup_root/host.manifest"
+printf '%s\n' "$stage_tag" >"$backup_root/stage-tag"
 report "Temporary rollback backup: $backup_root"
 abort_if_signalled
 rollback_pending=true

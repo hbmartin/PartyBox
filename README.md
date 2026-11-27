@@ -77,24 +77,63 @@ is no scheduled soak job.
 The normal gate also runs the local package's `PartyGamesTests` on tvOS through Xcode's
 `PartyNet-Package` scheme because the app test-plan picker does not expose that package test target.
 
-To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
-Each checkout allows one recorder at a time, including during rollback. A second invocation exits
-immediately. The recorder generates candidates in a temporary directory, installs them only after
-both recording tests pass, and reruns ordinary comparisons. If a comparison fails, the script prints
-the end of its verification log and validates both backups before restoring the previous fixtures.
+To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` from a Git checkout on a
+development Mac. Each worktree allows one recorder at a time, including during rollback. A second
+invocation exits immediately. The recorder generates candidates in a temporary directory, installs
+them only after both recording tests pass, and reruns ordinary comparisons. If a comparison fails,
+the script prints the end of its verification log and validates both backups before restoring the previous fixtures.
 The script prints the temporary rollback backup path before installing candidates. A missing or
 incomplete backup stops automatic restoration without deleting fixtures.
 If restoration fails or is interrupted, the script reports the backup location and appends recovery
 information to `recovery.log` when it can write there. It prints exact restore commands only after a
 fresh integrity check of both backup folders. Use the printed commands after inspecting the backup
 and fixture diff. If the check failed or was interrupted, recover the originals from Git or another
-verified copy. Remove the retained backup only after confirming recovery.
+verified copy.
 
 The printed restore commands recopy the visible top-level JSON fixtures even when their size and
 timestamp match, and remove extra visible top-level JSON fixtures. Hidden files and subdirectories
 are preserved. If both fixture sets are restored and staging cleanup fails, use the printed cleanup
-command to remove temporary files from that recording run. Move any retained backup before cleaning
-the checkout with `git clean -fdx`, which removes the ignored `.verification/` directory.
+command to remove temporary files from that recording run.
+
+The lock and new backups live under `partybox-goldens/` in the worktree Git directory shown by
+`git rev-parse --absolute-git-dir`. They survive `git clean -fdx`. The recorder also stops for
+backups left in the legacy `.verification/golden-backups/` directory. Keep retained backups in place
+until recovery is confirmed, and put off checkout cleanup while you need a legacy backup.
+
+After a forced termination, `recovery.log` may be absent. With the recorder stopped, inspect the
+fixture diff and set `backup` to the retained path printed by the script. Run this from the checkout
+in Bash when both sets need restoration. It verifies both backups before restoring either set.
+
+```bash
+backup=/absolute/path/to/partybox-goldens.backup
+fixture_manifest() (
+    export LC_ALL=C
+    shopt -s nullglob
+    cd -- "$1" || exit 1
+    for fixture in *.json; do
+        printf '%s ' "$fixture"
+        cksum <"$fixture" || exit 1
+    done
+)
+restore=(rsync -a --delete --ignore-times --exclude='.*' --exclude='*/' --include='*.json' --exclude='*')
+if root=$(git rev-parse --show-toplevel) &&
+    [[ -d "$root/PartyNet/Tests/PartyGamesTests/Fixtures" && -d "$root/PartyBoxTests/Fixtures" ]] &&
+    [[ -f "$backup/games.manifest" && -f "$backup/host.manifest" ]] &&
+    games_manifest=$(fixture_manifest "$backup/backup-games") &&
+    host_manifest=$(fixture_manifest "$backup/backup-host") &&
+    [[ "$games_manifest" == "$(<"$backup/games.manifest")" &&
+       "$host_manifest" == "$(<"$backup/host.manifest")" ]]; then
+    "${restore[@]}" "$backup/backup-games/" "$root/PartyNet/Tests/PartyGamesTests/Fixtures/" &&
+    "${restore[@]}" "$backup/backup-host/" "$root/PartyBoxTests/Fixtures/"
+else
+    echo 'Backup integrity could not be confirmed. Recover from Git or another verified copy.' >&2
+fi
+```
+
+Inspect the recovered fixture diff, then remove only hidden staging files that match
+`.partybox-fixture.<stage-tag>.*` in the two fixture directories. The backup's `stage-tag` file
+identifies the run. Move or remove the backup after confirming recovery so recording can resume.
+
 Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
 fixture files; without that flag, only existing fixture values can change. The recording command
 temporarily disables the macOS host app sandbox for its Xcode test invocation; normal builds and
