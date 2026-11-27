@@ -5,7 +5,7 @@ shopt -s nullglob
 
 source_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/record-goldens.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/partybox-record-test.XXXXXX")"
-test_root="$(cd "$test_root" && pwd)"
+test_root="$(cd "$test_root" && pwd -P)"
 real_cp="$(command -v cp)"
 real_rm="$(command -v rm)"
 real_mkdir="$(command -v mkdir)"
@@ -27,6 +27,7 @@ make_case() {
     local root="$test_root/$1"
     mkdir -p "$root/scripts" "$root/bin" "$root/tmp" \
         "$root/PartyNet/Tests/PartyGamesTests/Fixtures" "$root/PartyBoxTests/Fixtures"
+    git -C "$root" init --quiet --template=
     if [[ "$1" == double_signal_cleanup_entry || "$1" == before_backup_check_signal ]]; then
         awk -v scenario="$1" '{ print }
              (scenario == "double_signal_cleanup_entry" && /^    local status=.*restore_failed=false$/) ||
@@ -57,7 +58,21 @@ if [[ -n "${PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     fi
     if [[ "$STUB_SCENARIO" == recording_fail ]]; then exit 1; fi
 else
-    if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal \
+    if [[ "$STUB_SCENARIO" == crash_after_install ]]; then
+        kill -KILL "$PPID"
+        exit 0
+    elif [[ "$STUB_SCENARIO" == clean_while_locked ]]; then
+        case_root="$(cd "$(dirname "$0")/.." && pwd)"
+        git -C "$case_root" clean -fdx
+        [[ ! -e "$case_root/.verification" ]]
+        probe-lock after-clean
+        exit 76
+    elif [[ "$STUB_SCENARIO" == linked_worktree ]]; then
+        other="$LINKED_TEST_WORKTREE"
+        PATH="$other/bin:$PATH" TMPDIR="$other/tmp" STUB_SCENARIO=normal \
+            /bin/bash "$other/scripts/record-goldens.sh" >"$other/run.log" 2>&1
+        exit 76
+    elif [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal \
         || "$STUB_SCENARIO" == staging_delete_fail ]]; then
         case_root="$(cd "$(dirname "$0")/.." && pwd)"
         for scratch in "$TMPDIR"/partybox-goldens.*; do
@@ -67,7 +82,7 @@ else
             fi
         done
         if [[ "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
-            "$REAL_RM" "$case_root"/.verification/golden-backups/partybox-goldens.*/backup-games/game.json
+            "$REAL_RM" "$case_root"/.git/partybox-goldens/golden-backups/partybox-goldens.*/backup-games/game.json
         fi
         exit 1
     elif [[ "$STUB_SCENARIO" == recovery_checksum_signal ]]; then
@@ -102,9 +117,9 @@ else
     elif [[ "$STUB_SCENARIO" == backup_disappears || "$STUB_SCENARIO" == backup_incomplete ]]; then
         case_root="$(cd "$(dirname "$0")/.." && pwd)"
         if [[ "$STUB_SCENARIO" == backup_disappears ]]; then
-            mv "$case_root/.verification" "$case_root/moved-backup"
+            mv "$case_root/.git/partybox-goldens/golden-backups" "$case_root/moved-backup"
         else
-            for fixture in "$case_root"/.verification/golden-backups/partybox-goldens.*/backup-games/game.json; do
+            for fixture in "$case_root"/.git/partybox-goldens/golden-backups/partybox-goldens.*/backup-games/game.json; do
                 "$REAL_RM" "$fixture"
             done
         fi
@@ -116,6 +131,7 @@ SH
 #!/bin/bash
 set -euo pipefail
 if [[ "$STUB_SCENARIO" == lock_checks ]]; then probe-lock "xcode${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:+-record}"; fi
+if [[ "$STUB_SCENARIO" == lock_contender ]]; then touch "$TMPDIR/contender-started"; fi
 if [[ -n "${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     if [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
         printf '{"candidate":"new-host"}\n' >"$TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR/new-host.json"
@@ -229,7 +245,7 @@ set -euo pipefail
 shopt -s nullglob
 if [[ "$STUB_SCENARIO" == recovery_checksum_signal && -f "$TMPDIR/recorder-pid" ]]; then
     case_root="$(cd "$(dirname "$0")/.." && pwd)"
-    logs=("$case_root"/.verification/golden-backups/partybox-goldens.*/recovery.log)
+    logs=("$case_root"/.git/partybox-goldens/golden-backups/partybox-goldens.*/recovery.log)
     if [[ ${#logs[@]} -gt 0 ]]; then
         read -r recorder <"$TMPDIR/recorder-pid"
         kill -TERM "$recorder"
@@ -245,7 +261,7 @@ run_script() {
     local root=$1 scenario=$2
     local -a command
     shift 2
-    command=(env PATH="$root/bin:$PATH" TMPDIR="$root/tmp" STUB_SCENARIO="$scenario" \
+    command=(env PATH="$root/bin:$PATH" TMPDIR="${TEST_SCRATCH_DIR:-$root/tmp}" STUB_SCENARIO="$scenario" \
         REAL_CP="$real_cp" REAL_RM="$real_rm" REAL_MKDIR="$real_mkdir" REAL_CKSUM="$real_cksum" \
         /bin/bash "$root/scripts/record-goldens.sh")
     if [[ "$scenario" == closed_stderr ]]; then
@@ -288,7 +304,7 @@ assert_original() {
 
 assert_no_backups() {
     local root=$1
-    local -a backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+    local -a backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
     [[ ${#backups[@]} -eq 0 ]] || fail "Unexpected retained backup in $root"
 }
 
@@ -307,7 +323,7 @@ assert_no_staging() {
 
 assert_backup() {
     local root=$1 commands=${2:-verified} backup_path
-    local -a backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+    local -a backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
     [[ ${#backups[@]} -eq 1 ]] || fail "Expected one retained backup in $root"
     backup_path=${backups[0]}
     assert_content "$backup_path/backup-games/game.json" '{"original":"games"}'
@@ -326,7 +342,7 @@ assert_backup() {
 
 assert_no_restore_commands() {
     local root=$1 log
-    for log in "$root/run.log" "$root/.verification/golden-backups"/partybox-goldens.*/recovery.log; do
+    for log in "$root/run.log" "$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*/recovery.log; do
         if [[ -f "$log" ]] && grep -Fq 'rsync -a --delete ' "$log"; then
             fail "Delete-capable restore commands appeared in $log"
         fi
@@ -425,7 +441,7 @@ if signal_catchable INT; then
     assert_original "$root"
     assert_no_temp "$root"
     assert_no_staging "$root"
-    backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+    backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
     [[ ${#backups[@]} -eq 1 && ! -e "${backups[0]}/backup-games" ]] || fail "Expected a partially removed backup"
     grep -F "partially removed golden backup remains at ${backups[0]}" "$root/run.log" >/dev/null \
         || fail "Interrupted backup removal was not reported"
@@ -446,14 +462,14 @@ expect_status "$root" broken_stderr_log_unwritable 1
 assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
 assert_no_temp "$root"
 assert_no_staging "$root"
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 [[ ${#backups[@]} -eq 1 && -d "${backups[0]}/recovery.log" ]] || fail "Expected the backup to survive the log failure"
 
 make_case append_recovery
 root="$test_root/append_recovery"
 expect_status "$root" append_recovery 1
 assert_backup "$root"
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 grep -F 'Earlier failure context' "${backups[0]}/recovery.log" >/dev/null || fail "Earlier recovery log entry was lost"
 
 make_case empty_backup
@@ -512,7 +528,7 @@ if command -v zsh >/dev/null; then
 fi
 
 # A quick-check by size and mtime would accept both of these different files.
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 games="$root/PartyNet/Tests/PartyGamesTests/Fixtures"
 host="$root/PartyBoxTests/Fixtures"
 printf '{"original":"other"}\n' >"$games/game.json"
@@ -603,7 +619,7 @@ expect_status "$root" before_backup_check_signal 143
 assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
 assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candidate":"host"}'
 grep -Fq 'Backup integrity could not be confirmed' "$root/run.log" || fail "Unconfirmed backup was not reported"
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 [[ ${#backups[@]} -eq 1 ]] || fail "Expected the unchecked backup to be retained"
 grep -Fq 'Backup integrity could not be confirmed' "${backups[0]}/recovery.log" || fail "Unconfirmed backup guidance was not saved"
 assert_no_restore_commands "$root"
@@ -614,7 +630,7 @@ make_case late_restore_signal
 root="$test_root/late_restore_signal"
 expect_status "$root" late_restore_signal 143
 assert_original "$root"
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 [[ ${#backups[@]} -eq 1 ]] || fail "Expected the backup to be retained after a staging interrupt"
 grep -Fq 'Original golden fixtures restored.' "${backups[0]}/recovery.log" || fail "Successful restoration was not reported"
 assert_no_restore_commands "$root"
@@ -629,7 +645,7 @@ expect_status "$root" staging_delete_fail 1
 assert_original "$root"
 assert_no_restore_commands "$root"
 assert_no_temp "$root"
-backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
 [[ ${#backups[@]} -eq 1 ]] || fail "Expected the backup to be retained after staging deletion failed"
 cleanup_command="$(sed -n 's/^  \(find .*\)$/\1/p' "$root/run.log")"
 [[ -n "$cleanup_command" ]] || fail "Staging-only cleanup command not reported"
@@ -673,5 +689,68 @@ assert_no_backups "$root"
 assert_no_temp "$root"
 assert_no_staging "$root"
 expect_status "$root" normal 0
+
+make_case crash_after_install
+root="$test_root/crash_after_install"
+expect_status "$root" crash_after_install 137
+games="$root/PartyNet/Tests/PartyGamesTests/Fixtures"
+host="$root/PartyBoxTests/Fixtures"
+backups=("$root/.git/partybox-goldens/golden-backups"/partybox-goldens.*)
+[[ ${#backups[@]} -eq 1 ]] || fail "Forced termination did not retain a backup"
+backup="${backups[0]}"
+assert_content "$backup/backup-games/game.json" '{"original":"games"}'
+assert_content "$backup/backup-host/unavailable-screen.json" '{"original":"host"}'
+assert_content "$backup/games.manifest" "game.json $(cksum <"$backup/backup-games/game.json")"
+assert_content "$backup/host.manifest" "unavailable-screen.json $(cksum <"$backup/backup-host/unavailable-screen.json")"
+[[ -s "$backup/stage-tag" && ! -e "$backup/recovery.log" ]] || fail "Forced termination recovery metadata was unexpected"
+expect_status "$root" lock_contender 1
+grep -Fq "Retained golden backup needs review: $backup" "$root/run.log" || fail "Missing retained backup path"
+[[ ! -e "$root/tmp/contender-started" ]] || fail "Recording started before crash recovery"
+assert_content "$games/game.json" '{"candidate":"game"}'
+assert_content "$host/unavailable-screen.json" '{"candidate":"host"}'
+cp "$backup/backup-games/game.json" "$games/"
+cp "$backup/backup-host/unavailable-screen.json" "$host/"
+assert_original "$root"
+mv "$backup" "$test_root/recovered-backup"
+expect_status "$root" normal 0
+assert_no_backups "$root"
+
+make_case legacy_backup
+root="$test_root/legacy_backup"
+legacy_backup="$root/.verification/golden-backups/partybox-goldens.legacy"
+mkdir -p "$legacy_backup"
+expect_status "$root" lock_contender 1
+grep -Fq "Retained golden backup needs review: $legacy_backup" "$root/run.log" || fail "Missing legacy backup path"
+[[ -d "$legacy_backup" && ! -e "$root/tmp/contender-started" ]] || fail "Legacy backup did not prevent recording"
+assert_original "$root"
+assert_no_temp "$root"
+
+make_case clean_while_locked
+root="$test_root/clean_while_locked"
+scratch="$test_root/clean-scratch"
+mkdir -p "$scratch" "$root/.verification"
+touch "$root/.verification/clean-me" "$root/run.log"
+git -C "$root" add --force -- scripts bin PartyNet PartyBoxTests run.log
+TEST_SCRATCH_DIR="$scratch" expect_status "$root" clean_while_locked 76
+assert_content "$scratch/lock-checks" 'after-clean'
+assert_original "$root"
+assert_no_backups "$root"
+
+make_case linked_worktree
+root="$test_root/linked_worktree"
+other="$test_root/linked-checkout"
+git -C "$root" add --force -- scripts bin PartyNet PartyBoxTests
+git -C "$root" -c user.name=PartyBox -c user.email=partybox@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+    commit --quiet -m 'Create checkout for recording test'
+git -C "$root" worktree add --quiet --detach "$other" HEAD
+mkdir "$other/tmp"
+LINKED_TEST_WORKTREE="$other" expect_status "$root" linked_worktree 76
+other_git_dir="$(git -C "$other" rev-parse --absolute-git-dir)"
+[[ -f "$other_git_dir/partybox-goldens/record-goldens.lock" ]] || fail "Missing linked worktree lock"
+assert_content "$other/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+assert_content "$other/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candidate":"host"}'
+assert_original "$root"
+assert_no_backups "$root"
 
 echo "Golden recording safety cases passed."
