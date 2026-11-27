@@ -539,7 +539,7 @@ public actor NetworkFaultProxy {
         }
     }
 
-    private func shouldDrop(packetOrdinal: Int) -> Bool {
+    func shouldDrop(packetOrdinal: Int) -> Bool {
         switch profile.udpDropPolicy {
         case .none:
             return false
