@@ -1,10 +1,10 @@
 import Dependencies
 import DependenciesTestSupport
 import Foundation
+import PartyNetTestSupport
 import Testing
 
 @testable import PartyNet
-@testable import PartyNetTestSupport
 
 @Suite("Transport policies", .dependency(\.continuousClock, ContinuousClock()))
 struct TransportPolicyTests {
@@ -88,22 +88,33 @@ struct TransportPolicyTests {
         ))
   }
 
-  @Test func seededPacketLossIsReproducible() async {
-    func dropDecisions(seed: UInt64) async -> [Bool] {
-      let proxy = NetworkFaultProxy(profile: FaultProfile(seed: seed, udpDropPolicy: .rate(0.5)))
-      var decisions: [Bool] = []
-      for ordinal in 1...64 {
-        decisions.append(await proxy.shouldDrop(packetOrdinal: ordinal))
+  @Test func lossScopeIsCompatibleWithEarlierProfilesAndControlMessages() throws {
+    let decoder = JSONDecoder()
+    let legacy = Data(#"{"udp":{"dropRate":0.5,"delayMilliseconds":2,"jitterMilliseconds":1,"reorderWindow":1}}"#.utf8)
+    #expect(try decoder.decode(FaultControlRequest.self, from: legacy)
+      == .udp(dropRate: 0.5, delayMilliseconds: 2, jitterMilliseconds: 1, reorderWindow: 1))
+    let profile = FaultProfile(lossScope: .perController)
+    #expect(try decoder.decode(FaultProfile.self, from: JSONEncoder().encode(profile)) == profile)
+    let request = FaultControlRequest.udp(dropRate: 0.5, delayMilliseconds: 2, jitterMilliseconds: 1,
+                                          reorderWindow: 1, lossScope: .perController)
+    #expect(try decoder.decode(FaultControlRequest.self, from: JSONEncoder().encode(request)) == request)
+  }
+
+  @Test func seededPacketLossIsReproducible() {
+    func dropDecisions(seed: UInt64, jitter: Int = 0) -> [Bool] {
+      var stream = UDPDecisionStream(profile: FaultProfile(seed: seed, udpDropPolicy: .rate(0.5), jitterMilliseconds: jitter))
+      return (0..<64).map { _ in
+        let dropped = stream.consumeDropDecision()
+        if !dropped { _ = stream.nextDelayMilliseconds() }
+        return dropped
       }
-      return decisions
     }
 
-    let original = await dropDecisions(seed: 42)
-    let replay = await dropDecisions(seed: 42)
-    let differentSeed = await dropDecisions(seed: 43)
-    #expect(original.contains(true))
-    #expect(original.contains(false))
-    #expect(original == replay)
-    #expect(original != differentSeed)
+    let original = dropDecisions(seed: 42)
+    // Historical shared-mode decisions for the first eight packets at seed 42.
+    #expect(Array(original.prefix(8)) == [false, true, true, false, false, true, true, true])
+    #expect(original == dropDecisions(seed: 42))
+    #expect(original == dropDecisions(seed: 42, jitter: 2))
+    #expect(original != dropDecisions(seed: 43))
   }
 }

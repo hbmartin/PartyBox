@@ -166,7 +166,6 @@ struct PongSimulation: Sendable {
         return players[edge]?.paddlePosition
     }
 
-#if DEBUG
     mutating func setBallForTesting(position: PongPoint, velocity: PongPoint) {
         ballPosition = position
         ballVelocity = velocity
@@ -181,7 +180,6 @@ struct PongSimulation: Sendable {
         }
         return ballVelocity.y < 0 ? .bottom : .top
     }
-#endif
 
     mutating func forfeit(_ playerID: PlayerID) -> [PongEvent] {
         guard !isFinished else { return [] }

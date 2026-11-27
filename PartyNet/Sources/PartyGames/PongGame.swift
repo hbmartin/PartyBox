@@ -294,7 +294,5 @@ final class PongGameSession: PartyGameSession {
         if !eliminationOrder.contains(playerID) { eliminationOrder.append(playerID) }
     }
 
-#if DEBUG
     func translateForTesting(_ events: [PongEvent]) -> [GameEvent] { translate(events) }
-#endif
 }

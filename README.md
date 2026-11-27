@@ -56,8 +56,8 @@ GitHub Actions runs Bash syntax checks, ShellCheck, the golden recording and dis
 and JSON validation on Linux for pull requests and pushes to `main`. Changes under `PartyNet/` or to
 `.github/workflows/party-net-tests.yml` also run the Swift package tests on a hosted macOS runner,
 including gameplay, protocol policies, and the UDP queue limit. The hosted selection skips the
-`NetworkIntegrationTests` suite. The full transport suite and Apple app and simulator tests run on
-a development Mac through `scripts/verify.sh normal`.
+`NetworkIntegrationTests` suite. On a development Mac, `scripts/verify.sh normal` runs the complete
+PartyNet package in Debug and Release, plus the Apple app and simulator tests.
 
 On a development Mac, `scripts/verify.sh normal` is enforced by the project-local Codex `Stop` hook
 after relevant source, test, project, configuration, asset, or verification-harness edits. A
@@ -76,6 +76,16 @@ require both client transmission metrics and host-observed changing input for ev
 is no scheduled soak job.
 The normal gate also runs the local package's `PartyGamesTests` on tvOS through Xcode's
 `PartyNet-Package` scheme because the app test-plan picker does not expose that package test target.
+
+For repeatable UDP loss in the PartyNet fault rig, set the seed with `partybox-fault serve --seed N`
+alongside the required `--ready-file` option. By default, all controllers share one packet counter
+and loss sequence. To give each controller an independent sequence, run
+`partybox-fault control --address HOST:PORT udp --drop 0.5 --loss-scope per-controller`.
+Use `--loss-scope shared` to switch back. Omitting the option keeps the current scope.
+Reapplying a profile restarts its sequences and preserves cumulative metrics. In per-controller mode,
+reconnecting the same controller restarts only its sequence. Loss and jitter now use independent
+random draws, so changing jitter preserves which packets drop. Earlier recordings that enabled jitter
+can produce a different pattern. Shared-mode loss with zero jitter retains its original sequence.
 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` from a Git checkout on a
 development Mac. Each worktree allows one recorder at a time, including during rollback. A second

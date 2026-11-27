@@ -244,16 +244,21 @@ extension NetworkIntegrationTests {
     @Test func staleBrowserFailureCannotPoisonANewerBrowserGeneration() async throws {
       let transport = ClientTransport()
       await transport.startBrowsing()
-      let staleGeneration = try #require(await transport.browserGenerationForTesting())
+      let staleGeneration = try #require(await transport.browserGeneration)
       await transport.restartBrowsing()
-      let currentGeneration = try #require(await transport.browserGenerationForTesting())
+      let currentGeneration = try #require(await transport.browserGeneration)
       #expect(currentGeneration != staleGeneration)
 
-      await transport.simulateDiscoveryFailureForTesting(generation: staleGeneration)
-      #expect(await transport.discoveryFailurePublicationCountForTesting() == 0)
-      await transport.simulateDiscoveryFailureForTesting(generation: currentGeneration)
-      #expect(await transport.discoveryFailurePublicationCountForTesting() == 1)
+      let events = transport.eventStream { Issue.record("Discovery event stream overflowed") }
+      let staleError = PartyNetTransportError.timedOut("stale generation")
+      let currentError = PartyNetTransportError.timedOut("current generation")
+      await transport.publishDiscoveryFailure(staleError, generation: staleGeneration)
+      await transport.publishDiscoveryFailure(currentError, generation: currentGeneration)
       await transport.stop()
+      var failures: [String] = []
+      for await case let .discoveryFailed(message) in events { failures.append(message) }
+      #expect(!failures.contains("Discovery failed: \(staleError.localizedDescription)"))
+      #expect(failures.count { $0 == "Discovery failed: \(currentError.localizedDescription)" } == 1)
     }
 
     @Test func disconnectCancelsAHandshakeWaitingForWelcome() async throws {
@@ -399,7 +404,7 @@ extension NetworkIntegrationTests {
           host.inputs.activitySnapshot().first?.maximumAxisX == 0.8
         }
 
-        await original.interruptForTesting()
+        await original.interruptConnectionForTesting()
         try await waitUntil { host.players.first?.isConnected == false }
         await replacement.connect(host: "127.0.0.1", port: port)
         try await waitUntil {
@@ -1306,8 +1311,7 @@ extension NetworkIntegrationTests {
         colorHex: "#32E6FF"
       )
       for state in [PartyClientState.rejected("Full"), .disconnected("Offline")] {
-        client.configureFixture(state: state, player: player)
-        await client.simulateTransportEventStreamOverflowForTesting()
+        await client.simulateTransportEventStreamOverflowForTesting(state: state, player: player)
         #expect(client.state == state)
         #expect(client.player == player)
       }
@@ -1319,7 +1323,7 @@ extension NetworkIntegrationTests {
       let failedStream = host.events
       _ = try await host.start(hostName: "Overflow Host", advertise: false)
 
-      await host.simulateTransportEventStreamOverflowForTesting()
+      await host.simulateTransportOverflowForTesting()
       try await waitUntil { host.port == nil }
 
       #expect(host.port == nil)

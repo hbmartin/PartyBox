@@ -125,14 +125,11 @@ actor ClientTransport {
   private let handshakeResponseHook: (@Sendable (HostMessage) async -> Void)?
   private var browser: NetworkBrowser<Bonjour>?
   private var browserTask: Task<Void, Never>?
-  private var browserGeneration: UUID?
+  private(set) var browserGeneration: UUID?
   private var receiveTasks: [UUID: Task<Void, Never>] = [:]
   private var sessions: [UUID: Session] = [:]
   private var pendingHandshakes: [UUID: PendingHandshake] = [:]
   private var leaveTasks: [UUID: Task<Void, Never>] = [:]
-#if DEBUG
-  private var discoveryFailurePublicationCount = 0
-#endif
 
   init(
     inputSendInterval: Duration = .milliseconds(16),
@@ -352,11 +349,9 @@ actor ClientTransport {
     sessions[connectionID] = session
   }
 
-#if DEBUG
   func explicitProbeNonceForTesting(connectionID: UUID) -> UInt64? {
     sessions[connectionID]?.probeNonce
   }
-#endif
 
   func disconnect(connectionID: UUID, sendLeave: Bool = true) async {
     guard let departure = detachSessionForLeave(connectionID) else { return }
@@ -400,11 +395,8 @@ actor ClientTransport {
     eventHub.yield(.hosts(hosts))
   }
 
-  private func publishDiscoveryFailure(_ error: any Error, generation: UUID) {
+  func publishDiscoveryFailure(_ error: any Error, generation: UUID) {
     guard browserGeneration == generation else { return }
-#if DEBUG
-    discoveryFailurePublicationCount += 1
-#endif
     eventHub.yield(.discoveryFailed("Discovery failed: \(error.localizedDescription)"))
   }
 
@@ -670,19 +662,7 @@ actor ClientTransport {
     }
   }
 
-#if DEBUG
   func simulateEventOverflowForTesting() {
     eventHub.simulateOverflowForTesting()
   }
-
-  func browserGenerationForTesting() -> UUID? { browserGeneration }
-
-  func simulateDiscoveryFailureForTesting(generation: UUID) {
-    publishDiscoveryFailure(PartyNetTransportError.stopped, generation: generation)
-  }
-
-  func discoveryFailurePublicationCountForTesting() -> Int {
-    discoveryFailurePublicationCount
-  }
-#endif
 }

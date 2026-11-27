@@ -21,12 +21,20 @@ public actor NetworkFaultProxy {
         let task: Task<Void, Never>
     }
 
+    private struct UDPSession {
+        let bridgeID: UUID
+        let controllerID: ControllerID
+        let upstreamPort: NWEndpoint.Port
+        // Shared profiles consume the proxy-wide sequence instead.
+        var decisions: UDPDecisionStream?
+    }
+
     package static let maximumQueuedForwardsPerToken = 256
 
     private let clock: AnyClock<Duration>
     private let udpSender: UDPSender
     private var profile: FaultProfile
-    private var randomState: UInt64
+    private var sharedDecisions: UDPDecisionStream
     private var metrics = FaultMetrics()
 
     private var upstreamHost: NWEndpoint.Host?
@@ -45,9 +53,8 @@ public actor NetworkFaultProxy {
     private var downstreamConnections: [UUID: HostControlConnection] = [:]
     private var upstreamConnections: [UUID: ClientControlConnection] = [:]
     private var upstreamUDPConnections: [UInt64: NetworkConnection<UDP>] = [:]
-    private var upstreamUDPPorts: [UInt64: NWEndpoint.Port] = [:]
+    private var udpSessions: [UInt64: UDPSession] = [:]
     private var reorderQueues: [UInt64: [BufferedDatagram]] = [:]
-    private var packetOrdinal = 0
     private var inFlightUDPForwardCount = 0
     private var lifecycleGeneration: UInt64 = 0
 
@@ -66,7 +73,7 @@ public actor NetworkFaultProxy {
         clock = AnyClock(continuousClock)
         self.udpSender = udpSender
         self.profile = profile
-        randomState = profile.seed
+        sharedDecisions = UDPDecisionStream(profile: profile)
     }
 
     @discardableResult
@@ -138,9 +145,16 @@ public actor NetworkFaultProxy {
 
     public func setProfile(_ profile: FaultProfile) {
         self.profile = profile
-        randomState = profile.seed
-        packetOrdinal = 0
+        sharedDecisions = UDPDecisionStream(profile: profile)
+        for (token, session) in udpSessions {
+            udpSessions[token]?.decisions = sessionDecisions(for: session.controllerID)
+        }
         reorderQueues.removeAll()
+    }
+
+    private func sessionDecisions(for controllerID: ControllerID) -> UDPDecisionStream? {
+        guard profile.lossScope == .perController else { return nil }
+        return UDPDecisionStream(profile: profile, controllerID: controllerID)
     }
 
     public func reset() {
@@ -149,7 +163,7 @@ public actor NetworkFaultProxy {
         metrics = FaultMetrics()
         metrics.activeTCPBridges = downstreamConnections.count
         metrics.activeTCPHandlers = activeTCPHandlers
-        metrics.activeUDPSessions = upstreamUDPPorts.count
+        metrics.activeUDPSessions = udpSessions.count
     }
 
     public func currentProfile() -> FaultProfile { profile }
@@ -174,7 +188,7 @@ public actor NetworkFaultProxy {
         upstreamTCPPort = port
         cancelAllUDPForwards()
         upstreamUDPConnections.removeAll()
-        upstreamUDPPorts.removeAll()
+        udpSessions.removeAll()
         reorderQueues.removeAll()
         metrics.activeUDPSessions = 0
     }
@@ -218,7 +232,7 @@ public actor NetworkFaultProxy {
         bridgeControllerIDs.removeAll()
         bridgeTokens.removeAll()
         upstreamUDPConnections.removeAll()
-        upstreamUDPPorts.removeAll()
+        udpSessions.removeAll()
         reorderQueues.removeAll()
         metrics.activeTCPBridges = 0
         metrics.activeUDPSessions = 0
@@ -294,9 +308,14 @@ public actor NetworkFaultProxy {
                   downstreamConnections[bridgeID] != nil else { return }
             switch response {
             case let .welcome(welcome):
+                let port = try requirePort(welcome.udpPort)
+                if udpSessions[welcome.sessionToken] != nil { removeUDPSession(welcome.sessionToken) }
                 bridgeTokens[bridgeID] = welcome.sessionToken
-                upstreamUDPPorts[welcome.sessionToken] = try requirePort(welcome.udpPort)
-                metrics.activeUDPSessions = upstreamUDPPorts.count
+                udpSessions[welcome.sessionToken] = UDPSession(
+                    bridgeID: bridgeID, controllerID: hello.controllerID, upstreamPort: port,
+                    decisions: sessionDecisions(for: hello.controllerID)
+                )
+                metrics.activeUDPSessions = udpSessions.count
                 let proxiedWelcome = Welcome(
                     player: welcome.player,
                     udpPort: proxyUDPPort,
@@ -311,6 +330,7 @@ public actor NetworkFaultProxy {
                 return
             }
 
+            guard !Task.isCancelled, downstreamConnections[bridgeID] != nil else { return }
             await withCheckedContinuation { continuation in
                 bridgeWaiters[bridgeID] = continuation
                 let clientToHost = Task { [downstream] in
@@ -363,16 +383,20 @@ public actor NetworkFaultProxy {
         downstreamConnections.removeValue(forKey: bridgeID)
         upstreamConnections.removeValue(forKey: bridgeID)
         bridgeControllerIDs.removeValue(forKey: bridgeID)
-        if let token = bridgeTokens.removeValue(forKey: bridgeID) {
-            udpForwardTasks.removeValue(forKey: token)?.task.cancel()
-            udpForwardQueues.removeValue(forKey: token)
-            upstreamUDPConnections.removeValue(forKey: token)
-            upstreamUDPPorts.removeValue(forKey: token)
-            reorderQueues.removeValue(forKey: token)
-            metrics.activeUDPSessions = upstreamUDPPorts.count
+        if let token = bridgeTokens.removeValue(forKey: bridgeID), udpSessions[token]?.bridgeID == bridgeID {
+            removeUDPSession(token)
         }
         bridgeWaiters.removeValue(forKey: bridgeID)?.resume()
         metrics.activeTCPBridges = downstreamConnections.count
+    }
+
+    private func removeUDPSession(_ token: UInt64) {
+        udpForwardTasks.removeValue(forKey: token)?.task.cancel()
+        udpForwardQueues.removeValue(forKey: token)
+        upstreamUDPConnections.removeValue(forKey: token)
+        udpSessions.removeValue(forKey: token)
+        reorderQueues.removeValue(forKey: token)
+        metrics.activeUDPSessions = udpSessions.count
     }
 
     private func acceptDatagramConnection(
@@ -399,8 +423,8 @@ public actor NetworkFaultProxy {
         defer { udpHandlerTasks.removeValue(forKey: handlerID) }
         do {
             while !Task.isCancelled {
-                guard lifecycleGeneration == generation else { return }
                 let data = try await connection.receive().content
+                guard !Task.isCancelled, lifecycleGeneration == generation else { return }
                 acceptDatagram(data)
             }
         } catch {
@@ -410,12 +434,13 @@ public actor NetworkFaultProxy {
 
     private func acceptDatagram(_ data: Data) {
         metrics.udpReceived += 1
-        guard let frame = InputFrame(data: data), upstreamUDPPorts[frame.token] != nil else {
+        guard let frame = InputFrame(data: data), udpSessions[frame.token] != nil else {
             metrics.udpRejected += 1
             return
         }
-        packetOrdinal += 1
-        if shouldDrop(packetOrdinal: packetOrdinal) {
+        let drop = udpSessions[frame.token]?.decisions?.consumeDropDecision()
+            ?? sharedDecisions.consumeDropDecision()
+        if drop {
             metrics.udpDropped += 1
             return
         }
@@ -434,7 +459,8 @@ public actor NetworkFaultProxy {
     }
 
     private func scheduleForward(_ packet: BufferedDatagram) {
-        let delay = nextDelayMilliseconds()
+        let delay = udpSessions[packet.token]?.decisions?.nextDelayMilliseconds()
+            ?? sharedDecisions.nextDelayMilliseconds()
         if delay > 0 { metrics.udpDelayed += 1 }
         let scheduled = ScheduledDatagram(
             packet: packet,
@@ -510,7 +536,7 @@ public actor NetworkFaultProxy {
 
     private func forward(_ packet: BufferedDatagram, generation: UInt64) async {
         guard !Task.isCancelled, lifecycleGeneration == generation else { return }
-        guard let upstreamHost, let port = upstreamUDPPorts[packet.token] else {
+        guard let upstreamHost, let port = udpSessions[packet.token]?.upstreamPort else {
             metrics.udpRejected += 1
             return
         }
@@ -537,33 +563,6 @@ public actor NetworkFaultProxy {
             }
             metrics.udpRejected += 1
         }
-    }
-
-    func shouldDrop(packetOrdinal: Int) -> Bool {
-        switch profile.udpDropPolicy {
-        case .none:
-            return false
-        case let .every(interval):
-            return packetOrdinal.isMultiple(of: interval)
-        case let .rate(rate):
-            return nextUnitRandom() < rate
-        }
-    }
-
-    private func nextDelayMilliseconds() -> Int {
-        guard profile.jitterMilliseconds > 0 else { return profile.delayMilliseconds }
-        let width = profile.jitterMilliseconds * 2 + 1
-        let offset = Int(nextRandom() % UInt64(width)) - profile.jitterMilliseconds
-        return max(profile.delayMilliseconds + offset, 0)
-    }
-
-    private func nextUnitRandom() -> Double {
-        Double(nextRandom() >> 11) / Double(UInt64(1) << 53)
-    }
-
-    private func nextRandom() -> UInt64 {
-        randomState = randomState &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return randomState
     }
 
     private func requirePort(_ rawValue: UInt16) throws -> NWEndpoint.Port {

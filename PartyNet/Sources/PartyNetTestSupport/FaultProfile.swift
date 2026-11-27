@@ -1,5 +1,10 @@
 import Foundation
 
+public enum UDPLossScope: String, Codable, Sendable {
+    case shared
+    case perController = "per-controller"
+}
+
 public enum UDPDropPolicy: Codable, Equatable, Sendable {
     case none
     case rate(Double)
@@ -23,6 +28,7 @@ public struct FaultProfile: Codable, Equatable, Sendable {
 
     public let seed: UInt64
     public let udpDropPolicy: UDPDropPolicy
+    public let lossScope: UDPLossScope
     public let delayMilliseconds: Int
     public let jitterMilliseconds: Int
     public let reorderWindow: Int
@@ -30,12 +36,14 @@ public struct FaultProfile: Codable, Equatable, Sendable {
     public init(
         seed: UInt64 = 1,
         udpDropPolicy: UDPDropPolicy = .none,
+        lossScope: UDPLossScope = .shared,
         delayMilliseconds: Int = 0,
         jitterMilliseconds: Int = 0,
         reorderWindow: Int = 1
     ) {
         self.seed = seed == 0 ? 1 : seed
         self.udpDropPolicy = udpDropPolicy.validated()
+        self.lossScope = lossScope
         self.delayMilliseconds = min(max(delayMilliseconds, 0), Self.maximumDelayMilliseconds)
         self.jitterMilliseconds = min(max(jitterMilliseconds, 0), Self.maximumDelayMilliseconds)
         self.reorderWindow = min(max(reorderWindow, 1), Self.maximumReorderWindow)
@@ -46,6 +54,7 @@ public struct FaultProfile: Codable, Equatable, Sendable {
         self.init(
             seed: try container.decode(UInt64.self, forKey: .seed),
             udpDropPolicy: try container.decode(UDPDropPolicy.self, forKey: .udpDropPolicy),
+            lossScope: try container.decodeIfPresent(UDPLossScope.self, forKey: .lossScope) ?? .shared,
             delayMilliseconds: try container.decode(Int.self, forKey: .delayMilliseconds),
             jitterMilliseconds: try container.decode(Int.self, forKey: .jitterMilliseconds),
             reorderWindow: try container.decode(Int.self, forKey: .reorderWindow)
@@ -56,6 +65,7 @@ public struct FaultProfile: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(seed, forKey: .seed)
         try container.encode(udpDropPolicy, forKey: .udpDropPolicy)
+        try container.encode(lossScope, forKey: .lossScope)
         try container.encode(delayMilliseconds, forKey: .delayMilliseconds)
         try container.encode(jitterMilliseconds, forKey: .jitterMilliseconds)
         try container.encode(reorderWindow, forKey: .reorderWindow)
@@ -69,6 +79,7 @@ public struct FaultProfile: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case seed
         case udpDropPolicy
+        case lossScope
         case delayMilliseconds
         case jitterMilliseconds
         case reorderWindow

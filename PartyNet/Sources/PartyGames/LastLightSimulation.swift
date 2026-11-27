@@ -429,7 +429,6 @@ struct LastLightSimulation: ArcadeSimulation {
         return risk
     }
 
-#if DEBUG
     mutating func placeForTesting(_ playerID: PlayerID, at position: ArcadeVector) {
         guard let index = indexByID[playerID] else { return }
         players[index].position = position
@@ -448,5 +447,4 @@ struct LastLightSimulation: ArcadeSimulation {
     mutating func setElapsedForTesting(_ elapsed: Double) {
         self.elapsed = elapsed
     }
-#endif
 }

@@ -94,10 +94,8 @@ actor HostTransport {
 
   var udpPort: UInt16? { boundUDPPort }
 
-#if DEBUG
   var controlHandlerCapacityForTesting: Int { maximumControlHandlers }
   var controlHandlerCountForTesting: Int { controlTasks.count }
-#endif
 
   init(
     inputs: InputStore,
@@ -613,9 +611,7 @@ actor HostTransport {
     }
   }
 
-#if DEBUG
   func simulateEventOverflowForTesting() {
     eventHub.simulateOverflowForTesting()
   }
-#endif
 }

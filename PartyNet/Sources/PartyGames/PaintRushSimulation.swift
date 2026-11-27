@@ -462,7 +462,6 @@ struct PaintRushSimulation: ArcadeSimulation, Equatable {
         return min(pucksDistance, powerUpDistance)
     }
 
-#if DEBUG
     mutating func placeForTesting(_ playerID: PlayerID, at position: ArcadeVector) {
         guard let index = indexByID[playerID] else { return }
         pucks[index].position = Self.clampToBoard(position)
@@ -493,5 +492,4 @@ struct PaintRushSimulation: ArcadeSimulation, Equatable {
         nextPowerUpID += 1
         powerUps.append(PowerUp(id: nextPowerUpID, kind: kind, position: position))
     }
-#endif
 }

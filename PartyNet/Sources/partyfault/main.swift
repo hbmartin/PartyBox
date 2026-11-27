@@ -18,6 +18,16 @@ private func faultClientStack() -> FaultClientProtocol {
     }
 }
 
+private extension NetworkFaultProxy {
+    func updateUDP(dropRate: Double, delay: Int, jitter: Int, reorderWindow: Int, lossScope: UDPLossScope?) {
+        let current = currentProfile()
+        setProfile(FaultProfile(
+            seed: current.seed, udpDropPolicy: .rate(dropRate), lossScope: lossScope ?? current.lossScope,
+            delayMilliseconds: delay, jitterMilliseconds: jitter, reorderWindow: reorderWindow
+        ))
+    }
+}
+
 private actor FaultControlServer {
     private let rig: FaultRig
     private let readyFile: URL
@@ -112,16 +122,9 @@ private actor FaultControlServer {
             case .reset:
                 await rig.proxy.reset()
                 message = "fault profile and counters reset"
-            case let .udp(dropRate, delay, jitter, reorderWindow):
-                let current = await rig.proxy.currentProfile()
-                let profile = FaultProfile(
-                    seed: current.seed,
-                    udpDropPolicy: .rate(dropRate),
-                    delayMilliseconds: delay,
-                    jitterMilliseconds: jitter,
-                    reorderWindow: reorderWindow
-                )
-                await rig.proxy.setProfile(profile)
+            case let .udp(dropRate, delay, jitter, reorderWindow, lossScope):
+                await rig.proxy.updateUDP(dropRate: dropRate, delay: delay, jitter: jitter,
+                                          reorderWindow: reorderWindow, lossScope: lossScope)
                 message = "UDP fault profile updated"
             case .cutTCP:
                 await rig.proxy.cutTCP()
@@ -242,11 +245,21 @@ enum PartyFaultCommand {
         case "reset":
             request = .reset
         case "udp":
+            let lossScope: UDPLossScope?
+            if trailing.contains("--loss-scope") {
+                guard let value = option("--loss-scope", in: trailing), let scope = UDPLossScope(rawValue: value) else {
+                    throw PartyFaultError.usage("--loss-scope requires shared or per-controller")
+                }
+                lossScope = scope
+            } else {
+                lossScope = nil
+            }
             request = .udp(
                 dropRate: try numericOption("--drop", in: trailing, default: 0),
                 delayMilliseconds: try numericOption("--delay-ms", in: trailing, default: 0),
                 jitterMilliseconds: try numericOption("--jitter-ms", in: trailing, default: 0),
-                reorderWindow: try numericOption("--reorder-window", in: trailing, default: 1)
+                reorderWindow: try numericOption("--reorder-window", in: trailing, default: 1),
+                lossScope: lossScope
             )
         case "cut-tcp":
             request = .cutTCP
@@ -302,7 +315,7 @@ enum PartyFaultCommand {
         usage:
           partybox-fault serve --ready-file PATH [--seed N]
           partybox-fault control --address HOST:PORT reset
-          partybox-fault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N]
+          partybox-fault control --address HOST:PORT udp [--drop RATE] [--delay-ms N] [--jitter-ms N] [--reorder-window N] [--loss-scope shared|per-controller]
           partybox-fault control --address HOST:PORT cut-tcp|restart-host|metrics
         """)
     }

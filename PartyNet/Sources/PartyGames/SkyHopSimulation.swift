@@ -328,7 +328,6 @@ struct SkyHopSimulation: ArcadeSimulation {
         return (dx * dx) + (dy * dy) < birdRadius * birdRadius
     }
 
-#if DEBUG
     mutating func placeForTesting(_ playerID: PlayerID, y: Double, vy: Double = 0) {
         guard let index = indexByID[playerID] else { return }
         birds[index].y = y
@@ -351,5 +350,4 @@ struct SkyHopSimulation: ArcadeSimulation {
         self.elapsed = elapsed
         announcedStage = elapsed >= 45 ? 3 : elapsed >= 30 ? 2 : elapsed >= 15 ? 1 : 0
     }
-#endif
 }

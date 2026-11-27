@@ -623,7 +623,6 @@ struct HotFuseSimulation: ArcadeSimulation, Equatable {
         return detour
     }
 
-#if DEBUG
     mutating func placeForTesting(_ playerID: PlayerID, at position: ArcadeVector) {
         guard let index = indexByID[playerID] else { return }
         players[index].position = position
@@ -646,14 +645,15 @@ struct HotFuseSimulation: ArcadeSimulation, Equatable {
         players[index].lives = lives
     }
 
+#if DEBUG
     mutating func setRoundForTesting(_ round: Int) {
         self.round = round
     }
+#endif
 
     mutating func placeDroneForTesting(_ index: Int, at position: ArcadeVector) {
         guard drones.indices.contains(index) else { return }
         drones[index].position = position
         drones[index].velocity = .zero
     }
-#endif
 }

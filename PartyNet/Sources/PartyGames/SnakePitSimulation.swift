@@ -445,7 +445,6 @@ struct SnakePitSimulation: ArcadeSimulation {
         }
     }
 
-#if DEBUG
     mutating func placeForTesting(_ playerID: PlayerID, at cell: Cell, direction: ArcadeDirection) {
         guard let index = indexByID[playerID] else { return }
         clearTrail(of: index)
@@ -472,5 +471,4 @@ struct SnakePitSimulation: ArcadeSimulation {
         tick(events: &events)
         return events
     }
-#endif
 }

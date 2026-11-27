@@ -89,7 +89,6 @@ final class PongScene: SKScene {
         return Double(frame.axisX)
     }
 
-#if DEBUG
     func setBallForTesting(position: PongPoint, velocity: PongPoint) {
         simulation.setBallForTesting(position: position, velocity: velocity)
         syncNodes()
@@ -130,7 +129,6 @@ final class PongScene: SKScene {
             onEvents(events)
         }
     }
-#endif
 
     private func buildScene(assignments: [SeatAssignment]) {
         let grid = SKNode()
