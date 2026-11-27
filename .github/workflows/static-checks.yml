@@ -17,8 +17,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Install shell test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck rsync
 
       - name: Check Bash syntax
         run: |
