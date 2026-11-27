@@ -3,7 +3,7 @@ import PartyNet
 
 public enum FaultControlRequest: Codable, Equatable, Sendable {
     case reset
-    case udp(dropRate: Double, delayMilliseconds: Int, jitterMilliseconds: Int, reorderWindow: Int)
+    case udp(dropRate: Double, delayMilliseconds: Int, jitterMilliseconds: Int, reorderWindow: Int, lossScope: UDPLossScope? = nil)
     case cutTCP
     case restartHost
     case metrics

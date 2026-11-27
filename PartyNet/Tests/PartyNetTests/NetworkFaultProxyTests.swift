@@ -105,6 +105,50 @@ extension NetworkIntegrationTests {
       await rig.stop()
     }
 
+    @Test(arguments: [UDPLossScope.shared, .perController])
+    func reapplyingProfileRestartsSeededLoss(scope: UDPLossScope) async throws {
+      let id = ControllerID(rawValue: UUID(uuidString: "0A6D9421-ED5E-4CD5-A7AC-87723EEC1234")!)
+      let original = FaultProfile(seed: 42, udpDropPolicy: .rate(0.5), lossScope: scope)
+      let replacement = FaultProfile(seed: 43, udpDropPolicy: .rate(0.5), lossScope: scope)
+      func trace(_ rig: UDPReplayRig, _ peer: UDPReplayRig.Peer) async throws -> [Bool] {
+        var drops: [Bool] = []
+        for _ in 0..<32 { drops.append(try await rig.send(peer)) }
+        return drops
+      }
+      let fresh = try await UDPReplayRig.withRig(profile: replacement) { rig in
+        let peer = try await rig.connect(id)
+        return try await trace(rig, peer)
+      }
+      try await UDPReplayRig.withRig(profile: original) { rig in
+        let peer = try await rig.connect(id)
+        let baseline = try await trace(rig, peer)
+        let before = await rig.proxy.currentMetrics()
+        await rig.proxy.setProfile(original)
+        #expect(await rig.proxy.currentMetrics() == before)
+        let replay = try await trace(rig, peer)
+        #expect(replay == baseline)
+        await rig.proxy.setProfile(replacement)
+        let changed = try await trace(rig, peer)
+        #expect(changed == fresh)
+        #expect(changed != baseline)
+      }
+    }
+
+    @Test(arguments: [UDPLossScope.shared, .perController])
+    func profileResetRestartsOrdinalAfterTwoValidFrames(scope: UDPLossScope) async throws {
+      let profile = FaultProfile(udpDropPolicy: .every(3), lossScope: scope)
+      try await UDPReplayRig.withRig(profile: profile) { rig in
+        let peer = try await rig.connect(ControllerID())
+        #expect(try await rig.send(peer) == false)
+        #expect(try await rig.send(peer) == false)
+        await rig.proxy.setProfile(profile)
+        try await rig.sendMalformed()
+        #expect(try await rig.send(peer) == false)
+        #expect(try await rig.send(peer) == false)
+        #expect(try await rig.send(peer))
+      }
+    }
+
     @Test func seededLossDelayJitterAndReorderingProduceMetricsAndValidInput() async throws {
       let rig = FaultRig(
         profile: FaultProfile(
