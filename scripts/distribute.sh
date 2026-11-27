@@ -1,9 +1,10 @@
 #!/bin/bash
 # Build and upload matching TestFlight archives and Sentry debug symbols.
-set +x
+set +ax
 set -euo pipefail
 umask 077
 
+unset sentry_auth_token
 sentry_auth_token=${SENTRY_AUTH_TOKEN:-}
 unset CDPATH SENTRY_AUTH_TOKEN
 
@@ -15,9 +16,11 @@ usage() {
 Usage:
   scripts/distribute.sh --build-number N [--platform all|ios|tvos|macos] [--archive-only]
   scripts/distribute.sh --resume RUN_DIR [--platform ios|tvos|macos] [--retry-apple-upload]
+  scripts/distribute.sh --check-sentry
 
-Requires APPLE_TEAM_ID and SENTRY_DSN. Uploads also require SENTRY_ORG,
-SENTRY_PROJECT, SENTRY_AUTH_TOKEN, and sentry-cli. See docs/RELEASE.md.
+Archives require APPLE_TEAM_ID and SENTRY_DSN. Uploads and --check-sentry require
+SENTRY_ORG, SENTRY_PROJECT, sentry-cli, and a token from the macOS Keychain or
+SENTRY_AUTH_TOKEN. See docs/RELEASE.md.
 USAGE
 }
 
@@ -32,6 +35,25 @@ require_value() {
 
 require_tool() {
     command -v "$1" >/dev/null || die "Required tool not found: $1"
+}
+
+verify_sentry() {
+    [[ -n "${SENTRY_ORG:-}" && -n "${SENTRY_PROJECT:-}" ]] \
+        || die "Set SENTRY_ORG and SENTRY_PROJECT."
+    require_tool sentry-cli
+
+    if [[ -z "$sentry_auth_token" && "$OSTYPE" == darwin* ]]; then
+        require_tool security
+        sentry_auth_token="$(security find-generic-password -a "$SENTRY_ORG" -s com.partybox.sentry-dsym -w 2>/dev/null)" \
+            || die "Could not read the Sentry token for $SENTRY_ORG from Keychain. Check the com.partybox.sentry-dsym item or set SENTRY_AUTH_TOKEN."
+    fi
+    [[ -n "$sentry_auth_token" ]] || die "Set SENTRY_AUTH_TOKEN to a Sentry upload token."
+
+    # Organization tokens can list releases for a project without organization-wide project listing access.
+    SENTRY_AUTH_TOKEN="$sentry_auth_token" SENTRY_ALLOW_FAILURE=0 sentry-cli releases list \
+        --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --raw > /dev/null \
+        || die "Could not verify access to Sentry project $SENTRY_ORG/$SENTRY_PROJECT."
+    printf 'Verified Sentry access to %s/%s.\n' "$SENTRY_ORG" "$SENTRY_PROJECT"
 }
 
 run_xcodebuild() {
@@ -188,6 +210,7 @@ platform=all
 archive_only=false
 resume_dir=""
 retry_apple=false
+check_sentry=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -195,12 +218,20 @@ while [[ $# -gt 0 ]]; do
         --build-number) require_value "$@"; build_number=$2; shift ;;
         --platform) require_value "$@"; platform=$2; shift ;;
         --archive-only) archive_only=true ;;
+        --check-sentry) check_sentry=true ;;
         --resume) require_value "$@"; resume_dir=$2; shift ;;
         --retry-apple-upload) retry_apple=true ;;
         *) die "Unknown argument: $1. Use --help for usage." ;;
     esac
     shift
 done
+
+if [[ "$check_sentry" == true ]]; then
+    [[ -z "$build_number" && -z "$resume_dir" && "$platform" == all && "$archive_only" == false && "$retry_apple" == false ]] \
+        || die "Use --check-sentry on its own."
+    verify_sentry
+    exit 0
+fi
 
 case "$platform" in
     all|ios|tvos|macos) ;;
@@ -232,10 +263,8 @@ case "$OSTYPE" in
     *) die "Release directory locking requires macOS or Linux." ;;
 esac
 
-if [[ "$archive_only" == false ]]; then
-    [[ -n "${SENTRY_ORG:-}" && -n "${SENTRY_PROJECT:-}" && -n "$sentry_auth_token" ]] \
-        || die "Set SENTRY_ORG, SENTRY_PROJECT, and SENTRY_AUTH_TOKEN before uploading."
-    require_tool sentry-cli
+if [[ -z "$resume_dir" && "$archive_only" == false ]]; then
+    verify_sentry
 fi
 
 if [[ -n "$resume_dir" ]]; then
@@ -307,6 +336,10 @@ if [[ "$archive_only" == true ]]; then
 fi
 
 [[ "${#pending_platforms[@]}" -gt 0 ]] || exit 0
+
+if [[ -n "$resume_dir" ]]; then
+    verify_sentry 9>&-
+fi
 
 for platform in "${pending_platforms[@]}"; do
     upload_symbols "$platform"

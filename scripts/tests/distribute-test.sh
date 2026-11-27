@@ -114,9 +114,23 @@ case "$tool" in
         awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); found=1 }
             END { if (!found) exit 1 }' "$6"
         ;;
+    security)
+        if (: >&9) 2>/dev/null; then exit 1; fi
+        [[ -z "${SENTRY_AUTH_TOKEN+x}" ]]
+        [[ "$*" == 'find-generic-password -a partybox-org -s com.partybox.sentry-dsym -w' ]]
+        printf 'keychain lookup\n' >> "$STUB_CALLS"
+        [[ -n "${STUB_KEYCHAIN_TOKEN:-}" ]] || exit 44
+        printf '%s\n' "$STUB_KEYCHAIN_TOKEN"
+        ;;
     sentry-cli)
         if (: >&9) 2>/dev/null; then exit 1; fi
         [[ "$SENTRY_AUTH_TOKEN" == stub-upload-token ]]
+        [[ "$SENTRY_ALLOW_FAILURE" == 0 ]]
+        if [[ "$*" == 'releases list --org partybox-org --project shared --raw' ]]; then
+            printf 'check sentry\n' >> "$STUB_CALLS"
+            [[ "${STUB_FAIL_SENTRY_ACCESS:-}" != true ]]
+            exit
+        fi
         [[ "$*" == "debug-files upload --wait --org partybox-org --project shared "* ]]
         archive_dir="${8%/app.xcarchive/dSYMs}"
         platform="${archive_dir##*/}"
@@ -127,7 +141,7 @@ esac
 STUB
 
 chmod +x "$tmp_dir/bin/distribution-stub"
-for tool in xcodebuild plutil xcrun sentry-cli; do
+for tool in xcodebuild plutil xcrun security sentry-cli; do
     ln -s distribution-stub "$tmp_dir/bin/$tool"
 done
 
@@ -168,28 +182,43 @@ expect_calls() {
 }
 
 SENTRY_AUTH_TOKEN='' run_failure "SENTRY_AUTH_TOKEN" --build-number 123
+if [[ "$OSTYPE" == darwin* ]]; then
+    expect_calls "keychain lookup"
+    SENTRY_AUTH_TOKEN='' STUB_KEYCHAIN_TOKEN=stub-upload-token run_ok --check-sentry
+    expect_calls "keychain lookup" "check sentry"
+    SENTRY_AUTH_TOKEN='' STUB_KEYCHAIN_TOKEN=stub-upload-token run_ok --build-number 127 --platform ios
+    expect_calls "keychain lookup" "check sentry" "archive ios" "sentry ios" "apple ios"
+else
+    expect_calls
+fi
+
+APPLE_TEAM_ID='' SENTRY_DSN='' STUB_KEYCHAIN_TOKEN=unexpected-token run_ok --check-sentry
+expect_calls "check sentry"
+run_failure "Use --check-sentry on its own" --check-sentry --build-number 123
 expect_calls
+STUB_FAIL_SENTRY_ACCESS=true run_failure "Could not verify access to Sentry project" --build-number 123
+expect_calls "check sentry"
 
 STUB_MISSING_SYMBOLS=ios run_failure "missing its app binary or dSYM" --build-number 123
-expect_calls "archive ios" "archive tvos" "archive macos"
+expect_calls "check sentry" "archive ios" "archive tvos" "archive macos"
 
 STUB_WRONG_SYMBOLS=tvos run_failure "UUIDs do not match" --build-number 123
-expect_calls "archive ios" "archive tvos" "archive macos"
+expect_calls "check sentry" "archive ios" "archive tvos" "archive macos"
 
 STUB_OMIT_SENTRY_ENVIRONMENT=true run_failure "missing its Sentry environment" --build-number 123 --platform ios
-expect_calls "archive ios"
+expect_calls "check sentry" "archive ios"
 STUB_SENTRY_ENVIRONMENT=local run_failure "wrong Sentry environment" --build-number 123 --platform ios
-expect_calls "archive ios"
+expect_calls "check sentry" "archive ios"
 
 for mode in 0644 0744; do
     STUB_BINARY_MODE=$mode run_failure "macOS app binary must be executable" --build-number 123 --platform macos
-    expect_calls "archive macos"
+    expect_calls "check sentry" "archive macos"
     failed_run="$(sed -n 's/^Release artifacts: //p' "$output")"
     [[ -d "$failed_run" && ! -e "$failed_run/archives-ready" ]] || fail "Invalid Mac executable marked ready"
 done
 
 STUB_FAIL_SENTRY=tvos run_failure "tvos symbol upload failed" --build-number 123
-expect_calls "archive ios" "archive tvos" "archive macos" "sentry ios" "sentry tvos"
+expect_calls "check sentry" "archive ios" "archive tvos" "archive macos" "sentry ios" "sentry tvos"
 
 SENTRY_AUTH_TOKEN='' run_ok --build-number 123 --archive-only
 expect_calls "archive ios" "archive tvos" "archive macos"
@@ -238,7 +267,7 @@ chmod 755 "$mac_app/Contents/_CodeSignature"
     CDPATH=. STUB_FAIL_APPLE=tvos run_failure "tvos Apple upload did not confirm delivery" \
         --resume ".distribution/${run_dir##*/}"
 )
-expect_calls "sentry ios" "sentry tvos" "sentry macos" "apple ios" "apple tvos"
+expect_calls "check sentry" "sentry ios" "sentry tvos" "sentry macos" "apple ios" "apple tvos"
 grep -F 'warning: ios legacy archive is missing its Sentry environment.' "$output" >/dev/null \
     || fail "Expected an iOS legacy archive warning"
 [[ -n "$(find "$run_dir/ExportOptions.plist" -perm 0600 -print)" ]] || fail "Expected private export options"
@@ -259,7 +288,7 @@ rmdir "$run_dir/.lock"
 [[ -f "$run_dir/ios/apple-uploaded" && -f "$run_dir/tvos/apple-upload-started" ]] || fail "Lock recovery lost upload state"
 
 STUB_FAIL_APPLE=macos run_failure "macos Apple upload did not confirm delivery" --resume "$run_dir" --platform macos
-expect_calls "sentry macos" "apple macos"
+expect_calls "check sentry" "sentry macos" "apple macos"
 chmod 0744 "$mac_binary"
 mv "$ios_plist" "$tmp_dir/confirmed-ios-plist"
 run_failure "tvos has an unconfirmed Apple upload" --resume "$run_dir"
@@ -274,10 +303,10 @@ expect_calls
 [[ -f "$run_dir/macos/apple-upload-started" && ! -f "$run_dir/macos/apple-uploaded" ]] \
     || fail "Invalid Mac retry changed its upload state"
 run_ok --resume "$run_dir" --platform tvos --retry-apple-upload
-expect_calls "sentry tvos" "apple tvos"
+expect_calls "check sentry" "sentry tvos" "apple tvos"
 chmod 0755 "$mac_binary"
 run_ok --resume "$run_dir" --platform macos --retry-apple-upload
-expect_calls "sentry macos" "apple macos"
+expect_calls "check sentry" "sentry macos" "apple macos"
 chmod 0644 "$mac_binary"
 run_ok --resume "$run_dir"
 expect_calls
@@ -286,7 +315,7 @@ if grep -Fq 'legacy archive is missing its Sentry environment' "$output"; then
 fi
 
 run_ok --build-number 124 --platform ios
-expect_calls "archive ios" "sentry ios" "apple ios"
+expect_calls "check sentry" "archive ios" "sentry ios" "apple ios"
 
 # A detached archive helper can outlive the archive without holding its release lock.
 archive_hold="$tmp_dir/archive-hold"
@@ -299,7 +328,7 @@ for _ in $(seq 1 200); do
 done
 [[ -e "$archive_hold/ready" ]] || fail "Detached archive helper did not start"
 run_ok --resume "$archive_run" --platform macos
-expect_calls "sentry macos" "apple macos"
+expect_calls "check sentry" "sentry macos" "apple macos"
 touch "$archive_hold/release"
 
 # A surviving Apple worker must keep the release locked after the script is killed.
@@ -343,6 +372,6 @@ done
 grep -q 'unconfirmed Apple upload' "$output" || fail "Lock was not released after Apple worker exited"
 trap 'rm -rf "$tmp_dir"' EXIT
 run_ok --resume "$held_run" --platform macos --retry-apple-upload
-expect_calls "sentry macos" "apple macos"
+expect_calls "check sentry" "sentry macos" "apple macos"
 
 printf 'Distribution workflow tests passed.\n'
