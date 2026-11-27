@@ -27,10 +27,12 @@ make_case() {
     local root="$test_root/$1"
     mkdir -p "$root/scripts" "$root/bin" "$root/tmp" \
         "$root/PartyNet/Tests/PartyGamesTests/Fixtures" "$root/PartyBoxTests/Fixtures"
-    if [[ "$1" == double_signal_cleanup_entry ]]; then
-        # Deliver a second signal before cleanup has transitioned to restoring.
-        awk '{ print }
-             /^    local status=.*restore_failed=false$/ { print "    kill -TERM \"$$\""; injected=1 }
+    if [[ "$1" == double_signal_cleanup_entry || "$1" == before_backup_check_signal ]]; then
+        awk -v scenario="$1" '{ print }
+             (scenario == "double_signal_cleanup_entry" && /^    local status=.*restore_failed=false$/) ||
+             (scenario == "before_backup_check_signal" && /^        report "Restoring golden fixtures/) {
+                 print "    kill -TERM \"$$\""; injected=1
+             }
              END { if (!injected) exit 1 }' \
             "$source_script" >"$root/scripts/record-goldens.sh"
     else
@@ -53,10 +55,14 @@ if [[ -n "${PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     fi
     if [[ "$STUB_SCENARIO" == recording_fail ]]; then exit 1; fi
 else
-    if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
+    if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal \
+        || "$STUB_SCENARIO" == staging_delete_fail ]]; then
         case_root="$(cd "$(dirname "$0")/.." && pwd)"
         for scratch in "$TMPDIR"/partybox-goldens.*; do
             touch "$case_root/PartyNet/Tests/PartyGamesTests/Fixtures/.partybox-fixture.${scratch##*/}.probe"
+            if [[ "$STUB_SCENARIO" == staging_delete_fail ]]; then
+                touch "$case_root/PartyBoxTests/Fixtures/.partybox-fixture.${scratch##*/}.probe"
+            fi
         done
         if [[ "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
             "$REAL_RM" "$case_root"/.verification/golden-backups/partybox-goldens.*/backup-games/game.json
@@ -81,7 +87,10 @@ else
     elif [[ "$STUB_SCENARIO" == scratch_lost ]]; then
         "$REAL_RM" -rf "$TMPDIR"/partybox-goldens.*
         exit 1
-    elif [[ "$STUB_SCENARIO" == verify_fail || "$STUB_SCENARIO" == games_restore_copy_fail \
+    elif [[ "$STUB_SCENARIO" == broken_stdout || "$STUB_SCENARIO" == verify_fail ]]; then
+        printf 'Swift verification stdout\n'
+        if [[ "$STUB_SCENARIO" == verify_fail ]]; then exit 76; fi
+    elif [[ "$STUB_SCENARIO" == before_backup_check_signal || "$STUB_SCENARIO" == games_restore_copy_fail \
         || "$STUB_SCENARIO" == host_restore_copy_fail || "$STUB_SCENARIO" == closed_stderr \
         || "$STUB_SCENARIO" == broken_stderr || "$STUB_SCENARIO" == broken_stderr_log_unwritable \
         || "$STUB_SCENARIO" == append_recovery || "$STUB_SCENARIO" == restore_hup \
@@ -110,7 +119,10 @@ if [[ -n "${TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR:-}" ]]; then
     else
         printf '{"candidate":"host"}\n' >"$TEST_RUNNER_PARTYBOX_GOLDEN_OUTPUT_DIR/unavailable-screen.json"
     fi
-elif [[ "$STUB_SCENARIO" == host_verify_fail || "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
+elif [[ "$STUB_SCENARIO" == broken_stdout || "$STUB_SCENARIO" == host_verify_fail ]]; then
+    printf 'Xcode verification stdout\n'
+    if [[ "$STUB_SCENARIO" == host_verify_fail ]]; then exit 77; fi
+elif [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
     exit 1
 fi
 SH
@@ -165,6 +177,7 @@ set -euo pipefail
 if [[ "$STUB_SCENARIO" == late_restore_signal || "$STUB_SCENARIO" == incomplete_backup_signal ]]; then
     if [[ "${3:-}" == *.probe ]]; then kill -TERM "$PPID"; fi
 fi
+if [[ "$STUB_SCENARIO" == staging_delete_fail && "${3:-}" == *.probe ]]; then exit 74; fi
 if [[ "$STUB_SCENARIO" == host_restore_rm_fail ]]; then
     for target in "$@"; do
         if [[ "$target" == */PartyBoxTests/Fixtures/new-host.json ]]; then exit 74; fi
@@ -331,6 +344,8 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
     root="$test_root/$scenario"
     expected=1
     case "$scenario" in
+        verify_fail) expected=76 ;;
+        host_verify_fail) expected=77 ;;
         interrupt_term|double_signal_cleanup_entry) expected=143 ;;
         interrupt_quit)
             if ! signal_catchable QUIT; then printf 'Skipping SIGQUIT test because QUIT is ignored.\n'; continue; fi
@@ -340,6 +355,10 @@ for scenario in verify_fail host_verify_fail closed_stderr broken_stderr scratch
             expected=129 ;;
     esac
     expect_status "$root" "$scenario" "$expected"
+    case "$scenario" in
+        verify_fail) grep -Fq 'Swift verification stdout' "$root/run.log" || fail "Missing Swift log tail" ;;
+        host_verify_fail) grep -Fq 'Xcode verification stdout' "$root/run.log" || fail "Missing Xcode log tail" ;;
+    esac
     assert_original "$root"
     assert_no_backups "$root"
     assert_no_temp "$root"
@@ -516,6 +535,19 @@ grep -Fq 'Automatic fixture restoration was incomplete.' "$root/run.log" || fail
 assert_no_temp "$root"
 assert_no_staging "$root"
 
+make_case before_backup_check_signal
+root="$test_root/before_backup_check_signal"
+expect_status "$root" before_backup_check_signal 143
+assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candidate":"host"}'
+grep -Fq 'Backup integrity could not be confirmed' "$root/run.log" || fail "Unconfirmed backup was not reported"
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+[[ ${#backups[@]} -eq 1 ]] || fail "Expected the unchecked backup to be retained"
+grep -Fq 'Backup integrity could not be confirmed' "${backups[0]}/recovery.log" || fail "Unconfirmed backup guidance was not saved"
+assert_no_restore_commands "$root"
+assert_no_temp "$root"
+assert_no_staging "$root"
+
 make_case late_restore_signal
 root="$test_root/late_restore_signal"
 expect_status "$root" late_restore_signal 143
@@ -527,10 +559,36 @@ assert_no_restore_commands "$root"
 assert_no_temp "$root"
 assert_no_staging "$root"
 
+make_case staging_delete_fail
+root="$test_root/staging_delete_fail"
+unrelated_stage="$root/PartyBoxTests/Fixtures/.partybox-fixture.other-run.probe"
+touch "$unrelated_stage"
+expect_status "$root" staging_delete_fail 1
+assert_original "$root"
+assert_no_restore_commands "$root"
+assert_no_temp "$root"
+backups=("$root/.verification/golden-backups"/partybox-goldens.*)
+[[ ${#backups[@]} -eq 1 ]] || fail "Expected the backup to be retained after staging deletion failed"
+cleanup_command="$(sed -n 's/^  \(find .*\)$/\1/p' "$root/run.log")"
+[[ -n "$cleanup_command" ]] || fail "Staging-only cleanup command not reported"
+grep -Fxq "  $cleanup_command" "${backups[0]}/recovery.log" || fail "Staging-only cleanup command not saved"
+current_stages=("$root/PartyNet/Tests/PartyGamesTests/Fixtures"/.partybox-fixture.partybox-goldens.* \
+    "$root/PartyBoxTests/Fixtures"/.partybox-fixture.partybox-goldens.*)
+[[ ${#current_stages[@]} -eq 2 ]] || fail "Expected both fixtures' staging files to remain"
+cleanup_shell=/bin/bash
+if command -v zsh >/dev/null; then cleanup_shell=zsh; fi
+"$cleanup_shell" -c "$cleanup_command" || fail "Staging-only cleanup command failed"
+for staged in "${current_stages[@]}"; do
+    [[ ! -e "$staged" ]] || fail "This run's staging file remains: $staged"
+done
+[[ -f "$unrelated_stage" ]] || fail "Staging cleanup removed another run's file"
+assert_original "$root"
+
 make_case broken_stdout
 root="$test_root/broken_stdout"
 expect_status "$root" broken_stdout 0
 assert_content "$root/PartyNet/Tests/PartyGamesTests/Fixtures/game.json" '{"candidate":"game"}'
+assert_content "$root/PartyBoxTests/Fixtures/unavailable-screen.json" '{"candidate":"host"}'
 assert_no_backups "$root"
 assert_no_temp "$root"
 assert_no_staging "$root"

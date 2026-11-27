@@ -1125,9 +1125,20 @@ final class ControllerCoordinator {
                 control: memberControl,
                 botDifficultyChange: "BOT DIFFICULTY INCREASED TO HARD"
             ))
-        case "history":
+        case "history", "cup-history":
             client.configureFixture(state: .connected("Living Room PartyBox"), player: currentPlayer)
             layout = .historyNavigation
+            if scenario == "cup-history" {
+                let id = ControllerID()
+                let standings = zip([id, ControllerID()], players).map { id, player in
+                    CupStandingRecord(
+                        controllerID: id, displayName: player.displayName, colorHex: player.colorHex,
+                        kind: player.kind, rank: 1, points: 22, eventWins: 1
+                    )
+                }
+                let cup = CupRecord(endedAt: Date(), gameIDs: [], matchRecordIDs: [], standings: standings)
+                if let record = PersonalCupRecord(record: cup, controllerID: id) { personalCupHistory = [record] }
+            }
         case "reconnecting": client.configureFixture(state: .reconnecting("Connection interrupted"), player: currentPlayer)
         case "full-rejection": client.configureFixture(state: .rejected(RejectReason.full.message))
         case "version-rejection": client.configureFixture(state: .rejected(RejectReason.versionMismatch(hostVersion: 999).message))

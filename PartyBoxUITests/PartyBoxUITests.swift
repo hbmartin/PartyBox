@@ -53,6 +53,13 @@ final class PartyBoxUITests: XCTestCase {
     }
 
     @MainActor
+    func testCupHistoryShowsFallbackForMissingChampions() {
+        let app = launch(scenario: "cup-history")
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["Cup complete"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testHostNavigationRevealsOffscreenMenuAndCupCards() {
         let app = launch(scenario: "menu", freezeScenario: false, additional: ["--compact-host-window"])
         defer { app.terminate() }
