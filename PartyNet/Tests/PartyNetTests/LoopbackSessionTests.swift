@@ -159,38 +159,44 @@ extension NetworkIntegrationTests {
     }
 
     @Test func rapidRenamesApplyImmediatelyThenCoalesceToTheLatestName() async throws {
-      let clock = TestClock()
+      let clock = ManualTestClock()
+      let client = PartyClient(displayName: "Original")
       try await withDependencies {
         $0.continuousClock = clock
       } operation: {
-        let host = PartyHost(reconnectGrace: .milliseconds(100))
-        let port = try await runWhileAdvancingTestClock(clock) {
-          try await host.start(hostName: "Rename Host", advertise: false)
+        let host = hostWithLiveTransport()
+        try await withAsyncCleanup {
+          let port = try await host.start(hostName: "Rename Host", advertise: false)
+          await client.connect(host: "127.0.0.1", port: port)
+          try await waitUntil { host.players.first?.displayName == "Original" }
+
+          await client.rename(to: "First")
+          try await waitUntil { host.players.first?.displayName == "First" }
+          let deadline = clock.now.advanced(by: PartyNetConstants.renameProcessingInterval)
+          try await clock.waitForSleep(until: deadline)
+
+          // A later message on the same TCP stream proves both renames reached the host.
+          let recorder = EventRecorder()
+          let events = host.events
+          let observer = Task {
+            for await event in events { await recorder.record(event) }
+          }
+          defer { observer.cancel() }
+          await client.rename(to: "Intermediate")
+          await client.rename(to: "Final")
+          let marker = Data("after renames".utf8)
+          try #require(await client.sendApplication(marker))
+          try await waitUntilAsync { await recorder.contains(host: marker) }
+
+          clock.advance(to: deadline.advanced(by: .milliseconds(-1)))
+          #expect(host.players.first?.displayName == "First")
+
+          clock.advance(to: deadline)
+          try await waitUntil { host.players.first?.displayName == "Final" }
+        } cleanup: {
+          await client.stop()
+          await host.stop()
         }
-        let client = PartyClient(displayName: "Original")
-        await client.connect(host: "127.0.0.1", port: port)
-        try await waitUntil { host.players.first?.displayName == "Original" }
-
-        await client.rename(to: "First")
-        try await waitUntil { host.players.first?.displayName == "First" }
-        await settle()
-
-        await client.rename(to: "Intermediate")
-        await client.rename(to: "Final")
-        let pingCount = client.rttSampleCount
-        client.reconnectAfterForeground()
-        try await waitUntil { client.rttSampleCount > pingCount }
-        #expect(host.players.first?.displayName == "First")
-
-        await clock.advance(by: .milliseconds(99))
-        await settle()
-        #expect(host.players.first?.displayName == "First")
-
-        await clock.advance(by: .milliseconds(1))
-        try await waitUntil { host.players.first?.displayName == "Final" }
-
-        await client.disconnect()
-        await host.stop()
       }
     }
 
@@ -1159,56 +1165,33 @@ extension NetworkIntegrationTests {
     }
 
     @Test func clientControlWriteTimesOutAndRetiresTheSession() async throws {
-      let parameters = NWParametersBuilder.parameters { hostControlStack() }
-        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
-        .localOnly(true)
-        .peerToPeerIncluded(false)
-      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
-      let server = WelcomingHandshakeServer()
-      let listenerTask = Task {
-        try? await listener.run { connection in
-          await server.handle(connection)
-        }
-      }
-      defer { listenerTask.cancel() }
-      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
-      let port = try #require(listener.port?.rawValue)
-      let clock = TestClock()
-      let stalledWrite = WriteProbe()
-
-      try await withDependencies {
-        $0.continuousClock = clock
-      } operation: {
-        let transport = ClientTransport(controlSender: { connection, message in
-          if case .hello = message {
-            try await connection.send(message)
+      let clock = ManualTestClock()
+      try await withWelcomedTransport(
+        displayName: "Timeout Tester", clock: clock,
+        controlSender: { connection, message in
+          if case .application = message {
+            try await clock.sleep(for: .seconds(30))
             return
           }
-          await stalledWrite.markStarted()
-          try await clock.sleep(for: .seconds(30))
-        })
-        let target = try DiscoveredHost(host: "127.0.0.1", port: port)
-        let (connectionID, _) = try await runWhileAdvancingTestClock(clock) {
-          try await transport.connect(
-            to: target,
-            hello: Hello(controllerID: ControllerID(), displayName: "Timeout Tester"),
-            attemptID: UUID()
-          )
+          try await connection.send(message)
         }
+      ) { transport, connectionID in
         let sendTask = Task {
           try await transport.send(.application(Data([1])), connectionID: connectionID)
         }
-        try await waitUntilAsync { await stalledWrite.started }
-        await clock.advance(by: PartyNetConstants.helloTimeout)
-        await settle()
+        defer { sendTask.cancel() }
+        let timeout = clock.now.advanced(by: PartyNetConstants.helloTimeout)
+        try await clock.waitForSleep(until: clock.now.advanced(by: .seconds(30)))
+        try await clock.waitForSleep(until: timeout)
+        clock.advance(to: timeout)
 
         await #expect(throws: PartyNetTransportError.self) {
           try await sendTask.value
         }
+        // A live session would send this immediately, so a regression cannot park the test.
         await #expect(throws: PartyNetTransportError.self) {
-          try await transport.send(.application(Data([1])), connectionID: connectionID)
+          try await transport.send(.rename("After timeout"), connectionID: connectionID)
         }
-        await transport.stop()
       }
     }
 
@@ -1259,24 +1242,11 @@ extension NetworkIntegrationTests {
     }
 
     @Test func nonterminalPingWriteErrorDoesNotRetireTheSession() async throws {
-      let parameters = NWParametersBuilder.parameters { hostControlStack() }
-        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
-        .localOnly(true)
-        .peerToPeerIncluded(false)
-      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
-      let server = WelcomingHandshakeServer()
-      let listenerTask = Task {
-        try? await listener.run { connection in await server.handle(connection) }
-      }
-      defer { listenerTask.cancel() }
-      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
-      let clock = TestClock()
+      let clock = ManualTestClock()
       let failedPing = WriteProbe()
-
-      try await withDependencies {
-        $0.continuousClock = clock
-      } operation: {
-        let transport = ClientTransport(controlSender: { connection, message in
+      try await withWelcomedTransport(
+        displayName: "Encoding Tester", clock: clock,
+        controlSender: { connection, message in
           if case .ping = message {
             await failedPing.markStarted()
             throw EncodingError.invalidValue(
@@ -1285,47 +1255,25 @@ extension NetworkIntegrationTests {
             )
           }
           try await connection.send(message)
-        })
-        let target = try DiscoveredHost(
-          host: "127.0.0.1",
-          port: try #require(listener.port?.rawValue)
-        )
-        let (connectionID, _) = try await runWhileAdvancingTestClock(clock) {
-          try await transport.connect(
-            to: target,
-            hello: Hello(controllerID: ControllerID(), displayName: "Encoding Tester"),
-            attemptID: UUID()
-          )
         }
-
-        await clock.advance(by: PartyNetConstants.pingInterval)
-        try await waitUntilAsync { await failedPing.started }
-        await clock.advance(by: PartyNetConstants.pingInterval)
-        try await waitUntilAsync { await failedPing.count >= 2 }
+      ) { transport, connectionID in
+        for attempt in 1...2 {
+          let nextPing = clock.now.advanced(by: PartyNetConstants.pingInterval)
+          try await clock.waitForSleep(until: nextPing)
+          clock.advance(to: nextPing)
+          try await waitUntilAsync { await failedPing.count == attempt }
+        }
         try await transport.send(.application(Data([1])), connectionID: connectionID)
-        await transport.stop()
       }
     }
 
     @Test func nonterminalTCPInputWriteErrorDoesNotStopTheInputLoop() async throws {
-      let parameters = NWParametersBuilder.parameters { hostControlStack() }
-        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
-        .localOnly(true)
-        .peerToPeerIncluded(false)
-      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
-      let server = WelcomingHandshakeServer()
-      let listenerTask = Task {
-        try? await listener.run { connection in await server.handle(connection) }
-      }
-      defer { listenerTask.cancel() }
-      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
-      let clock = TestClock()
+      let clock = ManualTestClock()
       let failedInput = WriteProbe()
-
-      try await withDependencies {
-        $0.continuousClock = clock
-      } operation: {
-        let transport = ClientTransport(controlSender: { connection, message in
+      let inputInterval = Duration.milliseconds(16)
+      try await withWelcomedTransport(
+        displayName: "Input Encoding Tester", clock: clock, inputSendInterval: inputInterval,
+        controlSender: { connection, message in
           if case .input = message {
             await failedInput.markStarted()
             throw EncodingError.invalidValue(
@@ -1334,26 +1282,19 @@ extension NetworkIntegrationTests {
             )
           }
           try await connection.send(message)
-        })
-        let target = try DiscoveredHost(
-          host: "127.0.0.1",
-          port: try #require(listener.port?.rawValue)
-        )
-        let (connectionID, _) = try await runWhileAdvancingTestClock(clock) {
-          try await transport.connect(
-            to: target,
-            hello: Hello(controllerID: ControllerID(), displayName: "Input Encoding Tester"),
-            attemptID: UUID()
-          )
         }
+      ) { transport, connectionID in
+        let start = clock.now
+        try await clock.waitForSleep(until: start.advanced(by: inputInterval))
+        clock.advance(to: start.advanced(by: PartyNetConstants.udpReadyTimeout))
+        try await waitUntilAsync { await failedInput.count == 1 }
 
-        await clock.advance(by: PartyNetConstants.udpReadyTimeout + .milliseconds(32))
-        try await waitUntilAsync { await failedInput.started }
-        let firstFailureCount = await failedInput.count
-        await clock.advance(by: .milliseconds(16))
-        try await waitUntilAsync { await failedInput.count > firstFailureCount }
+        // The failed write must unwind and the input loop must schedule its next tick.
+        let retry = clock.now.advanced(by: inputInterval)
+        try await clock.waitForSleep(until: retry)
+        clock.advance(to: retry)
+        try await waitUntilAsync { await failedInput.count == 2 }
         try await transport.send(.application(Data([1])), connectionID: connectionID)
-        await transport.stop()
       }
     }
 
@@ -1400,6 +1341,51 @@ extension NetworkIntegrationTests {
       #expect(await restartedIterator.next() == nil)
     }
 
+    private func withWelcomedTransport(
+      displayName: String,
+      clock: ManualTestClock,
+      inputSendInterval: Duration = .milliseconds(16),
+      controlSender: @escaping ClientControlSender,
+      operation: (ClientTransport, UUID) async throws -> Void
+    ) async throws {
+      let parameters = NWParametersBuilder.parameters { hostControlStack() }
+        .localEndpoint(.hostPort(host: "127.0.0.1", port: .any))
+        .localOnly(true)
+        .peerToPeerIncluded(false)
+      let listener = try NetworkListener<HostControlProtocol>(for: nil, using: parameters)
+      let server = WelcomingHandshakeServer()
+      let listenerTask = Task {
+        try? await listener.run { connection in await server.handle(connection) }
+      }
+      defer { listenerTask.cancel() }
+      try await waitUntilAsync { (listener.port?.rawValue ?? 0) != 0 }
+      let target = try DiscoveredHost(
+        host: "127.0.0.1", port: try #require(listener.port?.rawValue)
+      )
+      let transport = withDependencies {
+        $0.continuousClock = clock
+      } operation: {
+        ClientTransport(inputSendInterval: inputSendInterval, controlSender: controlSender)
+      }
+      try await withAsyncCleanup {
+        let attemptID = UUID()
+        // The real handshake must complete while the policy clock stays at its starting instant.
+        let handshakeDeadline = Task {
+          try await ContinuousClock().sleep(for: PartyNetConstants.helloTimeout)
+          await transport.cancelConnectionAttempt(attemptID)
+        }
+        defer { handshakeDeadline.cancel() }
+        let (connectionID, _) = try await transport.connect(
+          to: target, hello: Hello(controllerID: ControllerID(), displayName: displayName),
+          attemptID: attemptID
+        )
+        handshakeDeadline.cancel()
+        try await operation(transport, connectionID)
+      } cleanup: {
+        await transport.stop()
+      }
+    }
+
     private func waitUntil(
       timeout: Duration = .seconds(3),
       condition: @escaping @MainActor () -> Bool
@@ -1410,10 +1396,6 @@ extension NetworkIntegrationTests {
         try await Task.sleep(for: .milliseconds(20))
       }
       try #require(condition())
-    }
-
-    private func settle() async {
-      for _ in 0..<10 { await Task.yield() }
     }
   }
 }

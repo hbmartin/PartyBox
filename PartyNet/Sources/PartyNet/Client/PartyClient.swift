@@ -55,6 +55,10 @@ public final class PartyClient {
     private let transport: ClientTransport
 #if DEBUG
     @ObservationIgnored private(set) var inputEnqueueCountForTesting: UInt64 = 0
+
+    func waitForInputFlushForTesting() async {
+        await inputFlushTask?.value
+    }
 #endif
     private var transportTask: Task<Void, Never>?
     private var transportEventGeneration: UUID?
