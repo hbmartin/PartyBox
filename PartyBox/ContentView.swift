@@ -531,11 +531,13 @@ private struct HistoryView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("PARTY CUP TROPHIES").font(.headline.monospaced().weight(.black)).foregroundStyle(.yellow)
                         ForEach(coordinator.cupRecords) { record in
+                            let champions = record.champions
                             HStack {
                                 Image(systemName: "trophy.fill").foregroundStyle(.yellow)
-                                Text(record.champions.map(\.displayName).joined(separator: ", ")).font(.headline.weight(.black))
+                                Text(champions.isEmpty ? "Cup complete" : champions.map(\.displayName).joined(separator: ", "))
+                                    .font(.headline.weight(.black))
                                 Spacer()
-                                Text(record.champions.first.map { "\($0.points) PTS" } ?? "")
+                                Text(champions.first.map { "\($0.points) PTS" } ?? "")
                                     .font(.subheadline.monospaced().weight(.black)).foregroundStyle(PartyTheme.cyan)
                                 Text(record.endedAt.formatted(date: .abbreviated, time: .omitted))
                                     .font(.caption.monospaced()).foregroundStyle(.white.opacity(0.5))

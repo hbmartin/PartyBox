@@ -136,6 +136,11 @@ cleanup_stages() {
     return "$status"
 }
 
+staging_cleanup_command() {
+    printf 'find %q %q -maxdepth 1 -type f -name %q -delete' \
+        "$games_fixtures" "$host_fixtures" ".partybox-fixture.$stage_tag.*"
+}
+
 write_recovery() {
     # Persist recovery information before attempting to report it on stderr.
     if [[ -d "$backup_root" ]]; then
@@ -150,7 +155,7 @@ print_recovery() {
         if [[ "$backup_state" == incomplete ]]; then
             printf -v recovery '%s\nGolden backup missing or incomplete at %s.' "$summary" "$backup_root"
         else
-            printf -v recovery '%s\nGolden backup verification was interrupted at %s.' "$summary" "$backup_root"
+            printf -v recovery '%s\nBackup integrity could not be confirmed at %s.' "$summary" "$backup_root"
         fi
         write_recovery "$recovery"$'\n'"Inspect the fixture diff and recover originals from Git or another saved copy."
         return
@@ -162,12 +167,12 @@ print_recovery() {
 
     # A cancelled or failed check leaves the operator with only safe guidance.
     if [[ "$cleanup_cancelled" == false ]] && backup_intact && [[ "$cleanup_cancelled" == false ]]; then
-        printf -v commands "After resolving the interruption or file error, restore the original fixture sets with:\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  find %q %q -maxdepth 1 -type f -name %q -delete" \
+        printf -v commands "After resolving the interruption or file error, restore the original fixture sets with:\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  rsync -a --delete --include='*.json' --exclude='*' %q/ %q/\n  %s" \
             "$games_backup" "$games_fixtures" "$host_backup" "$host_fixtures" \
-            "$games_fixtures" "$host_fixtures" ".partybox-fixture.$stage_tag.*"
+            "$(staging_cleanup_command)"
         write_recovery "$commands"
     else
-        write_recovery "Backup integrity was not confirmed for manual restoration. Recover originals from Git or another verified copy."
+        write_recovery "Backup integrity could not be confirmed for manual restoration. Recover originals from Git or another verified copy."
     fi
 }
 
@@ -206,6 +211,7 @@ cleanup() {
         elif [[ "$stages_failed" == true || "$cleanup_cancelled" == true ]]; then
             keep_backup=true
             write_recovery "Original golden fixtures restored. Staging cleanup failed or was interrupted. Backup retained at $backup_root."
+            write_recovery "After resolving the cleanup error, remove any staging files from this run."$'\n  '"$(staging_cleanup_command)"
             if (( status == 0 )); then status=1; fi
         fi
     elif ! cleanup_stages; then
@@ -229,6 +235,19 @@ cleanup() {
     fi
     if (( signal_status != 0 )); then status=$signal_status; fi
     exit "$status"
+}
+
+verify_fixtures() {
+    local suite=$1 log=$2 status
+    shift 2
+    report "Verifying $suite golden fixtures."
+    abort_if_signalled
+    "$@" >"$log" 2>&1 || {
+        status=$?
+        report "$suite golden verification failed (exit $status)."
+        (tail -80 "$log" >&2) || true
+        return "$status"
+    }
 }
 
 # Keep the signal handlers installed across the transition into the EXIT trap.
@@ -311,9 +330,11 @@ abort_if_signalled
 sync_json_set "$host_output" "$host_fixtures" "$host_candidate_manifest"
 abort_if_signalled
 
-swift test --package-path "$ROOT_DIR/PartyNet" --filter ControllerScreenGoldenTests
+verify_fixtures PartyGames "$record_root/games-verification.log" \
+    swift test --package-path "$ROOT_DIR/PartyNet" --filter ControllerScreenGoldenTests
 abort_if_signalled
-xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
+verify_fixtures PartyBox "$record_root/host-verification.log" \
+    xcodebuild -project "$ROOT_DIR/PartyBox.xcodeproj" -scheme PartyBox \
     -testPlan PartyBox-Normal -destination 'platform=macOS' \
     '-only-testing:PartyBoxTests/PartyBoxTests/oversizedNestedControllerLayoutFallsBackToASendableScreen()' \
     test

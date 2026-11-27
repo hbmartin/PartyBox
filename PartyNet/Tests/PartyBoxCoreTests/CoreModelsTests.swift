@@ -244,12 +244,34 @@ struct CoreModelsTests {
 
         var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         object.removeValue(forKey: "isCoChampion")
+        object.removeValue(forKey: "finishPosition")
         let olderRecord = try JSONDecoder().decode(
             PersonalCupRecord.self,
             from: JSONSerialization.data(withJSONObject: object)
         )
         #expect(olderRecord.isChampion)
         #expect(olderRecord.isCoChampion == nil)
+        #expect(olderRecord.finishPosition == nil)
+        #expect(HistoryAggregation.cups([olderRecord]) == .init(played: 1, won: 1, podiums: 1))
+    }
+
+    @Test func cupPodiumsCountPlayersAheadOfEachTie() throws {
+        for (ranks, positions) in [([1, 1, 2, 3], [1, 1, 3, 4]), ([1, 2, 3, 3], [1, 2, 3, 3])] {
+            let standings = ranks.enumerated().map { index, rank in
+                CupStandingRecord(
+                    controllerID: ControllerID(), displayName: "Player \(index + 1)", colorHex: "#32E6FF",
+                    kind: .human, rank: rank, points: 24 - rank * 3, eventWins: 0
+                )
+            }
+            let cup = CupRecord(endedAt: Date(), gameIDs: [], matchRecordIDs: [], standings: standings)
+            let personal = try standings.map { standing in
+                try #require(PersonalCupRecord(record: cup, controllerID: standing.controllerID))
+            }
+
+            #expect(personal.map(\.rank) == ranks)
+            #expect(personal.map(\.finishPosition) == positions.map(Optional.some))
+            #expect(personal.map { HistoryAggregation.cups([$0]).podiums } == positions.map { $0 <= 3 ? 1 : 0 })
+        }
     }
 
     @Test func malformedCupRanksDoNotCountAsPodiums() throws {
@@ -281,6 +303,26 @@ struct CoreModelsTests {
         )
 
         #expect(HistoryAggregation.cups([malformed]) == .init(played: 1, won: 0, podiums: 0))
+
+        object["rank"] = 1
+        object["isChampion"] = true
+        object["finishPosition"] = 2
+        let invalidPosition = try JSONDecoder().decode(
+            PersonalCupRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(HistoryAggregation.cups([invalidPosition]).podiums == 0)
+
+        object["rank"] = 4
+        object["participantCount"] = 4
+        object["finishPosition"] = 4
+        object["isCoChampion"] = true
+        let falseChampion = try JSONDecoder().decode(
+            PersonalCupRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(!falseChampion.isRankOneChampion)
+        #expect(HistoryAggregation.cups([falseChampion]) == .init(played: 1, won: 0, podiums: 0))
     }
 
     @Test func diagnosticsExportsAreImmutableSnapshots() async throws {

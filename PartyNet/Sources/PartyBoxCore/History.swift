@@ -212,6 +212,8 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
     public let participantCount: Int
     public let isChampion: Bool
     public let isCoChampion: Bool?
+    /// One plus the number of players who finished ahead. Older records omit this value.
+    public let finishPosition: Int?
 
     public init?(record: CupRecord, controllerID: ControllerID) {
         guard let own = record.standings.first(where: { $0.controllerID == controllerID }) else {
@@ -222,10 +224,20 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
         gameIDs = record.gameIDs
         participantCount = record.standings.count
         rank = own.rank
+        finishPosition = 1 + record.standings.count { $0.rank < own.rank }
         points = own.points
         eventWins = own.eventWins
         isChampion = own.rank == 1
         isCoChampion = isChampion && record.champions.count > 1 ? true : nil
+    }
+
+    public var isRankOneChampion: Bool { participantCount > 0 && rank == 1 && isChampion }
+
+    fileprivate var isPodiumFinish: Bool {
+        // Earlier records only carry the displayed rank.
+        let position = finishPosition ?? rank
+        return rank >= 1 && position >= rank && position <= min(3, participantCount)
+            && (rank != 1 || position == 1)
     }
 }
 
@@ -285,14 +297,10 @@ public enum HistoryAggregation {
     }
 
     public static func cups(_ records: [PersonalCupRecord]) -> CupStatistics {
-        let podiums = records.count { record in
-            guard record.participantCount > 0 else { return false }
-            return record.rank >= 1 && record.rank <= min(3, record.participantCount)
-        }
-        return CupStatistics(
+        CupStatistics(
             played: records.count,
-            won: records.count { $0.participantCount > 0 && $0.rank == 1 && $0.isChampion },
-            podiums: podiums
+            won: records.count(where: \.isRankOneChampion),
+            podiums: records.count(where: \.isPodiumFinish)
         )
     }
 }

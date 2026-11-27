@@ -76,18 +76,20 @@ The normal gate also runs the local package's `PartyGamesTests` on tvOS through 
 
 To update controller-screen JSON fixtures, run `scripts/record-goldens.sh` on a development Mac.
 It generates candidates in a temporary directory, installs them only after both recording tests
-pass, and reruns ordinary comparisons. If verification fails, the script validates both backups
-before restoring the previous fixtures. The script prints the temporary rollback backup path before
-installing candidates. A missing or incomplete backup stops automatic restoration without deleting fixtures.
+pass, and reruns ordinary comparisons. If a comparison fails, the script prints the end of its
+verification log and validates both backups before restoring the previous fixtures. The script
+prints the temporary rollback backup path before installing candidates. A missing or incomplete
+backup stops automatic restoration without deleting fixtures.
 If restoration fails or is interrupted, the script reports the backup location and appends recovery
 information to `recovery.log` when it can write there. It prints exact restore commands only after a
 fresh integrity check of both backup folders. Use the printed commands after inspecting the backup
 and fixture diff. If the check failed or was interrupted, recover the originals from Git or another
 verified copy. Remove the retained backup only after confirming recovery.
 
-The printed restore commands limit copying and deletion to JSON fixtures. The staging cleanup
-command removes temporary `.partybox-fixture.*` files left by that recording run. `.verification/` is ignored
-by Git but can be removed by `git clean -fdx`, so move a retained backup elsewhere before cleaning
+The printed restore commands limit copying and deletion to JSON fixtures. If both fixture sets are
+restored and staging cleanup fails, use the printed cleanup command to remove temporary files from
+that recording run. `.verification/` is ignored by Git but can be removed by `git clean -fdx`,
+so move a retained backup elsewhere before cleaning
 the checkout. Use `scripts/record-goldens.sh --allow-set-change` when adding, renaming, or removing
 fixture files; without that flag, only existing fixture values can change. The recording command
 temporarily disables the macOS host app sandbox for its Xcode test invocation; normal builds and

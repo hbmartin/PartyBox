@@ -1597,6 +1597,9 @@ final class HostCoordinator {
                 metrics: [.init(id: "paddle-hits", label: "Paddle hits", value: "27")]
             ))
         case "history": phase = .history
+        case "cup-history":
+            records.applyCupAppend(.init(endedAt: Date(), gameIDs: [], matchRecordIDs: [], standings: []), result: .inserted)
+            phase = .history
         default: phase = .lobby
         }
     }

@@ -66,6 +66,13 @@ final class PartyBox_ControllerUITests: XCTestCase {
     @MainActor func testLocalNetworkDenialLayout() { assertLayout("local-network-denial", identifier: "controller.discovery.help") }
 
     @MainActor
+    func testCupHistoryShowsCoChampionTitle() {
+        let app = launch(scenario: "cup-history")
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["PARTY CUP CO-CHAMPION"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     private func assertLayout(_ scenario: String, identifier: String) {
         let app = launch(scenario: scenario)
         defer { app.terminate() }

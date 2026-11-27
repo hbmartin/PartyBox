@@ -973,16 +973,15 @@ private struct PersonalHistoryView: View {
                             .font(.headline.monospaced().weight(.black))
                             .foregroundStyle(ControllerTheme.cyan)
                         ForEach(coordinator.personalCupHistory) { record in
-                            let cupTitle = if record.isCoChampion == true {
-                                "PARTY CUP CO-CHAMPION"
-                            } else if record.isChampion {
-                                "PARTY CUP CHAMPION"
+                            let champion = record.isRankOneChampion
+                            let cupTitle = if champion {
+                                record.isCoChampion == true ? "PARTY CUP CO-CHAMPION" : "PARTY CUP CHAMPION"
                             } else {
                                 "PARTY CUP — #\(record.rank)"
                             }
                             HStack {
-                                Image(systemName: record.isChampion ? "trophy.fill" : "medal.fill")
-                                    .foregroundStyle(record.isChampion ? .yellow : ControllerTheme.cyan)
+                                Image(systemName: champion ? "trophy.fill" : "medal.fill")
+                                    .foregroundStyle(champion ? .yellow : ControllerTheme.cyan)
                                 VStack(alignment: .leading) {
                                     Text(cupTitle)
                                         .font(.headline.weight(.black))
