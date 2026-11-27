@@ -216,6 +216,7 @@ struct CoreModelsTests {
         #expect(cup.gameIDs == ["pong", "sky-hop", "snake-pit", "ignored"])
         #expect(cup.standings.first?.displayName == "Ada")
         #expect(personal.isChampion)
+        #expect(personal.isRankOneChampion)
         #expect(HistoryAggregation.cups([personal]) == .init(played: 1, won: 1, podiums: 1))
         #expect(PersonalCupRecord(record: cup, controllerID: ControllerID()) == nil)
     }
@@ -231,7 +232,8 @@ struct CoreModelsTests {
         let personal = try #require(PersonalCupRecord(record: cup, controllerID: firstID))
         let wire = HostPresentation.cupCompleted(personal)
         #expect(try PartyBoxWireCodec.decode(HostPresentation.self, from: PartyBoxWireCodec.encode(wire)) == wire)
-        #expect(HistoryAggregation.cups([personal]).won == 1)
+        #expect(personal.isRankOneChampion)
+        #expect(HistoryAggregation.cups([personal]) == .init(played: 1, won: 1, podiums: 1))
 
         struct LegacyTrophy: Decodable {
             let rank: Int
@@ -250,6 +252,7 @@ struct CoreModelsTests {
             from: JSONSerialization.data(withJSONObject: object)
         )
         #expect(olderRecord.isChampion)
+        #expect(olderRecord.isRankOneChampion)
         #expect(olderRecord.isCoChampion == nil)
         #expect(olderRecord.finishPosition == nil)
         #expect(HistoryAggregation.cups([olderRecord]) == .init(played: 1, won: 1, podiums: 1))
@@ -274,7 +277,7 @@ struct CoreModelsTests {
         }
     }
 
-    @Test func malformedCupRanksDoNotCountAsPodiums() throws {
+    @Test func malformedCupRanksDoNotCountAsWinsOrPodiums() throws {
         let cup = CupRecord(
             endedAt: Date(timeIntervalSince1970: 100),
             gameIDs: ["pong", "sky-hop", "snake-pit"],
@@ -311,7 +314,8 @@ struct CoreModelsTests {
             PersonalCupRecord.self,
             from: JSONSerialization.data(withJSONObject: object)
         )
-        #expect(HistoryAggregation.cups([invalidPosition]).podiums == 0)
+        #expect(!invalidPosition.isRankOneChampion)
+        #expect(HistoryAggregation.cups([invalidPosition]) == .init(played: 1, won: 0, podiums: 0))
 
         object["rank"] = 4
         object["participantCount"] = 4

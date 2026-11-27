@@ -231,7 +231,9 @@ public struct PersonalCupRecord: Codable, Equatable, Identifiable, Sendable {
         isCoChampion = isChampion && record.champions.count > 1 ? true : nil
     }
 
-    public var isRankOneChampion: Bool { participantCount > 0 && rank == 1 && isChampion }
+    public var isRankOneChampion: Bool {
+        participantCount > 0 && rank == 1 && isChampion && (finishPosition == nil || finishPosition == 1)
+    }
 
     fileprivate var isPodiumFinish: Bool {
         // Earlier records only carry the displayed rank.
