@@ -222,6 +222,7 @@ public final class PartyClient {
             orientation: inputOrientation,
             flags: inputFlags
         )
+        onInputEnqueuedForTesting?()
         startInputFlushIfNeeded()
     }
 
@@ -299,7 +300,7 @@ public final class PartyClient {
     }
 #endif
 
-    var hasPendingInputForTesting: Bool { pendingInput != nil }
+    @ObservationIgnored var onInputEnqueuedForTesting: (() -> Void)?
 
     func waitForInputFlushForTesting() async {
         await inputFlushTask?.value

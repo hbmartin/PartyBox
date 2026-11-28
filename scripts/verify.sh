@@ -79,12 +79,17 @@ run_xcode() {
     return "$status"
 }
 
-latest_runtime() {
-    local platform=$1
-    xcrun simctl list runtimes --json | jq -r --arg platform "$platform" '
+create_simulator() {
+    local platform=$1 family=$2 selection runtime device_type
+    selection="$(xcrun simctl list runtimes --json | jq -r --arg platform "$platform" --arg family "$family" '
         [.runtimes[] | select(.isAvailable and (.identifier | contains($platform)))]
-        | sort_by(.version | split(".") | map(tonumber)) | last | .identifier // empty
-    '
+        | sort_by(.version | split(".") | map(tonumber)) | reverse
+        | first(.[] | .identifier as $runtime | .supportedDeviceTypes[]?
+                | select(.productFamily == $family) | [$runtime, .identifier] | @tsv) // empty
+    ')" || return 1
+    [[ -n "$selection" ]] || { echo "No available $platform runtime supports a $family simulator." >&2; return 1; }
+    IFS=$'\t' read -r runtime device_type <<< "$selection"
+    xcrun simctl create "PartyBox Verify $family $$" "$device_type" "$runtime"
 }
 
 ensure_ios_destination() {
@@ -93,15 +98,7 @@ ensure_ios_destination() {
         IOS_DESTINATION="$PARTYBOX_IOS_DESTINATION"
         return
     fi
-    local runtime device_type
-    runtime="$(latest_runtime 'iOS')"
-    [[ -n "$runtime" ]] || { echo "No available iOS Simulator runtime." >&2; exit 1; }
-    device_type="$(xcrun simctl list devicetypes --json | jq -r '
-        [.devicetypes[] | select(.productFamily == "iPhone" and (.name | startswith("iPhone")))]
-        | first | .identifier // empty
-    ')"
-    [[ -n "$device_type" ]] || { echo "No iPhone simulator device type." >&2; exit 1; }
-    IOS_UDID="$(xcrun simctl create "PartyBox Verify iPhone $$" "$device_type" "$runtime")"
+    IOS_UDID="$(create_simulator iOS iPhone)"
     xcrun simctl boot "$IOS_UDID"
     xcrun simctl bootstatus "$IOS_UDID" -b
     IOS_DESTINATION="platform=iOS Simulator,id=$IOS_UDID"
@@ -113,13 +110,7 @@ ensure_tvos_destination() {
         TVOS_DESTINATION="$PARTYBOX_TVOS_DESTINATION"
         return
     fi
-    local runtime device_type
-    runtime="$(latest_runtime 'tvOS')"
-    [[ -n "$runtime" ]] || { echo "No available tvOS Simulator runtime." >&2; exit 1; }
-    device_type="$(xcrun simctl list devicetypes --json | jq -r \
-        '.devicetypes[] | select(.productFamily == "Apple TV") | .identifier' | head -1)"
-    [[ -n "$device_type" ]] || { echo "No Apple TV simulator device type." >&2; exit 1; }
-    TVOS_UDID="$(xcrun simctl create "PartyBox Verify Apple TV $$" "$device_type" "$runtime")"
+    TVOS_UDID="$(create_simulator tvOS 'Apple TV')"
     xcrun simctl boot "$TVOS_UDID"
     xcrun simctl bootstatus "$TVOS_UDID" -b
     TVOS_DESTINATION="platform=tvOS Simulator,id=$TVOS_UDID"

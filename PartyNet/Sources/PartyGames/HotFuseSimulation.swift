@@ -645,12 +645,6 @@ struct HotFuseSimulation: ArcadeSimulation, Equatable {
         players[index].lives = lives
     }
 
-#if DEBUG
-    mutating func setRoundForTesting(_ round: Int) {
-        self.round = round
-    }
-#endif
-
     mutating func placeDroneForTesting(_ index: Int, at position: ArcadeVector) {
         guard drones.indices.contains(index) else { return }
         drones[index].position = position

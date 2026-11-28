@@ -25,8 +25,7 @@ public actor NetworkFaultProxy {
         let bridgeID: UUID
         let controllerID: ControllerID
         let upstreamPort: NWEndpoint.Port
-        // Shared profiles consume the proxy-wide sequence instead.
-        var decisions: UDPDecisionStream?
+        var decisions: UDPSessionDecisions
     }
 
     package static let maximumQueuedForwardsPerToken = 256
@@ -147,14 +146,9 @@ public actor NetworkFaultProxy {
         self.profile = profile
         sharedDecisions = UDPDecisionStream(profile: profile)
         for (token, session) in udpSessions {
-            udpSessions[token]?.decisions = sessionDecisions(for: session.controllerID)
+            udpSessions[token]?.decisions = UDPSessionDecisions(profile: profile, controllerID: session.controllerID)
         }
         reorderQueues.removeAll()
-    }
-
-    private func sessionDecisions(for controllerID: ControllerID) -> UDPDecisionStream? {
-        guard profile.lossScope == .perController else { return nil }
-        return UDPDecisionStream(profile: profile, controllerID: controllerID)
     }
 
     public func reset() {
@@ -313,7 +307,7 @@ public actor NetworkFaultProxy {
                 bridgeTokens[bridgeID] = welcome.sessionToken
                 udpSessions[welcome.sessionToken] = UDPSession(
                     bridgeID: bridgeID, controllerID: hello.controllerID, upstreamPort: port,
-                    decisions: sessionDecisions(for: hello.controllerID)
+                    decisions: UDPSessionDecisions(profile: profile, controllerID: hello.controllerID)
                 )
                 metrics.activeUDPSessions = udpSessions.count
                 let proxiedWelcome = Welcome(
@@ -434,12 +428,11 @@ public actor NetworkFaultProxy {
 
     private func acceptDatagram(_ data: Data) {
         metrics.udpReceived += 1
-        guard let frame = InputFrame(data: data), udpSessions[frame.token] != nil else {
+        guard let frame = InputFrame(data: data),
+              let drop = udpSessions[frame.token]?.decisions.consumeDropDecision(shared: &sharedDecisions) else {
             metrics.udpRejected += 1
             return
         }
-        let drop = udpSessions[frame.token]?.decisions?.consumeDropDecision()
-            ?? sharedDecisions.consumeDropDecision()
         if drop {
             metrics.udpDropped += 1
             return
@@ -459,8 +452,8 @@ public actor NetworkFaultProxy {
     }
 
     private func scheduleForward(_ packet: BufferedDatagram) {
-        let delay = udpSessions[packet.token]?.decisions?.nextDelayMilliseconds()
-            ?? sharedDecisions.nextDelayMilliseconds()
+        guard let delay = udpSessions[packet.token]?.decisions.nextDelayMilliseconds(shared: &sharedDecisions)
+        else { return }
         if delay > 0 { metrics.udpDelayed += 1 }
         let scheduled = ScheduledDatagram(
             packet: packet,

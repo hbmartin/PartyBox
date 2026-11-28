@@ -43,22 +43,24 @@ extension NetworkIntegrationTests {
         $0.continuousClock = clock
       } operation: {
         let client = PartyClient(displayName: "Clock")
-        try client.beginReconnectForTesting(host: "127.0.0.1", port: 9)
-        let start = clock.now
-        try await clock.waitForSleep(until: start.advanced(by: .seconds(1)))
-        clock.advance(to: start.advanced(by: .seconds(29)))
-        let deadline = start.advanced(by: .seconds(30))
-        try await clock.waitForSleep(until: deadline)
+        try await withAsyncCleanup {
+          try client.beginReconnectForTesting(host: "127.0.0.1", port: 9)
+          let start = clock.now
+          try await clock.waitForSleep(until: start.advanced(by: .seconds(1)))
+          clock.advance(to: start.advanced(by: .seconds(29)))
+          let deadline = start.advanced(by: .seconds(30))
+          try await clock.waitForSleep(until: deadline)
 
-        clock.advance(to: deadline.advanced(by: .milliseconds(-1)))
-        guard case .reconnecting = client.state else {
-          Issue.record("Reconnect window expired before 30 seconds")
-          return
+          clock.advance(to: deadline.advanced(by: .milliseconds(-1)))
+          guard case .reconnecting = client.state else {
+            Issue.record("Reconnect window expired before 30 seconds")
+            return
+          }
+          clock.advance(to: deadline)
+          try await waitUntil { client.state == .disconnected("Could not reconnect within 30 seconds.") }
+        } cleanup: {
+          await client.stop()
         }
-
-        clock.advance(to: deadline)
-        try await waitUntil { client.state == .disconnected("Could not reconnect within 30 seconds.") }
-        await client.stop()
       }
     }
 
@@ -233,22 +235,23 @@ extension NetworkIntegrationTests {
         try await ticks.advance(to: .milliseconds(16))
         try await waitUntil { client.inputFramesSent == 1 }
         let baselineSendCount = client.inputFramesSent
-        #expect(!client.hasPendingInputForTesting)
+        var enqueueCount = 0
+        client.onInputEnqueuedForTesting = { enqueueCount += 1 }
 
         client.setOrientation(.identity, available: false)
-        #expect(!client.hasPendingInputForTesting)
+        #expect(enqueueCount == 0)
         try await ticks.advance(to: .milliseconds(32))
         #expect(client.inputFramesSent == baselineSendCount)
 
         let orientation = OrientationQuaternion(x: 0, y: 0, z: 1, w: 0)
         client.setOrientation(orientation)
-        #expect(client.hasPendingInputForTesting)
+        #expect(enqueueCount == 1)
         await client.waitForInputFlushForTesting()
         try await ticks.advance(to: .milliseconds(48))
         try await waitUntil { client.inputFramesSent == baselineSendCount + 1 }
 
         client.setOrientation(orientation)
-        #expect(!client.hasPendingInputForTesting)
+        #expect(enqueueCount == 1)
         try await ticks.advance(to: .milliseconds(64))
         #expect(client.inputFramesSent == baselineSendCount + 1)
       }

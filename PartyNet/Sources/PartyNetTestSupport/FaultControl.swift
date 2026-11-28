@@ -17,6 +17,14 @@ public struct FaultControlResponse: Codable, Equatable, Sendable {
     public let metrics: FaultMetrics
     public let hostInputActivity: [InputActivity]
 
+    package func failureMessage(for request: FaultControlRequest) -> String? {
+        guard succeeded else { return message }
+        guard case let .udp(_, _, _, _, requested?) = request,
+              profile?.lossScope != requested else { return nil }
+        let reported = profile?.lossScope.rawValue ?? "no profile"
+        return "Requested UDP loss scope \(requested.rawValue), but the server reported \(reported)."
+    }
+
     public init(
         succeeded: Bool,
         message: String,

@@ -241,24 +241,61 @@ extension NetworkIntegrationTests {
       await transport.stop()
     }
 
-    @Test func staleBrowserFailureCannotPoisonANewerBrowserGeneration() async throws {
-      let transport = ClientTransport()
-      await transport.startBrowsing()
-      let staleGeneration = try #require(await transport.browserGeneration)
-      await transport.restartBrowsing()
-      let currentGeneration = try #require(await transport.browserGeneration)
-      #expect(currentGeneration != staleGeneration)
+    private actor ControlledBrowser {
+      private var runs: [CheckedContinuation<Void, any Error>] = []
+      private var stopped = false
+      var pending: Int { runs.count }
 
+      func run() async throws {
+        guard !stopped else { throw CancellationError() }
+        // A cancelled browser may deliver a late error. Let the test choose when it arrives.
+        try await withCheckedThrowingContinuation { runs.append($0) }
+      }
+
+      func failOldest(with error: PartyNetTransportError) {
+        runs.removeFirst().resume(throwing: error)
+      }
+
+      func stop() {
+        stopped = true
+        for run in runs { run.resume(throwing: CancellationError()) }
+        runs.removeAll()
+      }
+    }
+
+    @Test func staleBrowserFailureCannotPoisonANewerBrowserGeneration() async throws {
+      let browser = ControlledBrowser()
+      let transport = ClientTransport(runBrowser: { _ in try await browser.run() })
       let events = transport.eventStream { Issue.record("Discovery event stream overflowed") }
       let staleError = PartyNetTransportError.timedOut("stale generation")
       let currentError = PartyNetTransportError.timedOut("current generation")
-      await transport.publishDiscoveryFailure(staleError, generation: staleGeneration)
-      await transport.publishDiscoveryFailure(currentError, generation: currentGeneration)
-      await transport.stop()
+      try await withAsyncCleanup {
+        let oldTask = await transport.startBrowsing()
+        try await waitUntilAsync { await browser.pending == 1 }
+        let staleGeneration = try #require(await transport.browserGeneration)
+        await transport.restartBrowsing()
+        try await waitUntilAsync { await browser.pending == 2 }
+        let currentGeneration = try #require(await transport.browserGeneration)
+        #expect(currentGeneration != staleGeneration)
+
+        await browser.failOldest(with: staleError)
+        let oldFinished = CompletionProbe()
+        Task {
+          await oldTask.value
+          await oldFinished.markCompleted()
+        }
+        try await waitUntilAsync { await oldFinished.completed }
+        #expect(await transport.browserGeneration == currentGeneration)
+
+        await browser.failOldest(with: currentError)
+        try await waitUntilAsync { await transport.browserGeneration == nil }
+      } cleanup: {
+        await browser.stop()
+        await transport.stop()
+      }
       var failures: [String] = []
       for await case let .discoveryFailed(message) in events { failures.append(message) }
-      #expect(!failures.contains("Discovery failed: \(staleError.localizedDescription)"))
-      #expect(failures.count { $0 == "Discovery failed: \(currentError.localizedDescription)" } == 1)
+      #expect(failures == ["Discovery failed: \(currentError.localizedDescription)"])
     }
 
     @Test func disconnectCancelsAHandshakeWaitingForWelcome() async throws {
